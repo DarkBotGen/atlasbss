@@ -1784,6 +1784,46 @@ function showerController:ApplySpeed(humanoid, speed)
 	humanoid.WalkSpeed = speed
 end
 
+function showerController:ReleaseDensity()
+	local lease = self.densityLease
+	self.densityLease = nil
+	if not lease then return end
+	for part, saved in pairs(lease.parts) do
+		pcall(function()
+			if part.CustomPhysicalProperties == saved.applied then
+				part.CustomPhysicalProperties = saved.original
+			end
+		end)
+	end
+	table.clear(lease.parts)
+end
+
+function showerController:ApplyDensity(root)
+	local character = root.Parent
+	if not character then return end
+	if self.densityLease and self.densityLease.character == character then return end
+	self:ReleaseDensity()
+	local lease = {character=character, parts={}}
+	self.densityLease = lease
+	-- One snapshot per active star, not a character scan on every heartbeat.
+	for _, part in ipairs(character:GetDescendants()) do
+		if not part:IsA("BasePart") then continue end
+		local original = part.CustomPhysicalProperties
+		local current = part.CurrentPhysicalProperties
+		local density = math.min(100, current.Density * 10)
+		local ok, boosted = pcall(function()
+			return PhysicalProperties.new(density, current.Friction, current.Elasticity,
+				current.FrictionWeight, current.ElasticityWeight, current.AcousticAbsorption)
+		end)
+		if not ok then
+			boosted = PhysicalProperties.new(density, current.Friction, current.Elasticity,
+				current.FrictionWeight, current.ElasticityWeight)
+		end
+		lease.parts[part] = {original=original, applied=boosted}
+		part.CustomPhysicalProperties = boosted
+	end
+end
+
 function showerController:Eligible(object, entry, opts, rootPosition, now)
 	if entry.done or not tracked.showers[object] or now >= entry.deadline then return false end
 	if typeof(object) == "Instance" and not object.Parent then return false end
@@ -1822,6 +1862,7 @@ end
 function showerController:CancelMovement()
 	self.generation = (self.generation or 0) + 1
 	self:ReleaseSpeed()
+	self:ReleaseDensity()
 	local humanoid, root = self.walkHumanoid, self.walkRoot
 	self.walkHumanoid, self.walkRoot = nil, nil
 	if humanoid and root then
@@ -1856,6 +1897,7 @@ function showerController:Collect(object, opts)
 			if opts.showerfield and getFieldAt(position) ~= opts.showerfield then break end
 			if not gatheringPriorities:Allowed(position, opts, root.Position) then break end
 			if not opts.standalone and gatheringPriorities:ShouldPreempt() then return true end
+			self:ApplyDensity(root)
 			local dx, dz = position.X - root.Position.X, position.Z - root.Position.Z
 			local distance = math.sqrt(dx * dx + dz * dz)
 			arrived = distance <= 3
