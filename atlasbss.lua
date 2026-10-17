@@ -2344,6 +2344,7 @@ do
 						table.move(values, 1, values.n, 1, logEntry)
 					end
 
+					if #v77 >= 200 then table.remove(v77, 1) end
 					insert(v77, logEntry)
 
 					if not now or os.clock() - now >= 40 then
@@ -5538,6 +5539,36 @@ do
 		partymegamech = {},
 	}
 
+	connections:Add("runtimeCacheMaintenance", RunService.Heartbeat:Connect((function()
+		local elapsed, pruneElapsed = 0, 0
+		return function(dt)
+			elapsed += dt
+			pruneElapsed += dt
+			if elapsed < 0.25 or not tracked then return end
+			elapsed = 0
+			local now = os.clock()
+			for key, flame in pairs(tracked.flames) do
+				if type(flame) == "table" and flame.ExpiresAt then
+					local remaining = flame.ExpiresAt - now
+					if remaining <= 0 then tracked.flames[key] = nil
+					else
+						flame.T = math.min(remaining, 6)
+						flame.Size = 1.4 + 0.35 * (flame.T - 1) / 5
+					end
+				end
+			end
+			if pruneElapsed < 5 then return end
+			pruneElapsed = 0
+			for _, list in pairs(tracked) do
+				if type(list) == "table" then
+					for key in pairs(list) do
+						if typeof(key) == "Instance" and not key.Parent then list[key] = nil end
+					end
+				end
+			end
+		end
+	end)()))
+
 	if workspace:FindFirstChild("Collectibles") then
 		local function v69(target)
 			local distance = distanceTo(target)
@@ -6067,59 +6098,42 @@ do
 	end
 
 	watchStations = function(enable)
-		if not enable or connections:Get("stations") then
-			if not enable and not cfg.autofarm.farmprecise and not cfg.autofarm.farmprecisemark and not cfg.convert.standInPrecise then
-				connections:Cancel("stations")
-				connections:Cancel("stations2")
-			end
-		else
-			local Stations = workspace:FindFirstChild("Stations")
-			if not Stations then
-				return
-			end
-
-			connections:Add("stations", Stations.ChildAdded:Connect(function(child)
-				local Sign = child:FindFirstChild("Sign")
-
-				if not Sign then
-					local connection = nil
-
-					connection = child.ChildAdded:Connect(function(child2)
-						if child2.Name == "Sign" then
-							local FrontDecal = child2:FindFirstChild("FrontDecal")
-
-							if not FrontDecal or FrontDecal.Texture ~= "http://www.roblox.com/asset/?id=8173559749" then
-								local connection2 = nil
-
-								connection2 = child2.ChildAdded:Connect(function(child3)
-									if child3.Name == "FrontDecal" then
-										if child3.Texture == "http://www.roblox.com/asset/?id=8173559749" then
-											tracked.precisemark[child] = true
-										end
-
-										connection2:Disconnect()
-									end
-								end)
-							else
-								tracked.precisemark[child] = true
-							end
-
-							connection:Disconnect()
-						end
-					end)
-				else
-					local FrontDecal = Sign:FindFirstChild("FrontDecal")
-
-					if not (not FrontDecal or FrontDecal.Texture ~= "http://www.roblox.com/asset/?id=8173559749") then
-						tracked.precisemark[child] = true
-					end
-				end
-			end))
-
-			connections:Add("stations2", Stations.ChildRemoved:Connect(function(child)
-				tracked.precisemark[child] = nil
-			end))
+		if not enable then
+			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise then return end
+			connections:Cancel("stations")
+			connections:Cancel("stations2")
+			connections:Cancel("stationPending")
+			return
 		end
+		if connections:Get("stations") then return end
+		local folder = workspace:FindFirstChild("Stations")
+		if not folder then return end
+		local pending = {}
+		local function classify(child)
+			if child.Parent ~= folder then return true end
+			local sign = child:FindFirstChild("Sign")
+			local decal = sign and sign:FindFirstChild("FrontDecal")
+			if not decal then return false end
+			if string.match(decal.Texture, "%d+") == "8173559749" then tracked.precisemark[child] = true end
+			return true
+		end
+		local function added(child)
+			if not classify(child) then pending[child] = os.clock() end
+		end
+		connections:Add("stations", folder.ChildAdded:Connect(added))
+		connections:Add("stations2", folder.ChildRemoved:Connect(function(child)
+			pending[child], tracked.precisemark[child] = nil, nil
+		end))
+		local elapsed = 0
+		connections:Add("stationPending", RunService.Heartbeat:Connect(function(dt)
+			elapsed += dt
+			if elapsed < 0.25 then return end
+			elapsed = 0
+			for child, started in pairs(pending) do
+				if classify(child) or os.clock() - started > 30 then pending[child] = nil end
+			end
+		end))
+		for _, child in ipairs(folder:GetChildren()) do added(child) end
 	end
 
 	watchAlerts = function(enable)
@@ -41924,48 +41938,16 @@ do
 									end
 								end)
 							elseif not (effectName ~= "LocalFlames" or effectData.A ~= "N" or effectData.PID ~= localPlayer.UserId) then
-								local flameEntry = tracked.flames[effectData.P]
-
-								if not flameEntry then
-									local flameData = {
-										Name = true,
-										Position = effectData.P,
-										Size = 1.4 + 0.35 * (math.min(effectData.T, 6) - 1) / 5,
-										T = math.min(effectData.T, 6),
-										Dark = effectData.D,
-									}
-
-									tracked.flames[effectData.P] = flameData
-									threadCount += 1
-
-									threads:Delay(threadCount, flameData.T, function()
-										if not (not tracked or flameData.Dark) then
-											tracked.flames[effectData.P] = nil
-										end
-									end)
-
-									threadCount += 1
-
-									threads:Add(threadCount, function()
-										while not (not task.wait(1) or not tracked) do
-											if not tracked.flames[effectData.P] then
-												break
-											end
-											flameData.T = flameData.T - 1
-											flameData.Size = 1.4 + 0.35 * (flameData.T - 1) / 5
-										end
-									end)
-								else
-									threadCount += 1
-									flameEntry.Dark = effectData.D
-									flameEntry.T = math.min(effectData.T, 6)
-
-									threads:Delay(threadCount, flameEntry.T, function()
-										if tracked then
-											tracked.flames[effectData.P] = nil
-										end
-									end)
+								local lifetime = math.max(0, tonumber(effectData.T) or 0)
+								local flame = tracked.flames[effectData.P]
+								if type(flame) ~= "table" then
+									flame = {Name=true, Position=effectData.P}
+									tracked.flames[effectData.P] = flame
 								end
+								flame.ExpiresAt = os.clock() + lifetime
+								flame.T = math.min(lifetime, 6)
+								flame.Size = 1.4 + 0.35 * (flame.T - 1) / 5
+								flame.Dark = effectData.D
 							elseif effectName == "MythicMeteor" then
 								local meteorEntry = { Name = true, Position = effectData.Pos, Size = Vector2.new(effectData.Radius, 0) }
 								threadCount += 1
@@ -42087,7 +42069,9 @@ do
 				RunService.Heartbeat:Wait()
 			end
 
-			if not (not tracked or stationData.Model.Sign.FrontDecal.Texture ~= "http://www.roblox.com/asset/?id=8173559749") then
+			local sign = stationData.Model:FindFirstChild("Sign")
+			local decal = sign and sign:FindFirstChild("FrontDecal")
+			if tracked and decal and string.match(decal.Texture, "%d+") == "8173559749" then
 				tracked.precisemark[stationData.Id] = true
 			end
 		end,
@@ -45814,6 +45798,7 @@ gatheringPriorities.kindCategories = {Petal="Petals", Shower="Showers", Coconut=
 
 function gatheringPriorities:Rebuild()
 	local settings = cfg.prioritization
+	if self.orderSource == settings.order and self.rank then return end
 	local known, seen, order = {}, {}, {}
 	for _, name in ipairs(self.defaults) do known[name] = true end
 	for _, name in ipairs(type(settings.order) == "table" and settings.order or {}) do
@@ -45821,6 +45806,7 @@ function gatheringPriorities:Rebuild()
 	end
 	for _, name in ipairs(self.defaults) do if not seen[name] then order[#order + 1] = name end end
 	settings.order = order
+	self.orderSource = order
 	self.rank = {}
 	for index, name in ipairs(order) do self.rank[name] = index end
 end
@@ -45981,6 +45967,7 @@ function gatheringPriorities:Record(kind, object)
 end
 
 function gatheringPriorities:RefreshMenu()
+	self.orderSource = nil
 	self:Rebuild()
 	if self.orderLabels then
 		for index, label in ipairs(self.orderLabels) do label.Text = tostring(index) .. ". " .. cfg.prioritization.order[index] end
@@ -64744,12 +64731,18 @@ do
 	Home.AddHorizontalAlignment()
 	local sessionHoneyLabel = Home.AddLabel("Session Honey: 0?")
 	local honeyPerHourLabel = Home.AddLabel("Honey per Hour: 0?")
+	local runtimeMemoryLabel = Home.AddLabel("Client Lua heap: measuring...")
 
 	threads:Add("Stats", function()
 		while task.wait(1) do
 			local n = os.clock() - state.start
 			local P = localPlayer.CoreStats.Honey.Value - state.honeyatstart
 			local H = P / n * 3600
+			local okHeap, heapKB = pcall(gcinfo)
+			local taskCount, connectionCount = 0, 0
+			for _ in pairs(threads.list) do taskCount += 1 end
+			for _ in pairs(connections.list) do connectionCount += 1 end
+			runtimeMemoryLabel.Text = "Client Lua heap: " .. (okHeap and string.format("%.1f MB", heapKB / 1024) or "unavailable") .. " | Tasks: " .. taskCount .. " | Connections: " .. connectionCount
 			uptimeLabel.Text = "Uptime: " .. formatTime(n)
 			serverUptimeLabel.Text = "Server Uptime: " .. formatTime(workspace.ServerTime.Value)
 			sessionHoneyLabel.Text = "Session Honey: " .. formatNumber(P)
