@@ -182,8 +182,6 @@ local cfg = {
 		precisemin = 30,
 		farmpuppyball = true,
 		farmshowers = true,
-		dynamicshowerspeed = true,
-		showerspeedcap = 120,
 		farmtriangulate = false,
 		farmclouds = true,
 		farmballoons2 = false,
@@ -1301,7 +1299,11 @@ local mergeTable
 
 mergeTable = function(target, source)
 	for k, value in pairs(target) do
-		if type(value) ~= "table" or type(source[k]) ~= "table" then
+		if target == cfg.prioritization and k == "order" and type(source[k]) == "table" then
+			-- Ordered lists must replace the default, including an empty default.
+			-- Recursing over target's keys silently drops saved array entries.
+			target[k] = table.clone(source[k])
+		elseif type(value) ~= "table" or type(source[k]) ~= "table" then
 			if source[k] ~= nil then
 				target[k] = source[k]
 			end
@@ -1718,7 +1720,7 @@ local mobileToggleButton, controls, currentField, position, currentFieldName, ve
 local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
--- Shared walking controller for gathering and showers without autofarm.
+-- Shared tween controller: earliest reachable impact first, through the last star.
 local showerController = {entries = {}, sequence = 0}
 
 function showerController:Observe(object, duration)
@@ -1743,85 +1745,8 @@ function showerController:Prune(now)
 	end
 end
 
-function showerController:Speed(distance, remaining)
-	local walking = self:BaseSpeed(getHumanoid())
-	if cfg.autofarm.dynamicshowerspeed == false then return walking end
-	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 120, 40, 200)
-	-- Aim to arrive before impact; distant/late stars request more speed.
-	local required = distance / math.max(remaining - 0.15, 0.04) * 1.15
-	return math.max(walking, math.min(cap, math.max(walking * 1.15, required)))
-end
-
-function showerController:BaseSpeed(humanoid)
-	local current = math.max(1, humanoid.WalkSpeed)
-	local lease = self.speedLease
-	if lease and lease.humanoid == humanoid then
-		-- Respect speed changes from buffs or other systems while approaching.
-		if math.abs(current - lease.applied) > 0.01 then lease.base = current end
-		return lease.base
-	end
-	return current
-end
-
-function showerController:ReleaseSpeed()
-	local lease = self.speedLease
-	self.speedLease = nil
-	if not lease then return end
-	pcall(function()
-		-- Restore only a value we still own; never overwrite a newer game update.
-		if math.abs(lease.humanoid.WalkSpeed - lease.applied) <= 0.01 then
-			lease.humanoid.WalkSpeed = lease.base
-		end
-	end)
-end
-
-function showerController:ApplySpeed(humanoid, speed)
-	local base = self:BaseSpeed(humanoid)
-	local lease = self.speedLease
-	if lease and lease.humanoid ~= humanoid then self:ReleaseSpeed(); lease = nil end
-	if not lease then lease = {humanoid=humanoid, base=base}; self.speedLease = lease end
-	lease.applied = speed
-	humanoid.WalkSpeed = speed
-end
-
-function showerController:ReleaseDensity()
-	local lease = self.densityLease
-	self.densityLease = nil
-	if not lease then return end
-	for part, saved in pairs(lease.parts) do
-		pcall(function()
-			if part.CustomPhysicalProperties == saved.applied then
-				part.CustomPhysicalProperties = saved.original
-			end
-		end)
-	end
-	table.clear(lease.parts)
-end
-
-function showerController:ApplyDensity(root)
-	local character = root.Parent
-	if not character then return end
-	if self.densityLease and self.densityLease.character == character then return end
-	self:ReleaseDensity()
-	local lease = {character=character, parts={}}
-	self.densityLease = lease
-	-- One snapshot per active star, not a character scan on every heartbeat.
-	for _, part in ipairs(character:GetDescendants()) do
-		if not part:IsA("BasePart") then continue end
-		local original = part.CustomPhysicalProperties
-		local current = part.CurrentPhysicalProperties
-		local density = math.min(100, current.Density * 10)
-		local ok, boosted = pcall(function()
-			return PhysicalProperties.new(density, current.Friction, current.Elasticity,
-				current.FrictionWeight, current.ElasticityWeight, current.AcousticAbsorption)
-		end)
-		if not ok then
-			boosted = PhysicalProperties.new(density, current.Friction, current.Elasticity,
-				current.FrictionWeight, current.ElasticityWeight)
-		end
-		lease.parts[part] = {original=original, applied=boosted}
-		part.CustomPhysicalProperties = boosted
-	end
+function showerController:Speed()
+	return 400
 end
 
 function showerController:Eligible(object, entry, opts, rootPosition, now)
@@ -1833,18 +1758,13 @@ function showerController:Eligible(object, entry, opts, rootPosition, now)
 	local dx, dz = position.X - rootPosition.X, position.Z - rootPosition.Z
 	local distance = math.sqrt(dx * dx + dz * dz)
 	local remaining = entry.deadline - now
-	return math.max(0, distance - 3) / self:Speed(distance, remaining) <= math.max(0, remaining - 0.04)
+	return math.max(0, distance - 1.5) / self:Speed(distance, remaining) <= math.max(0, remaining - 0.04)
 end
 
 function showerController:Select(opts, rootPosition)
 	if not cfg.autofarm.farmshowers or opts.nowait or opts.loot or opts.mondotokens then return end
 	local now = os.clock()
 	self:Prune(now)
-	if self.target then
-		local entry = self.entries[self.target]
-		if entry and self:Eligible(self.target, entry, opts, rootPosition, now) then return self.target end
-		self.target = nil
-	end
 	local best, bestEntry
 	for object in pairs(tracked.showers) do
 		-- New observations normally happen in the spawn handler, before selection.
@@ -1861,13 +1781,10 @@ end
 
 function showerController:CancelMovement()
 	self.generation = (self.generation or 0) + 1
-	self:ReleaseSpeed()
-	self:ReleaseDensity()
-	local humanoid, root = self.walkHumanoid, self.walkRoot
-	self.walkHumanoid, self.walkRoot = nil, nil
-	if humanoid and root then
-		pcall(function() humanoid:MoveTo(root.Position) end)
-		smoothMovement.goal = nil
+	if self.tween then
+		self.tween:Cancel()
+		self.tween:Destroy()
+		self.tween = nil
 	end
 end
 
@@ -1884,7 +1801,9 @@ function showerController:Collect(object, opts)
 	local generation = self.generation
 	self.target = object
 	local root, humanoid = getRootPart(), getHumanoid()
-	local nextUpdate = 0
+	local nextUpdate, nextOrderCheck, lastGoal = 0, 0, nil
+	humanoid:MoveTo(root.Position)
+	smoothMovement.goal = nil
 	local arrived = false
 	local ok, result = xpcall(function()
 		while self.generation == generation and tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
@@ -1897,20 +1816,27 @@ function showerController:Collect(object, opts)
 			if opts.showerfield and getFieldAt(position) ~= opts.showerfield then break end
 			if not gatheringPriorities:Allowed(position, opts, root.Position) then break end
 			if not opts.standalone and gatheringPriorities:ShouldPreempt() then return true end
-			self:ApplyDensity(root)
+			if now >= nextOrderCheck then
+				nextOrderCheck = now + 0.05
+				local first = self:Select(opts, root.Position)
+				if first and first ~= object then return true end
+			end
 			local dx, dz = position.X - root.Position.X, position.Z - root.Position.Z
 			local distance = math.sqrt(dx * dx + dz * dz)
-			arrived = distance <= 3
-			if arrived then self:ReleaseSpeed() end
+			arrived = distance <= 1.5
 			-- Release immediately after impact rather than waiting the old 5s timeout.
 			if remaining <= -0.08 or (remaining <= 0 and not arrived) then break end
 			if now >= nextUpdate and not arrived then
-				nextUpdate = now + 0.1
-				local speed = self:Speed(distance, remaining)
-				if cfg.autofarm.dynamicshowerspeed ~= false then self:ApplySpeed(humanoid, speed)
-				else self:ReleaseSpeed() end
-				self.walkHumanoid, self.walkRoot = humanoid, root
-				smoothMovement:MoveTo(position)
+				nextUpdate = now + 0.05
+				local goal = Vector3.new(position.X, root.Position.Y, position.Z)
+				if not lastGoal or (goal-lastGoal).Magnitude > 0.5 then
+					if self.tween then self.tween:Cancel(); self.tween:Destroy() end
+					self.tween = TweenService:Create(root,
+						TweenInfo.new(math.max(0.025, distance/self:Speed()), Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+						{CFrame=CFrame.new(goal)*root.CFrame.Rotation})
+					self.tween:Play()
+					lastGoal = goal
+				end
 			end
 			if not RunService.Heartbeat:Wait() then break end
 		end
@@ -65479,9 +65405,7 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Farm Showers", function(enabled)
 					if not enabled then showerController:Reset() end
 				end, "autofarm", "farmshowers")
-				farmFolder.AddSwitch("Dynamic Shower Speed", nil, "autofarm", "dynamicshowerspeed")
-				farmFolder.AddSlider("Shower Speed Cap", nil, 40, 200, "autofarm", "showerspeedcap", {Left=true})
-				farmFolder.AddLabel("Dynamic walking speed only while approaching a shower")
+				farmFolder.AddLabel("Showers tween to the earliest reachable impact first")
 				farmFolder.AddSwitch("Farm Triangulate", nil, "autofarm", "farmtriangulate")
 
 				farmFolder.AddSwitch("Farm Under Clouds", function(n)
@@ -67723,7 +67647,6 @@ more accurate dodging]],
 					else
 						threads:Add("walkspeed", function()
 							while task.wait(0.1) do
-								if showerController.speedLease then continue end
 								if not cfg.vars.walkdynamic then
 									local walkspeed = cfg.vars.walkspeed
 
@@ -68468,7 +68391,7 @@ Are you sure you want to enable it?]])
 					end
 				end, "detected", "background")
 
-				detectedFolder.AddLabel("Farm Showers works here using walking + Dynamic Shower Speed")
+				detectedFolder.AddLabel("Farm Showers works here using ordered shower tweens")
 
 				local fastCoconutSwitch = nil
 

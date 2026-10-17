@@ -1,32 +1,19 @@
-# Atlas+ star shower targeting
+# Atlas+ shower collection
 
-The controller records each observed falling star with a high-resolution local timestamp and landing deadline. It selects the earliest reachable landing, keeps that target committed, and advances after impact or disappearance. It skips expired, unreachable, out-of-field, or unsafe targets. Stable ordering replaces nearest-target selection, whole-second timestamps, and transparency-based ordering.
+Enable **Farm Showers** to collect showers using tweens. **Run without autofarm** remains available for standalone collection in the player's current field. Fast Shower Tween is no longer a separate required toggle.
 
-Both normal gathering and **Run without autofarm** use the same walking controller. Custom gathering priorities remain effective during autofarm, including preemption by categories ranked above Showers. Standalone shower collection does not act on stale autofarm priorities and yields when autofarm is enabled.
+The controller selects the **earliest reachable expected impact**, rather than the nearest star. It tweens to the center, stays through the expected landing, and proceeds through the remaining stars in impact order. It rechecks the order every 50ms so a newly observed earlier impact can take precedence. Stable observation order breaks equal-deadline ties.
 
-## Settings
+Movement uses linear tweens at 400 studs/second. The shower controller does not change WalkSpeed, density, Massless, friction, elasticity, or any other physical properties. The previous dynamic walking and density controls have been removed. Disabling Farm Showers, stopping, preemption, cancellation, errors and unloading cancel and destroy its active tween.
 
-- **Farm Showers:** enables shower collection.
-- **Dynamic Shower Speed:** enabled by default. Temporarily increases Humanoid walking speed using distance and remaining landing time. Late or distant targets request higher speed. Uses continuous `MoveTo` movement.
-- **Shower Speed Cap:** limits the added walking speed, 40–200 studs/second; default 120. A natural walking speed already above the selected cap is preserved.
-- **Run without autofarm:** retained in Debug. With Farm Showers enabled and autofarm off, collects showers in the player's current field. No Fast Shower Tween setting is required.
+Custom gathering priorities remain effective during autofarm. Standalone mode ignores stale autofarm priorities and yields when autofarm is enabled. Field, range and hazard checks still apply. Impossible and expired targets are skipped so they cannot block later stars.
 
-With dynamic speed disabled, shower collection uses the current walking speed. With it enabled, the temporary boost is released on arrival, interruption, stop, task cancellation, character change, and unload. Restoration preserves externally observed speed changes rather than restoring an obsolete boosted value. The general walk-speed task yields while the shower controller owns the temporary speed adjustment.
+Landing times are estimates from observed spawn timing, using the existing 1.9-second shower interval. The script does not receive server confirmation of each catch. Network delays, inaccurate observed timings and higher-priority interruptions can still cause misses; a particular 9–10x multiplier is not guaranteed.
 
-Shower movement creates no Tween, AlignPosition, or CFrame movement. The Fast Shower Tween control has been removed. Other optional movement features remain separate.
+Compilation and isolated tests passed for a ten-star sequence, earliest-impact versus nearest selection, earlier-impact rerouting, impossible targets, centered arrival, all cancellation paths, standalone collection/handoff, and 10,000 expired records. No live multiplier measurement has been performed.
 
-## Shower-only density
+# Saved gathering priorities
 
-While actively collecting a shower star, the controller multiplies each current character BasePart's effective density by **10**, capped at Roblox's maximum of **100**. It preserves friction, elasticity, their weights, acoustic absorption, and Massless settings. This includes standalone shower collection. Merely detecting or selecting a star does not change density.
+The priority order and Use Custom Order flag are stored inside the selected config under `prioritization`. Reordering already saved the config, but the previous loader merged arrays by iterating the default array's keys, dropping the saved order when the default was empty. The loader now replaces the priority array with a copy from the config. The existing normalizer removes unknown/duplicate entries and appends newly added categories.
 
-Original CustomPhysicalProperties values are restored when collection completes or is interrupted, stopped, canceled, reset, or unloaded. This includes restoring `nil` for parts that originally used material defaults. A newer external physical-property update is left intact. Properties are captured once per active star and are not compounded or scanned every frame. Parts added after that snapshot are not changed until the next star.
-
-The density adjustment runs only inside the shower collector. Other gathering, travel and combat paths do not activate it. Greater density changes mass; it does not guarantee that drift or missed stars are eliminated.
-
-Compilation and isolated tests passed for 100 collection cycles, exact restoration, no stacking, density caps, preserved properties, and interruption/error cleanup. Reference: [Roblox PhysicalProperties](https://create.roblox.com/docs/reference/engine/datatypes/PhysicalProperties).
-
-Targets are reached before their expected impact and held through impact, with a short timing allowance rather than the previous five-second timeout. Marker timings remain estimates: physical warning disks use 1.9 seconds, consistent with the prior script. Network delays, missed spawn events, obstacles, higher-priority gathering, and movement limits can still prevent a 9–10x shower. Collection is not falsely acknowledged as confirmed by the server.
-
-The implementation adds no per-star event listener or delayed task. Metadata is pruned by the existing maintenance sweep. Walking commands and speed adjustments are released on completion, preemption, stop, controller reset, script unload, and cancellation of the farming/standalone task.
-
-Compilation and isolated Luau tests passed for earliest-falling selection, stable target commitment, unreachable skips, field/range/hazard checks, dynamic walking speed and cap, a ten-star sequence, speed restoration, external buff updates, standalone collection/handoff, interruption cleanup, and 10,000 expired records. The test rejects attempts to create a shower tween. Live 9–10x collection has not been measured. Changing WalkSpeed does not guarantee server acceptance or a particular collection multiplier.
+Compilation and tests passed for saving a reordered list, ten fresh reloads, enabled/disabled flags, older configs, partial lists and switching presets. Existing saved orders can now load; orders already overwritten by a previous reset must be set again.
