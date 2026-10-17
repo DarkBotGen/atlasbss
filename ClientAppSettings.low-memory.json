@@ -1,0 +1,5 @@
+{
+  "DFFlagTextureQualityOverrideEnabled": true,
+  "DFIntTextureQualityOverride": 1,
+  "FIntDebugForceMSAASamples": 0
+}
