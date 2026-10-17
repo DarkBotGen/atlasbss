@@ -182,6 +182,8 @@ local cfg = {
 		precisemin = 30,
 		farmpuppyball = true,
 		farmshowers = true,
+		dynamicshowerspeed = true,
+		showerspeedcap = 400,
 		farmtriangulate = false,
 		farmclouds = true,
 		farmballoons2 = false,
@@ -741,6 +743,7 @@ end
 local smoothMovement = {}
 
 function smoothMovement:Reset()
+	if self.showerController then self.showerController:CancelMovement() end
 	self.goal, self.humanoid, self.roam = nil, nil, nil
 end
 
@@ -1490,6 +1493,9 @@ threads.Get = function(manager, threadId)
 end
 
 threads.Cancel = function(manager, threadId)
+	if (threadId == "Autofarm" or threadId == "fasttween") and smoothMovement and smoothMovement.showerController then
+		smoothMovement.showerController:CancelMovement()
+	end
 	local thread = manager.list[threadId]
 
 	if thread then
@@ -1711,6 +1717,139 @@ local ScreenGui = Instance.new("ScreenGui")
 local mobileToggleButton, controls, currentField, position, currentFieldName, vector, availableFields, setField, getFieldAt, isPathClear
 local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
+
+-- Shared by normal gathering, custom priorities and standalone fast showers.
+local showerController = {entries = {}, sequence = 0}
+
+function showerController:Observe(object, duration)
+	if self.entries[object] then return self.entries[object] end
+	self.sequence += 1
+	local now = os.clock()
+	local entry = {started = now, deadline = now + math.max(0.1, tonumber(duration) or 1.9), order = self.sequence}
+	self.entries[object] = entry
+	return entry
+end
+
+function showerController:Forget(object)
+	self.entries[object] = nil
+	if self.target == object then self.target = nil end
+end
+
+function showerController:Prune(now)
+	for object, entry in pairs(self.entries) do
+		if tracked and now > entry.deadline + 0.15 then tracked.showers[object] = nil end
+		if not tracked or not tracked.showers[object] or now > entry.deadline + 0.15 or
+			(typeof(object) == "Instance" and not object.Parent) then self:Forget(object) end
+	end
+end
+
+function showerController:Speed(distance, remaining)
+	local walking = math.max(1, getHumanoid().WalkSpeed)
+	if not cfg.detected.fastshowertween then return walking end
+	if cfg.autofarm.dynamicshowerspeed == false then return 400 end
+	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 400, 40, 400)
+	-- Aim to arrive before impact; distant/late stars request more speed.
+	local required = distance / math.max(remaining - 0.15, 0.04) * 1.15
+	return math.clamp(math.max(walking, required), 1, cap)
+end
+
+function showerController:Eligible(object, entry, opts, rootPosition, now)
+	if entry.done or not tracked.showers[object] or now >= entry.deadline then return false end
+	if typeof(object) == "Instance" and not object.Parent then return false end
+	local position = object.Position
+	if opts.showerfield and getFieldAt(position) ~= opts.showerfield then return false end
+	if not gatheringPriorities:Allowed(position, opts, rootPosition) then return false end
+	local dx, dz = position.X - rootPosition.X, position.Z - rootPosition.Z
+	local distance = math.sqrt(dx * dx + dz * dz)
+	local remaining = entry.deadline - now
+	return math.max(0, distance - 3) / self:Speed(distance, remaining) <= math.max(0, remaining - 0.04)
+end
+
+function showerController:Select(opts, rootPosition)
+	if not cfg.autofarm.farmshowers or opts.nowait or opts.loot or opts.mondotokens then return end
+	local now = os.clock()
+	self:Prune(now)
+	if self.target then
+		local entry = self.entries[self.target]
+		if entry and self:Eligible(self.target, entry, opts, rootPosition, now) then return self.target end
+		self.target = nil
+	end
+	local best, bestEntry
+	for object in pairs(tracked.showers) do
+		-- New observations normally happen in the spawn handler, before selection.
+		local entry = self.entries[object] or self:Observe(object, 1.9)
+		if self:Eligible(object, entry, opts, rootPosition, now) and
+			(not bestEntry or entry.deadline < bestEntry.deadline or
+				(entry.deadline == bestEntry.deadline and entry.order < bestEntry.order)) then
+			best, bestEntry = object, entry
+		end
+	end
+	self.target = best
+	return best
+end
+
+function showerController:CancelMovement()
+	if self.tween then self.tween:Cancel(); self.tween:Destroy(); self.tween = nil end
+end
+
+function showerController:Reset()
+	self:CancelMovement()
+	self.target = nil
+	table.clear(self.entries)
+end
+
+function showerController:Collect(object, opts)
+	local entry = self.entries[object]
+	if not entry then return end
+	self.target = object
+	local root, humanoid = getRootPart(), getHumanoid()
+	local lastGoal, lastSpeed, nextUpdate = nil, nil, 0
+	local arrived = false
+	local ok, result = xpcall(function()
+		while tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
+			if getRootPart() ~= root or not object.Position or
+				(typeof(object) == "Instance" and not object.Parent) then break end
+			local now = os.clock()
+			local remaining = entry.deadline - now
+			local position = object.Position
+			if opts.showerfield and getFieldAt(position) ~= opts.showerfield then break end
+			if not gatheringPriorities:Allowed(position, opts, root.Position) then break end
+			if gatheringPriorities:ShouldPreempt() then return true end
+			local dx, dz = position.X - root.Position.X, position.Z - root.Position.Z
+			local distance = math.sqrt(dx * dx + dz * dz)
+			arrived = distance <= 3
+			-- Release immediately after impact rather than waiting the old 5s timeout.
+			if remaining <= -0.08 or (remaining <= 0 and not arrived) then break end
+			if now >= nextUpdate and not arrived then
+				nextUpdate = now + 0.1
+				local speed = self:Speed(distance, remaining)
+				if cfg.detected.fastshowertween then
+					local goal = Vector3.new(position.X, root.Position.Y, position.Z)
+					if not lastGoal or (goal-lastGoal).Magnitude > 0.5 or math.abs(speed-(lastSpeed or 0)) > math.max(8, speed*0.2) then
+						self:CancelMovement()
+						local tween = TweenService:Create(root, TweenInfo.new(math.max(0.03,distance/speed),Enum.EasingStyle.Linear,Enum.EasingDirection.Out),
+							{CFrame=CFrame.new(goal)*root.CFrame.Rotation})
+						self.tween = tween
+						tween:Play()
+						lastGoal, lastSpeed = goal, speed
+					end
+				else
+					self:CancelMovement()
+					smoothMovement:MoveTo(position)
+				end
+			end
+			if not RunService.Heartbeat:Wait() then break end
+		end
+		entry.done = true
+		return true
+	end, debug.traceback)
+	self:CancelMovement()
+	if entry.done then self.target = nil end
+	if not ok then self.target = nil; error(result,0) end
+	return result
+end
+
+smoothMovement.showerController = showerController
 
 local dupedTokenPolicy = {catalog = {}}
 
@@ -5689,6 +5828,7 @@ do
 			if elapsed < 0.25 or not tracked then return end
 			elapsed = 0
 			local now = os.clock()
+			showerController:Prune(now)
 			for key, flame in pairs(tracked.flames) do
 				if type(flame) == "table" and flame.ExpiresAt then
 					local remaining = flame.ExpiresAt - now
@@ -6043,6 +6183,7 @@ do
 
 			if n.Size.X < 10 and cfg.autofarm.farmshowers then
 				tracked.showers[n] = os.time()
+				showerController:Observe(n, 1.9)
 			elseif n.Size.X > 38 then
 				tracked.crabcoconuts[n] = os.time()
 
@@ -6127,6 +6268,7 @@ do
 
 			if n.Size.X < 10 then
 				tracked.showers[n] = nil
+				showerController:Forget(n)
 			elseif n.Size.X > 38 then
 				tracked.crabcoconuts[n] = nil
 			elseif n.Size.X > 20 and n.Size.X < 40 then
@@ -42076,6 +42218,7 @@ do
 								tracked.showers[showerEntry] = true
 
 								showerEntry.ExpiresAt = os.clock() + 2
+								showerController:Observe(showerEntry, 1.9)
 							elseif not (effectName ~= "LocalFlames" or effectData.A ~= "N" or effectData.PID ~= localPlayer.UserId) then
 								local lifetime = math.max(0, tonumber(effectData.T) or 0)
 								local flame = tracked.flames[effectData.P]
@@ -45967,6 +46110,11 @@ function gatheringPriorities:Candidate(category, opts, rootPosition)
 		if bloom then return "Bloom", bloom.v end
 		return
 	end
+	if category == "Showers" then
+		local shower = showerController:Select(opts, rootPosition)
+		if shower then return "Shower", shower end
+		return
+	end
 	if category == "Precise Targets" then return self:Precise(opts) end
 	if category == "Triangulate" then
 		for _ in pairs(tracked.triangulate) do return "Triangulate" end
@@ -47579,33 +47727,8 @@ end
 				end
 
 				if not opts.nowait and autofarm.farmshowers then
-					if not cfg.detected.fastshowertween then
-						for k, shower in pairs(tracked.showers) do
-							showerWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
-							start = k.Name == true and k.Start or shower
-							showerArrival = os.time() + showerWalkTime
-
-							if showerArrival < start + 1.9 then
-								showerScore = start + showerWalkTime + (start + 1.9 - showerArrival)
-
-								if (not bestTarget or showerScore < bestTarget.score) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-									bestTarget = { v = k, score = showerScore }
-								end
-							end
-						end
-					else
-						for k in pairs(tracked.showers) do
-							start2 = k.Name == true and k.Start or k.Transparency
-
-							if (not bestTarget or start2 < bestTarget.t) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-								bestTarget = { t = start2, v = k }
-							end
-						end
-					end
-
-					if bestTarget then
-						return "Shower", bestTarget.v
-					end
+					local shower = showerController:Select(opts, getRootPart().Position)
+					if shower then return "Shower", shower end
 				end
 
 				if not (not bestPrecise or not (bestPrecise.name == "Precise" or not not (preciseCount > 2))) then
@@ -48990,33 +49113,8 @@ end
 						end
 
 						if not opts.nowait and autofarm.farmshowers then
-							if not cfg.detected.fastshowertween then
-								for k, shower in pairs(tracked.showers) do
-									showerWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
-									start = k.Name == true and k.Start or shower
-									showerArrival = os.time() + showerWalkTime
-
-									if showerArrival < start + 1.9 then
-										showerScore = start + showerWalkTime + (start + 1.9 - showerArrival)
-
-										if (not bestTarget or showerScore < bestTarget.score) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-											bestTarget = { v = k, score = showerScore }
-										end
-									end
-								end
-							else
-								for k in pairs(tracked.showers) do
-									start2 = k.Name == true and k.Start or k.Transparency
-
-									if (not bestTarget or start2 < bestTarget.t) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-										bestTarget = { t = start2, v = k }
-									end
-								end
-							end
-
-							if bestTarget then
-								return "Shower", bestTarget.v
-							end
+							local shower = showerController:Select(opts, getRootPart().Position)
+							if shower then return "Shower", shower end
 						end
 
 						if not (not bestPrecise or not (bestPrecise.name == "Precise" or not not (preciseCount > 2))) then
@@ -50418,33 +50516,8 @@ end
 			end
 
 			if not opts.nowait and autofarm.farmshowers then
-				if not cfg.detected.fastshowertween then
-					for k, shower in pairs(tracked.showers) do
-						showerWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
-						start = k.Name == true and k.Start or shower
-						showerArrival = os.time() + showerWalkTime
-
-						if showerArrival < start + 1.9 then
-							showerScore = start + showerWalkTime + (start + 1.9 - showerArrival)
-
-							if (not bestTarget or showerScore < bestTarget.score) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-								bestTarget = { v = k, score = showerScore }
-							end
-						end
-					end
-				else
-					for k in pairs(tracked.showers) do
-						start2 = k.Name == true and k.Start or k.Transparency
-
-						if (not bestTarget or start2 < bestTarget.t) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
-							bestTarget = { t = start2, v = k }
-						end
-					end
-				end
-
-				if bestTarget then
-					return "Shower", bestTarget.v
-				end
+				local shower = showerController:Select(opts, getRootPart().Position)
+				if shower then return "Shower", shower end
 			end
 
 			if not (not bestPrecise or not (bestPrecise.name == "Precise" or not not (preciseCount > 2))) then
@@ -52266,7 +52339,7 @@ end
 			end
 
 			if targetKind == "Shower" then
-				return collectObject(targetObject, "showers", 5, true, nil, cfg.detected.fastshowertween)
+				return showerController:Collect(targetObject, options)
 			end
 
 			if targetKind == "Combo Coconut" then
@@ -64671,6 +64744,7 @@ end
 end
 
 ScreenGui.Destroying:Connect(function()
+	showerController:Reset()
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
 	smoothMovement:Reset()
@@ -65328,7 +65402,12 @@ which bees and get all 3 targets if
 					end
 				end, "autofarm", "farmpuppyball")
 
-				farmFolder.AddSwitch("Farm Showers", nil, "autofarm", "farmshowers")
+				farmFolder.AddSwitch("Farm Showers", function(enabled)
+					if not enabled then showerController:Reset() end
+				end, "autofarm", "farmshowers")
+				farmFolder.AddSwitch("Dynamic Shower Speed", nil, "autofarm", "dynamicshowerspeed")
+				farmFolder.AddSlider("Shower Speed Cap", nil, 40, 400, "autofarm", "showerspeedcap", {Left=true})
+				farmFolder.AddLabel("Dynamic speed applies to Fast Shower Tween")
 				farmFolder.AddSwitch("Farm Triangulate", nil, "autofarm", "farmtriangulate")
 
 				farmFolder.AddSwitch("Farm Under Clouds", function(n)
@@ -68173,6 +68252,9 @@ Are you sure you want to enable it?]])
 				local now2 = nil
 
 				local function flyTo(target, trackedCategory)
+					if trackedCategory == "showers" then
+						return showerController:Collect(target, {ignorefield=true, showerfield=getFieldAt(getRootPart().Position)})
+					end
 					local now3, reachedNear = os.clock()
 					local rootPart = getRootPart()
 					local humanoid = getHumanoid()
@@ -68284,18 +68366,11 @@ Are you sure you want to enable it?]])
 										end
 									end
 
-									if not flying and not (not cfg.detected.fastshowertween or not cfg.autofarm.farmshowers) then
-										for k in pairs(tracked.showers) do
-											local start = k.Name == true and k.Start or k.Transparency
-
-											if (not nearest or start < nearest.t) and getFieldAt(k.Position) == field then
-												nearest = { t = start, v = k }
-											end
-										end
-
-										if nearest then
+									if not flying and cfg.detected.fastshowertween and cfg.autofarm.farmshowers then
+										local shower = showerController:Select({ignorefield=true, showerfield=field}, getRootPart().Position)
+										if shower then
 											flying = true
-											flyTo(nearest.v, "showers")
+											flyTo(shower, "showers")
 										end
 									end
 
