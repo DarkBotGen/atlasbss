@@ -130,6 +130,7 @@ end
 
 local cfg = {
 	prioritization = { enabled = true, order = {} },
+	coconutteam = {enabled=false,fast=false,url="",key="",main="None",alt1="None",alt2="None",catcher1="None",catcher2="None",catcher3="None",field="",maxspeed=120},
 	vars = {
 		walkspeedenabled = false,
 		walkspeed = 45,
@@ -1476,9 +1477,10 @@ end
 
 threads.Add = function(manager, threadId, callback, delaySeconds, ...)
 	if manager.closed then return end
-	local exclusive = smoothMovement.showerController
+	local exclusive = (smoothMovement.comboController and smoothMovement.comboController.active and smoothMovement.comboController) or smoothMovement.showerController
 	if exclusive and exclusive.active and exclusive:IsMovementJob(threadId) then
-		exclusive.paused[threadId] = {callback=callback,args=table.pack(...),delaySeconds=delaySeconds}
+		local pending = exclusive.paused or smoothMovement.showerController.paused
+		pending[threadId] = {callback=callback,args=table.pack(...),delaySeconds=delaySeconds}
 		return
 	end
 	manager:Cancel(threadId)
@@ -1833,6 +1835,321 @@ function showerController:CreateMovementTween(root, info, properties)
 end
 
 smoothMovement.showerController = showerController
+
+-- Atlas+ combo movement and team client. One bounded observation set and one HTTP worker.
+local comboController = {records={}, byKey={}, jobs={}, seq=0, generation=0, active=false, status="Disabled"}
+smoothMovement.comboController = comboController
+
+function comboController:Managed()
+	return cfg.coconutteam.enabled or cfg.coconutteam.fast
+end
+
+function comboController:Role()
+	local c, name = cfg.coconutteam, string.lower(localPlayer.Name)
+	if name == string.lower(c.main) then return "main" end
+	if name == string.lower(c.alt1) or name == string.lower(c.alt2) then return "alt" end
+	for _, key in ipairs({"catcher1","catcher2","catcher3"}) do
+		if name == string.lower(c[key]) then return "catcher" end
+	end
+end
+
+function comboController:Owner(value)
+	if typeof(value) == "Instance" and value:IsA("Player") then return value.Name end
+	if type(value) == "string" and not tonumber(value) then return value end
+	local id = tonumber(value)
+	if id then
+		for _, player in ipairs(getService("Players"):GetPlayers()) do
+			if player.UserId == id then return player.Name end
+		end
+	end
+end
+
+function comboController:Observe(effectName, data)
+	if not self:Managed() or effectName ~= "FallingCoconut" or not data.Combo or not data.Friendly then return end
+	if typeof(data.Pos) ~= "Vector3" then return end
+	local dur = tonumber(data.Dur)
+	if not dur or dur ~= dur or dur <= 0 or dur > 12 then return end
+	local owner = self:Owner(data.Owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
+	local now = os.clock()
+	local field = getFieldAt(data.Pos)
+	-- Positions and expiry are available in the existing FX stream even with Hide Particles off.
+	-- Ownership is retained only when an actual player identifier is exposed by that stream.
+	local key = string.format("%s:%.1f:%.1f:%.1f:%s",string.lower(owner or "unknown"),data.Pos.X,data.Pos.Y,data.Pos.Z,tostring(data.ID or data.FEID or data.Points or 0))
+	local old = self.byKey[key]
+	if old and old.deadline > now then return end
+	if #self.records >= 32 then return end
+	local record = {key=key, owner=owner, position=data.Pos, deadline=now+dur, points=tonumber(data.Points) or 0,
+		field=field and field.Name or "", seen=now}
+	self.byKey[key]=record
+	self.records[#self.records+1]=record
+	self.lastOwner = owner or "Unknown (team catches paused for this coconut)"
+end
+
+function comboController:Available()
+	if self.closed or state.stop or showerController.active then return false end
+	local char = localPlayer.Character
+	local h = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not h or not root or h.Health <= 0 then return false end
+	if cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
+	if cfg.coconutteam.enabled then
+		local role = self:Role()
+		if not role or (role == "catcher" and not cfg.coconutteam.fast) then return false end
+		if role ~= "catcher" and not cfg.autofarm.enabled then return false end
+	end
+	return true, h, root
+end
+
+function comboController:IsMovementJob(id)
+	return showerController:IsMovementJob(id)
+end
+
+function comboController:Finish(reason)
+	local session = self.session
+	if not session then return end
+	self.session, self.active = nil, false
+	RunService:UnbindFromRenderStep("AtlasComboMovement")
+	local env = type(getgenv)=="function" and getgenv() or _G
+	if env[session.leaseKey] == session.lease then env[session.leaseKey] = session.previousLease end
+	pcall(function()
+		session.h:Move(Vector3.zero,false)
+		session.h.WalkSpeed=session.originalSpeed
+		session.root.AssemblyLinearVelocity=Vector3.zero
+	end)
+	if session.controls and session.restoreControls then pcall(function()session.controls:Enable()end) end
+	self.status=reason or "Waiting for combo"
+	showerController:ResumeOthers()
+end
+
+function comboController:Begin(job, h, root)
+	if self.session and self.session.key == job.key then return self.session end
+	self:Finish("Changing combo landing")
+	if showerController.active or self.closed then return end
+	local env = type(getgenv)=="function" and getgenv() or _G
+	local key = "AtlasTemporaryPMS_" .. localPlayer.UserId
+	local s = {key=job.key,h=h,root=root,originalSpeed=h.WalkSpeed,leaseKey=key,lease={},previousLease=env[key],direction=Vector3.zero,speed=0}
+	pcall(function()
+		local module=localPlayer.PlayerScripts:FindFirstChild("PlayerModule")
+		if module then s.controls=require(module):GetControls();s.restoreControls=s.controls.controlsEnabled~=false;s.controls:Disable() end
+	end)
+	self.session,self.active=s,true
+	showerController:PauseOthers()
+	RunService:BindToRenderStep("AtlasComboMovement",Enum.RenderPriority.Character.Value+1,function()
+		if self.session~=s then return end
+		if not self:Available() or not s.root.Parent then self:Finish("Combo movement interrupted");return end
+		s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
+		env[key]=s.lease
+		s.h.WalkSpeed=s.speed
+		s.h:Move(s.direction,false)
+	end)
+	return s
+end
+
+function comboController:Tick()
+	local now=os.clock()
+	for i=#self.records,1,-1 do
+		local r=self.records[i]
+		if now>r.deadline+0.25 then
+			if self.byKey[r.key]==r then self.byKey[r.key]=nil end
+			table.remove(self.records,i)
+		end
+	end
+	if not self:Managed() then self:Finish("Disabled");return end
+	local available,h,root=self:Available()
+	if not available then self:Finish("Busy with another activity");return end
+	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
+	local job
+	if cfg.coconutteam.enabled then
+		for _, candidate in ipairs(self.jobs) do
+			if candidate.deadline>now and candidate.leaseUntil>now then job=candidate;break end
+		end
+	else
+		-- Independent outside-field mode has no ownership rotation and needs no coordinator.
+		local home=cfg.coconutteam.field~="" and cfg.coconutteam.field or cfg.autofarm.field1
+		for _, r in ipairs(self.records) do
+			if r.field~=home and r.deadline>now and math.abs(r.position.Y-root.Position.Y)<=12 then
+				local d=(Vector3.new(r.position.X,root.Position.Y,r.position.Z)-root.Position).Magnitude
+				if math.max(0,d-5)/cfg.coconutteam.maxspeed+0.12<r.deadline-now then
+					if not job or r.deadline<job.deadline then job=r end
+				end
+			end
+		end
+	end
+	if not job then self:Finish(cfg.coconutteam.enabled and "Waiting for assignment" or "Waiting for outside-field combo");return end
+	local s=self:Begin(job,h,root)
+	if not s then return end
+	local delta=Vector3.new(job.position.X-root.Position.X,0,job.position.Z-root.Position.Z)
+	local d=delta.Magnitude
+	local lead=0.15
+	local ok,ping=pcall(function()return getService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()end)
+	if ok and type(ping)=="number" and ping>=0 and ping<1000 then lead=math.clamp(ping*0.002,0.1,0.4) end
+	-- Shower-style continuous Move + dynamic WalkSpeed, using the coconut's own expiry.
+	-- No tween, CFrame teleport, density change, or invented fixed shower lifetime.
+	local travelTime=math.max(0.05,job.deadline-now-lead)
+	s.speed=d>0.5 and math.clamp(d/travelTime,math.min(s.originalSpeed,cfg.coconutteam.maxspeed),cfg.coconutteam.maxspeed) or 0
+	s.direction=d>0.5 and delta.Unit or Vector3.zero
+	if d<=0.5 then
+		local v=root.AssemblyLinearVelocity
+		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
+	end
+	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
+end
+
+function comboController:Roster()
+	local c=cfg.coconutteam
+	local catchers={}
+	for _,key in ipairs({"catcher1","catcher2","catcher3"}) do if c[key]~="" and c[key]~="None" then catchers[#catchers+1]=c[key] end end
+	return {main=c.main,alts={c.alt1,c.alt2},catchers=catchers,field=c.field~="" and c.field or cfg.autofarm.field1}
+end
+
+function comboController:Sync()
+	local c=cfg.coconutteam
+	if c.url=="" or c.key=="" then self.status="Paste the launcher's connection code";return false end
+	local available,h,root=self:Available()
+	local char=localPlayer.Character
+	root=root or (char and char:FindFirstChild("HumanoidRootPart"))
+	h=h or (char and char:FindFirstChildOfClass("Humanoid"))
+	if not root or not h then return false end
+	local started=os.clock()
+	local list={}
+	for _,r in ipairs(self.records) do
+		if r.owner and r.deadline>started then
+			list[#list+1]={key=r.key,owner=r.owner,pos={r.position.X,r.position.Y,r.position.Z},ttl=r.deadline-started-math.min((self.roundTrip or 0.2)/2,1),points=r.points,field=r.field}
+		end
+	end
+	self.seq+=1
+	local speed=self.session and c.maxspeed or math.max(h.WalkSpeed,c.maxspeed)
+	local payload={username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
+		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available,
+		roster=self:Roster(),targets=list}
+	local generation=self.generation
+	local ok,response=pcall(http_request,{Url=c.url.."/v1/sync",Method="POST",Headers={["Content-Type"]="application/json",Authorization="Bearer "..c.key},Body=HttpService:JSONEncode(payload),Timeout=3})
+	if generation~=self.generation or self.closed or not c.enabled then return false end
+	local elapsed=os.clock()-started
+	if not ok or not response or response.StatusCode~=200 then
+		self.jobs={};self.status="Coordinator unavailable; team catches paused"
+		if ok and response and response.StatusCode==400 then
+			local parsed,problem=pcall(HttpService.JSONDecode,HttpService,response.Body)
+			if parsed and type(problem)=="table" and type(problem.error)=="string" then self.status=problem.error end
+		elseif ok and response and response.StatusCode==401 then self.status="Connection code rejected; paste the current launcher code" end
+		return false
+	end
+	local decoded,data=pcall(HttpService.JSONDecode,HttpService,response.Body)
+	if not decoded or type(data)~="table" or not data.ok or type(data.jobs)~="table" then
+		self.jobs={};self.status=type(data)=="table" and (data.message or "Coordinator rejected settings") or "Invalid coordinator reply";return false
+	end
+	local jobs={}
+	for _,j in ipairs(data.jobs) do
+		if #jobs>=1 then break end
+		if type(j.pos)=="table" and #j.pos==3 and type(j.ttl)=="number" and type(j.lease)=="number"
+			and type(j.pos[1])=="number" and type(j.pos[2])=="number" and type(j.pos[3])=="number" then
+			local ttl=math.min(j.ttl,12)-elapsed
+			local lease=math.min(j.lease,0.65)-elapsed
+			if ttl>0 and lease>0 then
+				jobs[#jobs+1]={key=j.key,owner=j.owner,position=Vector3.new(table.unpack(j.pos)),deadline=os.clock()+ttl,leaseUntil=os.clock()+lease}
+			end
+		end
+	end
+	self.jobs=jobs
+	self.status=data.message or "Connected"
+	self.roundTrip=elapsed
+	return true
+end
+
+function comboController:Configure()
+	self.generation+=1
+	self:Finish("Settings changed")
+	table.clear(self.jobs)
+	threads:Cancel("comboTeamSync")
+	if self:Managed() and self.installObserver then self:installObserver() end
+	if not cfg.coconutteam.enabled or self.closed then return end
+	threads:Add("comboTeamSync",function()
+		local failures=0
+		while not self.closed and cfg.coconutteam.enabled do
+			local ok,result=pcall(function()return self:Sync()end)
+			if ok and result then failures=0 else failures=math.min(failures+1,4);self.jobs={} end
+			task.wait(failures==0 and 0.15 or math.min(4,0.5*2^(failures-1)))
+		end
+	end)
+end
+
+function comboController:Start()
+	if self.started then return end
+	self.started=true
+	self.sessionId=HttpService:GenerateGUID(false)
+	local fx=gameApi.Events and gameApi.Events:FindFirstChild("LocalFX")
+	if fx and fx:IsA("RemoteEvent") then
+		connections:Add("comboTeamFX",fx.OnClientEvent:Connect(function(name,data)
+			if type(data)=="table" then pcall(function()self:Observe(name,data)end) end
+		end))
+		self.observesRemote=true
+	end
+	local elapsed=0
+	connections:Add("comboTeamTick",RunService.Heartbeat:Connect(function(dt)
+		elapsed+=dt
+		if elapsed<0.03 then return end
+		elapsed=0
+		local ok,err=pcall(function()self:Tick()end)
+		if not ok then self:Finish("Combo movement stopped by error");self.status=tostring(err) end
+		if self.statusLabel then self.statusLabel.Text="Team: "..self.status end
+		if self.ownerLabel then self.ownerLabel.Text="Last combo owner: "..(self.lastOwner or "waiting for a new combo") end
+	end))
+	self:Configure()
+end
+
+function comboController:Shutdown()
+	self.closed=true
+	self.generation+=1
+	threads:Cancel("comboTeamSync")
+	connections:Cancel("comboTeamTick")
+	connections:Cancel("comboTeamFX")
+	self:Finish("Unloaded")
+	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs)
+end
+
+function comboController:BuildMenu(tab)
+	local folder=tab.AddFolder("Coconut Team")
+	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
+	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
+	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
+	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
+	local names={"None"}
+	for _,p in ipairs(getService("Players"):GetPlayers())do names[#names+1]=p.Name end
+	local selectors={}
+	for _,entry in ipairs({{"Main Account","main"},{"Spawning Alt 1","alt1"},{"Spawning Alt 2","alt2"},{"Outside Catcher 1","catcher1"},{"Outside Catcher 2","catcher2"},{"Outside Catcher 3","catcher3"}})do
+		selectors[entry[2]]=folder.AddDropdown(entry[1],names,nil,function()self:Configure()end,"coconutteam",entry[2])
+	end
+	local fieldSelector=folder.AddDropdown("Team Field",availableFields,true,function()self:Configure()end,"coconutteam","field",{Field=true})
+	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,180,"coconutteam","maxspeed",{Left=true})
+	folder.AddTextBox("Paste Connection / Team Code",function(text)
+		local ok,code=pcall(HttpService.JSONDecode,HttpService,text)
+		if not ok or type(code)~="table" or type(code.url)~="string" or type(code.key)~="string"
+			or #code.key<32 or #code.key>128 or not (string.match(code.url,"^https://[%w%.%-]+:?%d*$") or string.match(code.url,"^http://127%.0%.0%.1:%d+$")) then
+			ui.Notify("Coconut Team","Invalid connection code");return
+		end
+		cfg.coconutteam.url,cfg.coconutteam.key=code.url,code.key
+		for _,key in ipairs({"main","alt1","alt2","catcher1","catcher2","catcher3"})do
+			if type(code[key])=="string" and #code[key]<=20 then
+				cfg.coconutteam[key]=code[key]
+				selectors[key].Add(code[key]);selectors[key].SetValue(code[key])
+			end
+		end
+		if type(code.field)=="string" and availableFields[code.field] then cfg.coconutteam.field=code.field;fieldSelector.SetValue(code.field) end
+		saveConfig();self:Configure();ui.Notify("Coconut Team","Connection and account settings saved")
+	end)
+	folder.AddButton("Copy Team Code",function()
+		local c=cfg.coconutteam
+		local copy=setclipboard or toclipboard
+		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
+		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field}))
+		ui.Notify("Coconut Team","Paste this code into each team account")
+	end)
+	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
+	self.statusLabel=folder.AddLabel("Team: Disabled")
+	self.ownerLabel=folder.AddLabel("Last combo owner: waiting for a new combo")
+	folder.AddLabel("One launcher for all computers. All accounts must be in the same Roblox server.")
+	folder.Toggle(true,true)
+end
 
 local dupedTokenPolicy = {catalog = {}}
 
@@ -42163,6 +42480,7 @@ do
 		},
 		list = {},
 		LocalFX = function(owner, effectName, effectData)
+			if not comboController.observesRemote then comboController:Observe(effectName, effectData) end
 			if effectName == "StarShowerGuide" or effectName == "FallingStar" or effectName == "BeesmasLightsFallingStar" then return true end
 			if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Make" or effectData.Player ~= localPlayer then
 				if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Touch" then
@@ -46075,6 +46393,7 @@ function gatheringPriorities:Enabled(category, opts)
 end
 
 function gatheringPriorities:Candidate(category, opts, rootPosition)
+	if category == "Combo Coconuts" and comboController:Managed() then return end
 	if not self:Enabled(category, opts) then return end
 	if category == "Petals" then
 		local petal = self.petals:Select(opts, rootPosition)
@@ -47180,6 +47499,7 @@ end
 				end
 
 				for k in pairs(tracked.combococonuts) do
+				if comboController:Managed() then break end
 					local comboDistance
 
 					if opts.ignorefield then
@@ -50368,6 +50688,7 @@ end
 			end
 
 			for k in pairs(tracked.combococonuts) do
+				if comboController:Managed() then break end
 				if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 					local distance = distanceTo(k.Position, true)
 
@@ -64540,6 +64861,7 @@ end
 
 			if not (not autofarm.farmcombococonuts or not autofarm.combofield) then
 				for k in pairs(tracked.combococonuts) do
+				if comboController:Managed() then break end
 					if (k.Name == true and k.Points or tonumber(string.match(k.GuiAttach.Gui.TextLabel.Text, "%d+")) or 0) > 0 then
 						state.combococonut = os.clock()
 						break
@@ -65008,6 +65330,7 @@ end
 local function releasePassive() end
 local function begin(g)
  if session or not bridge.allowed() then return end
+ comboController:Finish("Yielding to Star Shower")
  releasePassive()
  local char,h,root=atRoot();if not h or not root or h.Health<=0 then return end
  if not controls then
@@ -65332,6 +65655,8 @@ end
 end
 
 ScreenGui.Destroying:Connect(function()
+	showerController.shuttingDown = true
+	comboController:Shutdown()
 	showerController:Shutdown()
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
@@ -68930,6 +69255,7 @@ Are you sure you want to enable it?]])
 
 										if ok then
 											for k in pairs(tracked.combococonuts) do
+				if comboController:Managed() then break end
 												if getFieldAt(k.Position) == field then
 													local distance = distanceTo(k.Position, true)
 
@@ -69039,7 +69365,25 @@ Are you sure you want to enable it?]])
 				detectedFolder.Toggle(true, true)
 			end
 
+			comboController.installObserver=function(self)
+				if self.observesRemote or self.observerInstalled then return end
+				local ok=pcall(function()
+					local fn=require(ReplicatedStorage.LocalFX).ClientRun
+					if not isfunctionhooked(fn) then
+						local original
+						original=hookfunction(fn,newcclosure(function(name,data,...)
+							if type(data)=="table" and self:Managed() then pcall(function()self:Observe(name,data)end) end
+							return original(name,data,...)
+						end))
+						tokenFilter.list[fn]=true
+					end
+					self.observerInstalled=true
+				end)
+				if not ok then self.status="Combo FX observer unavailable" end
+			end
+			comboController:BuildMenu(farming)
 			showerController:Start()
+			comboController:Start()
 			return
 		end
 	end
