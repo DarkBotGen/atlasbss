@@ -1560,7 +1560,7 @@ end)()))
 
 -- Visual-only optimization. Never destroy or reparent game-owned objects.
 local visualOptimizer = {
-	modes = {}, originals = setmetatable({}, {__mode="k"}),
+	modes = {}, originals = {},
 	decorative = {Map=true,Decorations=true,FieldDecos=true,Amulets=true,["Shell Amulets"]=true,
 		["Stickbug Amulets"]=true,Campsite=true,Leaderboards=true,HiveDeco=true,
 		TheGames_WideBanners=true},
@@ -1583,6 +1583,15 @@ function visualOptimizer:Restore()
 		for property, value in pairs(properties) do pcall(function() object[property]=value end) end
 	end
 	table.clear(self.originals)
+end
+
+-- Explicit lifetime: weak Instance keys can disappear before restoration, and
+-- removed objects must not leave saved-property records behind.
+function visualOptimizer:Release(object)
+	local properties = self.originals[object]
+	if not properties then return end
+	self.originals[object] = nil
+	for property, value in pairs(properties) do pcall(function() object[property]=value end) end
 end
 
 function visualOptimizer:Apply(object)
@@ -1645,6 +1654,8 @@ function visualOptimizer:Set(mode, enabled)
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
 	connections:Cancel("visualOptimizerLighting")
+	connections:Cancel("visualOptimizerWorkspaceRemoving")
+	connections:Cancel("visualOptimizerLightingRemoving")
 	self:Restore()
 	local active=false
 	for _, on in pairs(self.modes) do if on then active=true;break end end
@@ -1658,11 +1669,15 @@ function visualOptimizer:Set(mode, enabled)
 	end
 	connections:Add("visualOptimizerWorkspace",workspace.DescendantAdded:Connect(function(object) self:Apply(object) end))
 	connections:Add("visualOptimizerLighting",Lighting.DescendantAdded:Connect(function(object) self:Apply(object) end))
+	connections:Add("visualOptimizerWorkspaceRemoving",workspace.DescendantRemoving:Connect(function(object) self:Release(object) end))
+	connections:Add("visualOptimizerLightingRemoving",Lighting.DescendantRemoving:Connect(function(object) self:Release(object) end))
 	threads:Add("visualOptimizerScan",function()
 		for _, root in ipairs({workspace,Lighting}) do
 			local objects=root:GetDescendants()
-			for i, object in ipairs(objects) do
-				self:Apply(object)
+			for i = 1, #objects do
+				local object = objects[i]
+				if object:IsDescendantOf(root) then self:Apply(object) end
+				objects[i] = nil -- Release processed references before yielding.
 				if i%150==0 then task.wait() end
 			end
 		end
@@ -1673,6 +1688,8 @@ function visualOptimizer:Shutdown()
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
 	connections:Cancel("visualOptimizerLighting")
+	connections:Cancel("visualOptimizerWorkspaceRemoving")
+	connections:Cancel("visualOptimizerLightingRemoving")
 	self:Restore()
 	table.clear(self.modes)
 end
@@ -2468,7 +2485,7 @@ do
 					if #v77 >= 200 then table.remove(v77, 1) end
 					insert(v77, logEntry)
 
-					if not now or os.clock() - now >= 40 then
+					if (not now or os.clock() - now >= 40) and not threads:Get("dashboardLogSend") then
 						local batch = table.clone(pendingLogs)
 						table.clear(pendingLogs)
 						now = os.clock()
@@ -2484,7 +2501,7 @@ do
 
 						threadCount += 1
 
-						threads:Add(threadCount, function()
+						threads:Add("dashboardLogSend", function()
 							httprequest({
 								Headers = { ["Content-Type"] = "application/json", ["X-API-Key"] = cfg.webhook.key },
 								Method = "POST",
@@ -2499,14 +2516,15 @@ do
 					local oldestLabel = table.remove(consoleLabels, 1)
 
 					if not state.disconnect and not (not cfg.webhook.enabled or not cfg.webhook.console or cfg.webhook.url == "") then
+						if #consoleLines >= 20 then table.remove(consoleLines, 1) end
 						table.insert(consoleLines, oldestLabel.Text)
 
-						if #consoleLines >= 20 then
+						if #consoleLines >= 20 and not threads:Get("consoleLogSend") then
 							local linesCopy = table.clone(consoleLines)
 							table.clear(consoleLines)
 							threadCount += 1
 
-							threads:Add(threadCount, function()
+							threads:Add("consoleLogSend", function()
 								discord.Send("Atlas Console", "```" .. table.concat(linesCopy, "\n") .. "```", true)
 							end)
 						end
@@ -5662,6 +5680,9 @@ do
 
 	connections:Add("runtimeCacheMaintenance", RunService.Heartbeat:Connect((function()
 		local elapsed, pruneElapsed = 0, 0
+		local expiryGroups = {"tokens", "tokenlink", "dupedbear", "dupedsmiley", "dupedtokens",
+			"precise2", "bubbles", "cogsaws", "showers", "meteors", "petals", "coconuts", "crabcoconuts", "combococonuts"}
+		local alertGroups = {"corruptedfield", "gummybeacon"}
 		return function(dt)
 			elapsed += dt
 			pruneElapsed += dt
@@ -5678,8 +5699,35 @@ do
 					end
 				end
 			end
+			-- Synthetic entries may be keys (tokens) or values (dupes/bubbles).
+			for _, name in ipairs(expiryGroups) do
+				local list = tracked[name]
+				if list then
+					for key, value in pairs(list) do
+						local entry = type(key) == "table" and key or type(value) == "table" and value
+						if entry and entry.ExpiresAt and now >= entry.ExpiresAt then
+							list[key] = nil
+							if name == "precise2" then tracked.precisegroup[key] = nil end
+						end
+					end
+				end
+			end
+			-- Collection can remove a target before expiry; its group must go too.
+			for id in pairs(tracked.precisegroup or {}) do
+				if not tracked.precise2[id] then tracked.precisegroup[id] = nil end
+			end
+			for _, name in ipairs(alertGroups) do
+				local expires = tracked[name .. "ExpiresAt"]
+				if expires and now >= expires then
+					tracked[name], tracked[name .. "ExpiresAt"] = nil, nil
+				end
+			end
 			if pruneElapsed < 5 then return end
 			pruneElapsed = 0
+			for i = #(tracked.planters or {}), 1, -1 do
+				local planter = tracked.planters[i]
+				if planter.instance and not planter.instance.Parent then table.remove(tracked.planters, i) end
+			end
 			for _, list in pairs(tracked) do
 				if type(list) == "table" then
 					for key in pairs(list) do
@@ -5772,6 +5820,7 @@ do
 				local textLabel = child["Gui Attach"]["Planter Gui"].Bar.TextLabel
 
 				table.insert(tracked.planters, {
+					instance = child,
 					field = getFieldAt(child.Position).Name,
 					position = child.Position,
 					name = string.match(textLabel.Text, "(.+)%s%("),
@@ -5784,17 +5833,8 @@ do
 	end))
 
 	connections:Add("planters2", workspace.Planters.ChildRemoved:Connect(function(child)
-		if child.Name == "PlanterBulb" then
-			if child:FindFirstChild("Gui Attach") then
-				local planterName = string.match(child["Gui Attach"]["Planter Gui"].Bar.TextLabel.Text, "(.+)%s%(")
-
-				for i, planter in ipairs(tracked.planters) do
-					if planter.name == planterName then
-						table.remove(tracked.planters, i)
-						break
-					end
-				end
-			end
+		for i = #tracked.planters, 1, -1 do
+			if tracked.planters[i].instance == child then table.remove(tracked.planters, i) end
 		end
 	end))
 
@@ -5805,6 +5845,7 @@ do
 
 			if field then
 				table.insert(tracked.planters, {
+					instance = child,
 					field = field.Name,
 					position = child.Position,
 					name = string.match(textLabel.Text, "(.+)%s%("),
@@ -6329,11 +6370,7 @@ do
 
 							if match then
 								tracked.corruptedfield = match
-								task.wait(240)
-
-								if tracked then
-									tracked.corruptedfield = nil
-								end
+								tracked.corruptedfieldExpiresAt = os.clock() + 240
 							end
 						elseif string.find(text, "The dice boosted") then
 							firstDiceField = findMatch(availableFields, text, true)
@@ -6393,11 +6430,7 @@ do
 
 						if match then
 							tracked.gummybeacon = match
-							task.wait(62)
-
-							if not (not tracked or tracked.gummybeacon ~= match) then
-								tracked.gummybeacon = nil
-							end
+							tracked.gummybeaconExpiresAt = os.clock() + 62
 						end
 					end
 				else
@@ -42018,14 +42051,9 @@ do
 
 					if effectName == "CogSawProjectile" then
 						local sawEntry = { Start = effectData.Pos1, End = effectData.Pos2 }
-						threadCount += 1
 						tracked.cogsaws[sawEntry] = true
 
-						threads:Delay(threadCount, effectData.EndTime - workspace.ServerTime.Value, function()
-							if tracked then
-								tracked.cogsaws[sawEntry] = nil
-							end
-						end)
+						sawEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.EndTime - workspace.ServerTime.Value) or 0)
 
 						return true
 					end
@@ -42037,27 +42065,17 @@ do
 
 						if not (effectName ~= "Bubble" or effectData.Action ~= "Spawn") then
 							local bubbleEntry = { Name = true, ID = effectData.ID, Position = effectData.Pos, Gold = effectData.Gold }
-							threadCount += 1
 							tracked.bubbles[effectData.ID] = bubbleEntry
 
-							threads:Delay(threadCount, effectData.Dur, function()
-								if tracked then
-									tracked.bubbles[effectData.ID] = nil
-								end
-							end)
+							bubbleEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.Dur) or 0)
 						elseif not (effectName ~= "Bubble" or effectData.Action ~= "Pop") then
 							tracked.bubbles[effectData.ID] = nil
 						elseif effectName ~= "FallingCoconut" or effectData.Target ~= localPlayer and not effectData.Combo then
 							if (effectName == "FallingStar" or effectName == "BeesmasLightsFallingStar") and effectData.Target == localPlayer then
 								local showerEntry = { Name = true, Position = effectData.Pos, Start = os.time() }
-								threadCount += 1
 								tracked.showers[showerEntry] = true
 
-								threads:Delay(threadCount, 2, function()
-									if tracked then
-										tracked.showers[showerEntry] = nil
-									end
-								end)
+								showerEntry.ExpiresAt = os.clock() + 2
 							elseif not (effectName ~= "LocalFlames" or effectData.A ~= "N" or effectData.PID ~= localPlayer.UserId) then
 								local lifetime = math.max(0, tonumber(effectData.T) or 0)
 								local flame = tracked.flames[effectData.P]
@@ -42071,14 +42089,9 @@ do
 								flame.Dark = effectData.D
 							elseif effectName == "MythicMeteor" then
 								local meteorEntry = { Name = true, Position = effectData.Pos, Size = Vector2.new(effectData.Radius, 0) }
-								threadCount += 1
 								tracked.meteors[meteorEntry] = true
 
-								threads:Delay(threadCount, effectData.FallDuration, function()
-									if tracked then
-										tracked.meteors[meteorEntry] = nil
-									end
-								end)
+								meteorEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.FallDuration) or 0)
 							elseif not (effectName ~= "FieldStar" or not ((effectData.Action == "Make" or effectData.Action == "Destroy") and effectData.Type == "Guiding Star")) then
 								tracked.guiding[effectData.Zone] = effectData.Action == "Make" and 1 or nil
 							elseif effectName ~= "PluckedPetal" then
@@ -42087,14 +42100,9 @@ do
 								end
 							else
 								local petalEntry = { Name = true, ZoneName = effectData.ZoneName, Position = effectData.GoalPos }
-								threadCount += 1
 								tracked.petals[petalEntry] = true
 
-								threads:Delay(threadCount, effectData.Duration, function()
-									if tracked then
-										tracked.petals[petalEntry] = nil
-									end
-								end)
+								petalEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.Duration) or 0)
 							end
 						elseif effectData.Radius == 20 then
 							local trackedEntry = { Name = true, Position = effectData.Pos }
@@ -42103,36 +42111,21 @@ do
 								state.coconuts = state.coconuts + 1
 							end
 
-							threadCount += 1
 							tracked.crabcoconuts[trackedEntry] = os.time()
 
-							threads:Delay(threadCount, 2.6, function()
-								if tracked then
-									tracked.crabcoconuts[trackedEntry] = nil
-								end
-							end)
+							trackedEntry.ExpiresAt = os.clock() + 2.6
 						elseif effectData.Radius ~= 13 or not effectData.Friendly or not effectData.Combo or not cfg.autofarm.farmcombococonuts then
 							if not (effectData.Radius ~= 13 or not effectData.Friendly) then
 								local coconutEntry = { Name = true, Position = effectData.Pos, Start = os.time() }
-								threadCount += 1
 								tracked.coconuts[coconutEntry] = true
 
-								threads:Delay(threadCount, effectData.Dur, function()
-									if tracked then
-										tracked.coconuts[coconutEntry] = nil
-									end
-								end)
+								coconutEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.Dur) or 0)
 							end
 						else
 							local comboCoconutEntry = { Name = true, Position = effectData.Pos, Points = effectData.Points }
-							threadCount += 1
 							tracked.combococonuts[comboCoconutEntry] = true
 
-							threads:Delay(threadCount, effectData.Dur, function()
-								if tracked then
-									tracked.combococonuts[comboCoconutEntry] = nil
-								end
-							end)
+							comboCoconutEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.Dur) or 0)
 						end
 					end
 				else
@@ -42149,14 +42142,8 @@ do
 			else
 				tracked.precise2[effectData.ID] = { Name = true, ID = effectData.ID, Position = effectData.Pos, Mark = effectData.Mark }
 				tracked.precisegroup[effectData.ID] = effectData.FEID
-				threadCount += 1
 
-				threads:Delay(threadCount, 2.5, function()
-					if tracked then
-						tracked.precise2[effectData.ID] = nil
-						tracked.precisegroup[effectData.ID] = nil
-					end
-				end)
+				tracked.precise2[effectData.ID].ExpiresAt = os.clock() + 2.5
 
 				if not cfg.antilag.precise then
 					return true
@@ -42200,24 +42187,14 @@ do
 			if not cfg.detected.fastraretween or not (not state.stop and not state.fasttween and not state.stopfasttween and not (not state.rares[string.match(tokenData.Icon, "%d+")] and (not state.rares.Sticker or not tokenData.Rainbow))) then
 				if tokenData.Icon ~= "rbxassetid://1629547638" then
 					local tokenEntry = { Name = true, Position = tokenData.Pos, Rainbow = tokenData.Rainbow, Icon = tokenData.Icon }
-					threadCount += 1
 					tracked.tokens[tokenEntry] = true
 
-					threads:Delay(threadCount, tokenData.Dur, function()
-						if tracked then
-							tracked.tokens[tokenEntry] = nil
-						end
-					end)
+					tokenEntry.ExpiresAt = os.clock() + math.max(0, tonumber(tokenData.Dur) or 0)
 				else
 					local tokenEntry = { Name = true, Position = tokenData.Pos, Rainbow = tokenData.Rainbow, Icon = tokenData.Icon }
-					threadCount += 1
 					tracked.tokenlink[tokenEntry] = true
 
-					threads:Delay(threadCount, tokenData.Dur, function()
-						if tracked then
-							tracked.tokenlink[tokenEntry] = nil
-						end
-					end)
+					tokenEntry.ExpiresAt = os.clock() + math.max(0, tonumber(tokenData.Dur) or 0)
 				end
 			else
 				local distance = distanceTo(tokenData.Pos)
@@ -42238,13 +42215,8 @@ do
 			local tokenEntry = { Name = true, ID = tokenData.ID, Position = tokenData.Pos, Icon = tokenData.Icon, Start = os.clock() }
 			local listName = string.match(tostring(tokenData.Icon), "%d+") == "5877939956" and "dupedsmiley" or owner.dupedmap[tokenData.Icon] or "dupedtokens"
 			tracked[listName][tokenData.ID] = tokenEntry
-			threadCount += 1
 
-			threads:Delay(threadCount, tokenData.EndTime - workspace.ServerTime.Value, function()
-				if tracked then
-					if tracked[listName][tokenData.ID] == tokenEntry then tracked[listName][tokenData.ID] = nil end
-				end
-			end)
+			tokenEntry.ExpiresAt = os.clock() + math.max(0, tokenData.EndTime - workspace.ServerTime.Value)
 		end,
 		DupedTokenDestroy = function(tokenId)
 			tracked.dupedbear[tokenId] = nil
@@ -45154,13 +45126,14 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 		if not (not cfg.webhook.graph and not cfg.webhook.dashboard or not discord.hourstart) then
 			if not (not laststatus or discord.laststatus == laststatus) then
 				local hourstart = discord.hourstart
-				discord.graph.status_changes[tostring(os.time() - hourstart)] = laststatus
+				-- Bound history even when the graph sender stalls before hourly reset.
+				discord.graph.status_changes[tostring(math.clamp(os.time() - hourstart, 0, 3600))] = laststatus
 				discord.laststatus = laststatus
 			end
 
 			if not (not lastfield or discord.lastfield == lastfield) then
 				local hourstart = discord.hourstart
-				discord.graph.field[tostring(os.time() - hourstart)] = lastfield
+				discord.graph.field[tostring(math.clamp(os.time() - hourstart, 0, 3600))] = lastfield
 				discord.lastfield = lastfield
 			end
 		end
@@ -45613,6 +45586,19 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 
 		nextMoveTime = nil
 		local touchedMarks = {}
+		connections:Add("touchedMarkExpiry", RunService.Heartbeat:Connect((function()
+			local elapsed = 0
+			return function(dt)
+				elapsed += dt
+				if elapsed < 0.25 then return end
+				elapsed = 0
+				local now = os.clock()
+				for mark, expires in pairs(touchedMarks) do
+					if now >= expires then touchedMarks[mark] = nil end
+				end
+			end
+		end)()))
+
 
 local bearCombat = {
 	icons = { ["1472425802"]=true, ["1472580249"]=true, ["1472532912"]=true,
@@ -51764,13 +51750,7 @@ end
 			end
 
 			if not trackedKey then
-				touchedMarks[object] = true
-
-				threadCount += 1
-
-				threads:Delay(threadCount, 3, function()
-					touchedMarks[object] = nil
-				end)
+				touchedMarks[object] = os.clock() + 3
 			elseif trackedKey ~= "flames" then
 				tracked[trackedKey][object.Name == true and hasId and object.ID or object] = nil
 			end
@@ -51792,13 +51772,7 @@ end
 				end
 			end
 
-			touchedMarks[part] = true
-
-			threadCount += 1
-
-			threads:Delay(threadCount, 1, function()
-				touchedMarks[part] = nil
-			end)
+			touchedMarks[part] = os.clock() + 1
 
 			return true
 		end
@@ -52005,7 +51979,7 @@ end
 
 			if not path then
 				logger.warn("No path to precise found")
-				touchedMarks[preciseMark] = true
+				touchedMarks[preciseMark] = os.clock() + 3
 				return true
 			end
 
@@ -52021,26 +51995,14 @@ end
 					end
 
 					if not preciseMark.Parent or os.clock() - now > 4 then
-						touchedMarks[preciseMark] = true
-
-						threadCount += 1
-
-						threads:Delay(threadCount, 3, function()
-							touchedMarks[preciseMark] = nil
-						end)
+						touchedMarks[preciseMark] = os.clock() + 3
 
 						return true
 					end
 				end
 			end
 
-			touchedMarks[preciseMark] = true
-
-			threadCount += 1
-
-			threads:Delay(threadCount, 3, function()
-				touchedMarks[preciseMark] = nil
-			end)
+			touchedMarks[preciseMark] = os.clock() + 3
 
 			return true
 		end
@@ -52071,13 +52033,7 @@ end
 					local matchCount = 0
 					local totalCount = 0
 					local best = nil
-					touchedMarks[mark] = true
-
-					threadCount += 1
-
-					threads:Delay(threadCount, 3, function()
-						touchedMarks[mark] = nil
-					end)
+					touchedMarks[mark] = os.clock() + 3
 
 					for k in pairs(tracked.precise) do
 						totalCount += 1
@@ -52125,7 +52081,7 @@ end
 
 			if not path then
 				logger.warn("No path to precise found")
-				touchedMarks[mark] = true
+				touchedMarks[mark] = os.clock() + 3
 				return true
 			end
 
@@ -52141,26 +52097,14 @@ end
 					end
 
 					if not tracked.precise2[mark.ID] or os.clock() - now > 4 then
-						touchedMarks[mark] = true
-
-						threadCount += 1
-
-						threads:Delay(threadCount, 3, function()
-							touchedMarks[mark] = nil
-						end)
+						touchedMarks[mark] = os.clock() + 3
 
 						return true
 					end
 				end
 			end
 
-			touchedMarks[mark] = true
-
-			threadCount += 1
-
-			threads:Delay(threadCount, 3, function()
-				touchedMarks[mark] = nil
-			end)
+			touchedMarks[mark] = os.clock() + 3
 
 			return true
 		end
@@ -52191,13 +52135,7 @@ end
 					local matchCount = 0
 					local totalCount = 0
 					local best = nil
-					touchedMarks[mark] = true
-
-					threadCount += 1
-
-					threads:Delay(threadCount, 3, function()
-						touchedMarks[mark] = nil
-					end)
+					touchedMarks[mark] = os.clock() + 3
 
 					for _, candidate in pairs(tracked.precise2) do
 						totalCount += 1
