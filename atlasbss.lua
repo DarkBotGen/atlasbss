@@ -251,6 +251,7 @@ local cfg = {
 		dupedtokens = false,
 		stations = false,
 		bees = false,
+		frogs = false,
 		flowers = false,
 		balloons = false,
 		textures = false,
@@ -347,6 +348,7 @@ local cfg = {
 		mondocenter = false,
 		mondoseekhit = true,
 		mondoholdprecise = true,
+		mondodefensive = false,
 		mondoprep = false,
 		mondopreptime = 20,
 		killvicious = false,
@@ -1625,13 +1627,14 @@ end
 function visualOptimizer:Apply(object)
 	if object.Name == "WarningDisk" or object.Name == "Star Shower Guide" then return end
 	if not object.Parent then return end
-	local cosmetic, protected, bees, flowers, balloons, otherPlayer = false,false,false,false,false,false
+	local cosmetic, protected, bees, flowers, balloons, otherPlayer, frog = false,false,false,false,false,false,false
 	local ancestor = object
 	while ancestor and ancestor ~= workspace do
 		if self.decorative[ancestor.Name] then cosmetic=true end
 		if self.protected[ancestor.Name] then protected=true end
 		if string.find(ancestor.Name,"Sign",1,true) then protected=true end
 		if ancestor.Name == "Bees" then bees=true end
+		if (ancestor.Name == "Frog" and ancestor:IsA("Model")) or (ancestor.Name == "Frogs" and (ancestor:IsA("Folder") or ancestor:IsA("Model"))) then frog=true end
 		if ancestor.Name == "Flowers" then flowers=true end
 		if ancestor.Name == "FieldBalloons" then balloons=true end
 		ancestor=ancestor.Parent
@@ -1645,7 +1648,7 @@ function visualOptimizer:Apply(object)
 	local effects=aggressive or self.modes.effects
 	local textures=aggressive or self.modes.textures
 	local hide=((self.modes.decorations or aggressive) and cosmetic) or (self.modes.bees and bees) or
-		(self.modes.flowers and flowers) or (self.modes.balloons and balloons) or otherPlayer
+		(self.modes.flowers and flowers) or (self.modes.balloons and balloons) or otherPlayer or (self.modes.frogs and frog)
 	if object:IsA("BasePart") then
 		if textures or self.modes.main then
 			self:Remember(object,"CastShadow",false)
@@ -1657,7 +1660,7 @@ function visualOptimizer:Apply(object)
 	elseif object:IsA("Decal") or object:IsA("Texture") then
 		-- Token icons, NPC/shop signs, hive and field identifiers must remain readable by scripts.
 		if textures and cosmetic and not protected then self:Remember(object,"Texture","") end
-		if hide and not protected then self:Remember(object,"Transparency",1) end
+		if hide and (not protected or (self.modes.frogs and frog)) then self:Remember(object,"Transparency",1) end
 	elseif object:IsA("SpecialMesh") then
 		if textures and cosmetic and not protected then self:Remember(object,"TextureId","") end
 	elseif object:IsA("SurfaceAppearance") then
@@ -1670,9 +1673,11 @@ function visualOptimizer:Apply(object)
 			if object:IsA("ParticleEmitter") or object:IsA("Trail") then pcall(function()object:Clear()end) end
 		end
 	elseif object:IsA("Light") or object:IsA("PostEffect") then
-		if effects or self.modes.main then self:Remember(object,"Enabled",false) end
+		if effects or self.modes.main or (self.modes.frogs and frog) then self:Remember(object,"Enabled",false) end
 	elseif object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
-		if hide and cosmetic and not protected then self:Remember(object,"Enabled",false) end
+		if hide and ((cosmetic and not protected) or (self.modes.frogs and frog)) then self:Remember(object,"Enabled",false) end
+	elseif object:IsA("Sound") then
+		if self.modes.frogs and frog then self:Remember(object,"Volume",0) end
 	end
 end
 
@@ -58214,6 +58219,30 @@ function mondoPositioning:SeekHit(mondo, humanoid, distance)
 	return encounter.status
 end
 
+-- Buff timing is queried at most five times per second; no extra worker or listeners.
+function mondoPositioning:Defensive(mondo)
+	if not cfg.combat.mondodefensive then return false end
+	local encounter = self.encounters[mondo]
+	if not encounter then
+		encounter = {health=getHumanoid().Health, started=os.clock(), status=cfg.combat.mondoseekhit and "seeking" or "timeout"}
+		self.encounters[mondo] = encounter
+	end
+	local now = os.clock()
+	if not encounter.shieldChecked or now - encounter.shieldChecked >= 0.2 then
+		encounter.shieldChecked = now
+		encounter.shieldActive = false
+		for _, name in ipairs({"Emergency Coconut Shield", "Coconut Shield"}) do
+			local ok, tile = pcall(secureCall, gameApi.BuffTile, name)
+			if ok and type(tile) == "table" and type(tile.TimerStart) == "number" and type(tile.TimerDur) == "number"
+				and tile.TimerDur > 0 and tile.TimerDur <= 15 and os.time() < tile.TimerStart + tile.TimerDur then
+				encounter.shieldActive = true
+				break
+			end
+		end
+	end
+	return encounter.status ~= "seeking" and not encounter.shieldActive
+end
+
 function mondoPositioning:MarkRadius(key)
 	if typeof(key) == "Instance" then
 		local base = key:FindFirstChild("Base") or key:FindFirstChild("Plane")
@@ -58365,6 +58394,15 @@ end
 							if not v126 then continue end
 							return
 						end
+					end
+					if mondoPositioning:Defensive(mondo) then
+						-- Safety overrides mark holding and token detours while unshielded.
+						heldMark = nil
+						local avoid = {[HumanoidRootPart.Position]=45}
+						for hazard, radius in pairs(tracked.avoid) do avoid[hazard]=radius end
+						farmStep({mondotokens=true,avoid=avoid,skipoverlap=true})
+						if not v126 then continue end
+						return
 					end
 					if cfg.combat.mondoholdprecise then
 						local goal
@@ -66426,6 +66464,8 @@ which bees and get all 3 targets if
 				mondoFolder.AddSwitch("Collect Mondo Chick Loot", nil, "combat", "lootmondo")
 				mondoFolder.AddSwitch("Approach Mondo For One Hit", nil, "combat", "mondoseekhit")
 				mondoFolder.AddSwitch("Farm Tokens Inside Precise Marks", nil, "combat", "mondoholdprecise")
+				mondoFolder.AddSwitch("Defensive After Shield Expires", nil, "combat", "mondodefensive")
+				mondoFolder.AddLabel("When unshielded, avoids Mondo by 45 studs instead of holding risky marks")
 				mondoFolder.AddLabel("Approaches for up to 8 seconds, then farms tokens inside available marks")
 				mondoFolder.AddLabel("Mind Hack activates automatically through Digital Bee")
 				mondoFolder.AddSlider("Time To Kill Mondo Chick At (minutes)", nil, 1, 15, "combat", "mondochicktime", { Left = true })
@@ -68741,6 +68781,7 @@ Are you sure you want to enable it?]])
 				end, "antilag", "stations", { Hook = true })
 
 				antiLagFolder.AddSwitch("Hide Bees", function(enabled) visualOptimizer:Set("bees",enabled) end, "antilag", "bees")
+				antiLagFolder.AddSwitch("Hide Frogs", function(enabled) visualOptimizer:Set("frogs",enabled) end, "antilag", "frogs")
 
 				antiLagFolder.AddSwitch("Hide Flowers", function(enabled) visualOptimizer:Set("flowers",enabled) end, "antilag", "flowers")
 
