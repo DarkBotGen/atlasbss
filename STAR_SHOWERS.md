@@ -1,19 +1,33 @@
-# Atlas+ shower collection
+# Atlas+ Safeshower
 
-Enable **Farm Showers** to collect showers using tweens. **Run without autofarm** remains available for standalone collection in the player's current field. Fast Shower Tween is no longer a separate required toggle.
+The previous shower tween/priority selector has been replaced with the Safeshower code supplied in `message (7).txt`. The integration retains its ownership detection, observed light ordering, movement algorithm, diagnostics, input handling and report UI.
 
-The controller selects the **earliest reachable expected impact**, rather than the nearest star. It tweens to the center, stays through the expected landing, and proceeds through the remaining stars in impact order. It rechecks the order every 50ms so a newly observed earlier impact can take precedence. Stable observation order breaks equal-deadline ties.
+## Operation
 
-Movement uses linear tweens at 400 studs/second. The shower controller does not change WalkSpeed, density, Massless, friction, elasticity, or any other physical properties. The previous dynamic walking and density controls have been removed. Disabling Farm Showers, stopping, preemption, cancellation, errors and unloading cancel and destroy its active tween.
+- Enable **Farm Showers**. During autofarm, the detector watches for your Star Shower passive popup (`5101364168`) and a matching Star Shower Guide. Overlapping/ambiguous owners are rejected rather than guessed.
+- Once your guide is accepted, shower handling takes **absolute priority**, regardless of gathering order. Main farming, standalone movement, facing, speed overrides, auto-dig and other named movement jobs are suspended. Existing character movement tweens and travel constraints are canceled.
+- The supplied chaser starts toward light 1 at the live starting WalkSpeed, aiming to arrive 500ms before the estimated expiry. Subsequent transitions use its live twice-ping lead and 180 PMS cap.
+- Light numbers follow observed first appearance. Actual visual removal advances the sequence, with the supplied ping-based early transition when a next light is known. There is no invented fixed 0.3-second spawn schedule.
+- Near a light, it brakes and uses the supplied small circular path on the edge facing the next light. It uses `Humanoid:Move`, WalkSpeed and velocity braking, with **no shower tween or density change**.
+- On completion or cancellation, the engine restores speed, camera and controls. Paused jobs resume when their settings still permit them. Stop Everything and unloading prevent automatic resumption.
+- **Run without autofarm** remains supported. With that enabled and autofarm off, the same detector/chaser runs. Outside an owned shower, the supplied standalone passive-token collector is disabled so it does not compete with Atlas farming.
 
-Custom gathering priorities remain effective during autofarm. Standalone mode ignores stale autofarm priorities and yields when autofarm is enabled. Field, range and hazard checks still apply. Impossible and expired targets are skipped so they cannot block later stars.
+## Controls
 
-Landing times are estimates from observed spawn timing, using the existing 1.9-second shower interval. The script does not receive server confirmation of each catch. Network delays, inaccurate observed timings and higher-priority interruptions can still cause misses; a particular 9–10x multiplier is not guaranteed.
+The supplied **Atlas+ Safeshower** panel includes Armed, run diagnostics, numbered lights and Copy run report. Right Shift cancels/disarms. Closing its panel stops the chaser; reload Atlas to recreate it. Turning Farm Showers off cancels the current run. The normal main Stop Everything control remains authoritative.
 
-Compilation and isolated tests passed for a ten-star sequence, earliest-impact versus nearest selection, earlier-impact rerouting, impossible targets, centered arrival, all cancellation paths, standalone collection/handoff, and 10,000 expired records. No live multiplier measurement has been performed.
+## Integration safeguards
 
-# Saved gathering priorities
+Required guide/light visuals are allowed through Hide Particles. Anti-lag leaves the physical WarningDisk and Star Shower Guide properties intact so the supplied detector can recognize their material, size and color.
 
-The priority order and Use Custom Order flag are stored inside the selected config under `prioritization`. Reordering already saved the config, but the previous loader merged arrays by iterating the default array's keys, dropping the saved order when the default was empty. The loader now replaces the priority array with a copy from the config. The existing normalizer removes unknown/duplicate entries and appends newly added categories.
+Only active named movement workers retain restart metadata; it is removed on completion/cancellation. While a shower owns movement, new movement-worker requests are queued instead of starting competing loops. Popup property listeners are disconnected and unregistered when their instances leave the scene. Run history is limited to ten runs, and the supplied event history remains limited to 400 entries. Full cleanup also runs after a partial startup failure.
 
-Compilation and tests passed for saving a reordered list, ten fresh reloads, enabled/disabled flags, older configs, partial lists and switching presets. Existing saved orders can now load; orders already overwritten by a previous reset must be set again.
+## Validation and limits
+
+Full-script compilation and isolated tests passed for own-popup/guide recognition, rejecting another player's shower, suspending/resuming movement workers, blocking competing restarts, canceling an existing movement tween, ten observed light removals, restoring speed/input/camera, 500 destroyed popup lifecycles, unloading mid-shower and startup-failure cleanup. Existing priority-config, memory, petal, bloom, smiley, allowlist and bear-timing regressions also passed.
+
+These tests use an engine mock. No live 9–10x catch rate has been measured. The supplied timing estimates and visual observations are not server confirmation of collection; network delays, replication ordering and client stalls can still affect results.
+
+## Saved priorities
+
+The prior config fix remains: `prioritization.order` replaces the empty default during config loading, preserving the saved ordering and enabled flag. Showers now override that ordering while active; the order still applies to other gathering.
