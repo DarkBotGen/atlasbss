@@ -183,7 +183,7 @@ local cfg = {
 		farmpuppyball = true,
 		farmshowers = true,
 		dynamicshowerspeed = true,
-		showerspeedcap = 400,
+		showerspeedcap = 120,
 		farmtriangulate = false,
 		farmclouds = true,
 		farmballoons2 = false,
@@ -1718,7 +1718,7 @@ local mobileToggleButton, controls, currentField, position, currentFieldName, ve
 local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
--- Shared by normal gathering, custom priorities and standalone fast showers.
+-- Shared walking controller for gathering and showers without autofarm.
 local showerController = {entries = {}, sequence = 0}
 
 function showerController:Observe(object, duration)
@@ -1744,13 +1744,44 @@ function showerController:Prune(now)
 end
 
 function showerController:Speed(distance, remaining)
-	local walking = math.max(1, getHumanoid().WalkSpeed)
-	if not cfg.detected.fastshowertween then return walking end
-	if cfg.autofarm.dynamicshowerspeed == false then return 400 end
-	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 400, 40, 400)
+	local walking = self:BaseSpeed(getHumanoid())
+	if cfg.autofarm.dynamicshowerspeed == false then return walking end
+	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 120, 40, 200)
 	-- Aim to arrive before impact; distant/late stars request more speed.
 	local required = distance / math.max(remaining - 0.15, 0.04) * 1.15
-	return math.clamp(math.max(walking, required), 1, cap)
+	return math.max(walking, math.min(cap, math.max(walking * 1.15, required)))
+end
+
+function showerController:BaseSpeed(humanoid)
+	local current = math.max(1, humanoid.WalkSpeed)
+	local lease = self.speedLease
+	if lease and lease.humanoid == humanoid then
+		-- Respect speed changes from buffs or other systems while approaching.
+		if math.abs(current - lease.applied) > 0.01 then lease.base = current end
+		return lease.base
+	end
+	return current
+end
+
+function showerController:ReleaseSpeed()
+	local lease = self.speedLease
+	self.speedLease = nil
+	if not lease then return end
+	pcall(function()
+		-- Restore only a value we still own; never overwrite a newer game update.
+		if math.abs(lease.humanoid.WalkSpeed - lease.applied) <= 0.01 then
+			lease.humanoid.WalkSpeed = lease.base
+		end
+	end)
+end
+
+function showerController:ApplySpeed(humanoid, speed)
+	local base = self:BaseSpeed(humanoid)
+	local lease = self.speedLease
+	if lease and lease.humanoid ~= humanoid then self:ReleaseSpeed(); lease = nil end
+	if not lease then lease = {humanoid=humanoid, base=base}; self.speedLease = lease end
+	lease.applied = speed
+	humanoid.WalkSpeed = speed
 end
 
 function showerController:Eligible(object, entry, opts, rootPosition, now)
@@ -1789,7 +1820,14 @@ function showerController:Select(opts, rootPosition)
 end
 
 function showerController:CancelMovement()
-	if self.tween then self.tween:Cancel(); self.tween:Destroy(); self.tween = nil end
+	self.generation = (self.generation or 0) + 1
+	self:ReleaseSpeed()
+	local humanoid, root = self.walkHumanoid, self.walkRoot
+	self.walkHumanoid, self.walkRoot = nil, nil
+	if humanoid and root then
+		pcall(function() humanoid:MoveTo(root.Position) end)
+		smoothMovement.goal = nil
+	end
 end
 
 function showerController:Reset()
@@ -1801,12 +1839,15 @@ end
 function showerController:Collect(object, opts)
 	local entry = self.entries[object]
 	if not entry then return end
+	self:CancelMovement()
+	local generation = self.generation
 	self.target = object
 	local root, humanoid = getRootPart(), getHumanoid()
-	local lastGoal, lastSpeed, nextUpdate = nil, nil, 0
+	local nextUpdate = 0
 	local arrived = false
 	local ok, result = xpcall(function()
-		while tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
+		while self.generation == generation and tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
+			if opts.standalone and cfg.autofarm.enabled then return true end
 			if getRootPart() ~= root or not object.Position or
 				(typeof(object) == "Instance" and not object.Parent) then break end
 			local now = os.clock()
@@ -1814,29 +1855,20 @@ function showerController:Collect(object, opts)
 			local position = object.Position
 			if opts.showerfield and getFieldAt(position) ~= opts.showerfield then break end
 			if not gatheringPriorities:Allowed(position, opts, root.Position) then break end
-			if gatheringPriorities:ShouldPreempt() then return true end
+			if not opts.standalone and gatheringPriorities:ShouldPreempt() then return true end
 			local dx, dz = position.X - root.Position.X, position.Z - root.Position.Z
 			local distance = math.sqrt(dx * dx + dz * dz)
 			arrived = distance <= 3
+			if arrived then self:ReleaseSpeed() end
 			-- Release immediately after impact rather than waiting the old 5s timeout.
 			if remaining <= -0.08 or (remaining <= 0 and not arrived) then break end
 			if now >= nextUpdate and not arrived then
 				nextUpdate = now + 0.1
 				local speed = self:Speed(distance, remaining)
-				if cfg.detected.fastshowertween then
-					local goal = Vector3.new(position.X, root.Position.Y, position.Z)
-					if not lastGoal or (goal-lastGoal).Magnitude > 0.5 or math.abs(speed-(lastSpeed or 0)) > math.max(8, speed*0.2) then
-						self:CancelMovement()
-						local tween = TweenService:Create(root, TweenInfo.new(math.max(0.03,distance/speed),Enum.EasingStyle.Linear,Enum.EasingDirection.Out),
-							{CFrame=CFrame.new(goal)*root.CFrame.Rotation})
-						self.tween = tween
-						tween:Play()
-						lastGoal, lastSpeed = goal, speed
-					end
-				else
-					self:CancelMovement()
-					smoothMovement:MoveTo(position)
-				end
+				if cfg.autofarm.dynamicshowerspeed ~= false then self:ApplySpeed(humanoid, speed)
+				else self:ReleaseSpeed() end
+				self.walkHumanoid, self.walkRoot = humanoid, root
+				smoothMovement:MoveTo(position)
 			end
 			if not RunService.Heartbeat:Wait() then break end
 		end
@@ -2065,7 +2097,7 @@ do
 		end
 	end))
 
-	local title = _G.title and string.find(string.lower(_G.title), "atlas") and not string.find(string.lower(_G.title), "pre") and not string.find(string.lower(_G.title), "paid") and _G.title or "deobfuscated by skynex - .gg/syncrypt"
+	local title = "Atlas+"
 	local uicolor = _G.uicolor and _G.uicolor or Color3.fromRGB(41, 74, 122)
 	local isDesktop = ScreenGui.AbsoluteSize.X >= 850 and ScreenGui.AbsoluteSize.Y >= 500
 
@@ -2532,7 +2564,7 @@ do
 
 		local clone = uiParts.bar:Clone()
 		local indicator = clone.Indicator
-		clone.Title.Text = "Atlas Console"
+		clone.Title.Text = "Atlas+ Console"
 		clone.Parent = Frame8
 
 		clone.InputBegan:Connect(function(n)
@@ -2664,7 +2696,7 @@ do
 							threadCount += 1
 
 							threads:Add("consoleLogSend", function()
-								discord.Send("Atlas Console", "```" .. table.concat(linesCopy, "\n") .. "```", true)
+								discord.Send("Atlas+ Console", "```" .. table.concat(linesCopy, "\n") .. "```", true)
 							end)
 						end
 					end
@@ -6103,7 +6135,7 @@ do
 							Url = cfg.webhook.url,
 							Headers = { ["Content-Type"] = "application/json" },
 							Body = HttpService:JSONEncode({
-								username = "Atlas BSS",
+								username = "Atlas+",
 								avatar_url = getUrl("icon.png"),
 								content = cfg.webhook.disconnectid ~= "" and "<@!" .. cfg.webhook.disconnectid .. "> " .. kickMessage or kickMessage,
 							}),
@@ -6133,7 +6165,7 @@ do
 								Url = cfg.webhook.url,
 								Headers = { ["Content-Type"] = "application/json" },
 								Body = HttpService:JSONEncode({
-									username = "Atlas BSS",
+									username = "Atlas+",
 									avatar_url = getUrl("icon.png"),
 									content = cfg.webhook.disconnectid ~= "" and "<@!" .. cfg.webhook.disconnectid .. "> " .. kickMessage or kickMessage,
 								}),
@@ -43567,7 +43599,7 @@ do
 			Url = cfg.webhook.url,
 			Headers = { ["Content-Type"] = "application/json" },
 			Body = HttpService:JSONEncode({
-				username = "Atlas BSS",
+				username = "Atlas+",
 				avatar_url = getUrl("icon.png"),
 				embeds = {
 					{
@@ -43660,7 +43692,7 @@ do
 			}, "Failed to get honey image:")
 		end
 
-		local message = { username = "Atlas BSS", avatar_url = getUrl("icon.png"), webhook = cfg.webhook.url }
+		local message = { username = "Atlas+", avatar_url = getUrl("icon.png"), webhook = cfg.webhook.url }
 		local embeds = {}
 		local embed = {}
 		local fields = {}
@@ -44099,13 +44131,13 @@ Content-Disposition: form-data; name="payload_json"
 			end
 
 			local message = {
-				username = "Atlas BSS",
+				username = "Atlas+",
 				avatar_url = getUrl("icon.png"),
 				webhook = cfg.webhook.graphurl,
 				embeds = {
 					{
 						author = {
-							name = (isTest and "Webhook Test" or "Atlas BSS") .. (identifyexecutor_ and " - " .. identifyexecutor_ or ""),
+							name = (isTest and "Webhook Test" or "Atlas+") .. (identifyexecutor_ and " - " .. identifyexecutor_ or ""),
 							icon_url = getUrl("icon.png"),
 						},
 						image = { url = "attachment://image.png" },
@@ -63941,7 +63973,7 @@ end
 									end
 
 									if not state.disconnect and not (not cfg.webhook.enabled or cfg.webhook.url == "") then
-										discord.Send("Atlas Progression", "Purchasing " .. nextItem .. "\nTimestamp: <t:" .. os.time() .. ":R>")
+										discord.Send("Atlas+ Progression", "Purchasing " .. nextItem .. "\nTimestamp: <t:" .. os.time() .. ":R>")
 									end
 
 									task.wait(0.25)
@@ -65406,8 +65438,8 @@ which bees and get all 3 targets if
 					if not enabled then showerController:Reset() end
 				end, "autofarm", "farmshowers")
 				farmFolder.AddSwitch("Dynamic Shower Speed", nil, "autofarm", "dynamicshowerspeed")
-				farmFolder.AddSlider("Shower Speed Cap", nil, 40, 400, "autofarm", "showerspeedcap", {Left=true})
-				farmFolder.AddLabel("Dynamic speed applies to Fast Shower Tween")
+				farmFolder.AddSlider("Shower Speed Cap", nil, 40, 200, "autofarm", "showerspeedcap", {Left=true})
+				farmFolder.AddLabel("Dynamic walking speed only while approaching a shower")
 				farmFolder.AddSwitch("Farm Triangulate", nil, "autofarm", "farmtriangulate")
 
 				farmFolder.AddSwitch("Farm Under Clouds", function(n)
@@ -67649,6 +67681,7 @@ more accurate dodging]],
 					else
 						threads:Add("walkspeed", function()
 							while task.wait(0.1) do
+								if showerController.speedLease then continue end
 								if not cfg.vars.walkdynamic then
 									local walkspeed = cfg.vars.walkspeed
 
@@ -67949,7 +67982,7 @@ more accurate dodging]],
 					ScreenGui.Button.Visible = n
 				end, "misc", "mobiletoggle")
 
-				Debug.AddSwitch("Show Atlas Console", function(n)
+				Debug.AddSwitch("Show Atlas+ Console", function(n)
 					logger.toggle(n)
 				end, "misc", "console")
 
@@ -68253,7 +68286,7 @@ Are you sure you want to enable it?]])
 
 				local function flyTo(target, trackedCategory)
 					if trackedCategory == "showers" then
-						return showerController:Collect(target, {ignorefield=true, showerfield=getFieldAt(getRootPart().Position)})
+						return showerController:Collect(target, {standalone=true, ignorefield=true, showerfield=getFieldAt(getRootPart().Position)})
 					end
 					local now3, reachedNear = os.clock()
 					local rootPart = getRootPart()
@@ -68366,7 +68399,7 @@ Are you sure you want to enable it?]])
 										end
 									end
 
-									if not flying and cfg.detected.fastshowertween and cfg.autofarm.farmshowers then
+									if not flying and cfg.autofarm.farmshowers then
 										local shower = showerController:Select({ignorefield=true, showerfield=field}, getRootPart().Position)
 										if shower then
 											flying = true
@@ -68393,15 +68426,7 @@ Are you sure you want to enable it?]])
 					end
 				end, "detected", "background")
 
-				local fastShowerSwitch = nil
-
-				fastShowerSwitch = detectedFolder.AddSwitch("Fast Shower Tween", function(n)
-					if n and fastShowerSwitch and (not now2 or os.clock() - now2 > 4) then
-						now2 = os.clock()
-						fastShowerSwitch.Set(false)
-						ui.Notify("Fast Shower Tween", "This feature is detected and can get you reset.\nAre you sure you want to enable it?")
-					end
-				end, "detected", "fastshowertween")
+				detectedFolder.AddLabel("Farm Showers works here using walking + Dynamic Shower Speed")
 
 				local fastCoconutSwitch = nil
 

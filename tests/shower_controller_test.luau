@@ -6,6 +6,7 @@ local mt={}
 local function vec(x,y,z)return setmetatable({X=x,Y=y,Z=z},mt)end
 mt.__sub=function(a,b)return vec(a.X-b.X,a.Y-b.Y,a.Z-b.Z)end
 mt.__index=function(v,k)if k=="Magnitude" then return math.sqrt(v.X*v.X+v.Y*v.Y+v.Z*v.Z)end end
+local peakSpeed=0
 local Vector3={new=vec}
 local CFrame={new=function(goal)return setmetatable({Position=goal},{__mul=function(a)return a end})end}
 local TweenInfo={new=function(duration)return duration end}
@@ -23,19 +24,13 @@ local walkGoal,activeTween,liveTweens=nil,nil,0
 local TweenService={Create=function(_,part,duration,_,goal)
  error("wrong create signature")
 end}
-function TweenService:Create(part,duration,goal)
- local distance=(goal.CFrame.Position-part.Position).Magnitude
- local t={goal=goal.CFrame.Position,speed=distance/duration,part=part}
- liveTweens+=1
- function t:Play()activeTween=self end
- function t:Cancel()if activeTween==self then activeTween=nil end end
- function t:Destroy()assert(not self.destroyed);self.destroyed=true;liveTweens-=1 end
- return t
-end
+function TweenService:Create()error("shower attempted tween")end
+function humanoid:MoveTo(goal)walkGoal=goal end
 local smoothMovement={MoveTo=function(_,goal)walkGoal=goal end}
 local tickHook
 local RunService={Heartbeat={Wait=function()
  now+=0.02
+ peakSpeed=math.max(peakSpeed,humanoid.WalkSpeed)
  local goal=activeTween and activeTween.goal or walkGoal
  if goal then
   local distance=(goal-root.Position).Magnitude
@@ -46,7 +41,7 @@ local RunService={Heartbeat={Wait=function()
  if tickHook then tickHook() end
  return 0.02
 end}}
--- Shared by normal gathering, custom priorities and standalone fast showers.
+-- Shared walking controller for gathering and showers without autofarm.
 local showerController = {entries = {}, sequence = 0}
 
 function showerController:Observe(object, duration)
@@ -72,13 +67,44 @@ function showerController:Prune(now)
 end
 
 function showerController:Speed(distance, remaining)
-	local walking = math.max(1, getHumanoid().WalkSpeed)
-	if not cfg.detected.fastshowertween then return walking end
-	if cfg.autofarm.dynamicshowerspeed == false then return 400 end
-	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 400, 40, 400)
+	local walking = self:BaseSpeed(getHumanoid())
+	if cfg.autofarm.dynamicshowerspeed == false then return walking end
+	local cap = math.clamp(tonumber(cfg.autofarm.showerspeedcap) or 120, 40, 200)
 	-- Aim to arrive before impact; distant/late stars request more speed.
 	local required = distance / math.max(remaining - 0.15, 0.04) * 1.15
-	return math.clamp(math.max(walking, required), 1, cap)
+	return math.max(walking, math.min(cap, math.max(walking * 1.15, required)))
+end
+
+function showerController:BaseSpeed(humanoid)
+	local current = math.max(1, humanoid.WalkSpeed)
+	local lease = self.speedLease
+	if lease and lease.humanoid == humanoid then
+		-- Respect speed changes from buffs or other systems while approaching.
+		if math.abs(current - lease.applied) > 0.01 then lease.base = current end
+		return lease.base
+	end
+	return current
+end
+
+function showerController:ReleaseSpeed()
+	local lease = self.speedLease
+	self.speedLease = nil
+	if not lease then return end
+	pcall(function()
+		-- Restore only a value we still own; never overwrite a newer game update.
+		if math.abs(lease.humanoid.WalkSpeed - lease.applied) <= 0.01 then
+			lease.humanoid.WalkSpeed = lease.base
+		end
+	end)
+end
+
+function showerController:ApplySpeed(humanoid, speed)
+	local base = self:BaseSpeed(humanoid)
+	local lease = self.speedLease
+	if lease and lease.humanoid ~= humanoid then self:ReleaseSpeed(); lease = nil end
+	if not lease then lease = {humanoid=humanoid, base=base}; self.speedLease = lease end
+	lease.applied = speed
+	humanoid.WalkSpeed = speed
 end
 
 function showerController:Eligible(object, entry, opts, rootPosition, now)
@@ -117,7 +143,14 @@ function showerController:Select(opts, rootPosition)
 end
 
 function showerController:CancelMovement()
-	if self.tween then self.tween:Cancel(); self.tween:Destroy(); self.tween = nil end
+	self.generation = (self.generation or 0) + 1
+	self:ReleaseSpeed()
+	local humanoid, root = self.walkHumanoid, self.walkRoot
+	self.walkHumanoid, self.walkRoot = nil, nil
+	if humanoid and root then
+		pcall(function() humanoid:MoveTo(root.Position) end)
+		smoothMovement.goal = nil
+	end
 end
 
 function showerController:Reset()
@@ -129,12 +162,15 @@ end
 function showerController:Collect(object, opts)
 	local entry = self.entries[object]
 	if not entry then return end
+	self:CancelMovement()
+	local generation = self.generation
 	self.target = object
 	local root, humanoid = getRootPart(), getHumanoid()
-	local lastGoal, lastSpeed, nextUpdate = nil, nil, 0
+	local nextUpdate = 0
 	local arrived = false
 	local ok, result = xpcall(function()
-		while tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
+		while self.generation == generation and tracked and tracked.showers[object] and cfg.autofarm.farmshowers and not state.stop and humanoid.Health > 0 do
+			if opts.standalone and cfg.autofarm.enabled then return true end
 			if getRootPart() ~= root or not object.Position or
 				(typeof(object) == "Instance" and not object.Parent) then break end
 			local now = os.clock()
@@ -142,29 +178,20 @@ function showerController:Collect(object, opts)
 			local position = object.Position
 			if opts.showerfield and getFieldAt(position) ~= opts.showerfield then break end
 			if not gatheringPriorities:Allowed(position, opts, root.Position) then break end
-			if gatheringPriorities:ShouldPreempt() then return true end
+			if not opts.standalone and gatheringPriorities:ShouldPreempt() then return true end
 			local dx, dz = position.X - root.Position.X, position.Z - root.Position.Z
 			local distance = math.sqrt(dx * dx + dz * dz)
 			arrived = distance <= 3
+			if arrived then self:ReleaseSpeed() end
 			-- Release immediately after impact rather than waiting the old 5s timeout.
 			if remaining <= -0.08 or (remaining <= 0 and not arrived) then break end
 			if now >= nextUpdate and not arrived then
 				nextUpdate = now + 0.1
 				local speed = self:Speed(distance, remaining)
-				if cfg.detected.fastshowertween then
-					local goal = Vector3.new(position.X, root.Position.Y, position.Z)
-					if not lastGoal or (goal-lastGoal).Magnitude > 0.5 or math.abs(speed-(lastSpeed or 0)) > math.max(8, speed*0.2) then
-						self:CancelMovement()
-						local tween = TweenService:Create(root, TweenInfo.new(math.max(0.03,distance/speed),Enum.EasingStyle.Linear,Enum.EasingDirection.Out),
-							{CFrame=CFrame.new(goal)*root.CFrame.Rotation})
-						self.tween = tween
-						tween:Play()
-						lastGoal, lastSpeed = goal, speed
-					end
-				else
-					self:CancelMovement()
-					smoothMovement:MoveTo(position)
-				end
+				if cfg.autofarm.dynamicshowerspeed ~= false then self:ApplySpeed(humanoid, speed)
+				else self:ReleaseSpeed() end
+				self.walkHumanoid, self.walkRoot = humanoid, root
+				smoothMovement:MoveTo(position)
 			end
 			if not RunService.Heartbeat:Wait() then break end
 		end
@@ -187,7 +214,7 @@ local function add(x,duration,physical)
 end
 local function clear()
  showerController:Reset();table.clear(tracked.showers)
- now=0;state={};root.Position=vec(0,0,0);humanoid.Health=100;walkGoal=nil;tickHook=nil
+ now=0;state={};root.Position=vec(0,0,0);humanoid.Health=100;humanoid.WalkSpeed=40;cfg.autofarm.enabled=false;walkGoal=nil;tickHook=nil
 end
 local first=add(30,1.9);now=0.05;local nearest=add(3,1.9)
 assert(showerController:Select({},root.Position)==first,"nearest displaced first falling star")
@@ -201,9 +228,9 @@ local outside=add(600,1.9);local hazard=add(99,1.9);local good=add(20,1.9)
 assert(showerController:Select({showerfield="field",range=50},root.Position)==good)
 local slow=showerController:Speed(20,1.8);local fast=showerController:Speed(100,0.4)
 assert(fast>slow and fast<=200)
-cfg.detected.fastshowertween=false;assert(showerController:Speed(100,0.1)==40)
+cfg.detected.fastshowertween=false;assert(showerController:Speed(100,0.1)>40)
 cfg.detected.fastshowertween=true;cfg.autofarm.dynamicshowerspeed=false
-assert(showerController:Speed(100,0.1)==400)
+assert(showerController:Speed(100,0.1)==40)
 cfg.autofarm.dynamicshowerspeed=true
 clear()
 local stars={}
@@ -216,6 +243,7 @@ for i=1,10 do
  assert(liveTweens==0,"completed movement leaked tween")
 end
 assert(now<4 and not showerController:Select({},root.Position),"old 5s wait or repeat target")
+assert(peakSpeed>40 and humanoid.WalkSpeed==40,"walking boost missing or not restored")
 now+=1;showerController:Prune(now);assert(next(showerController.entries)==nil)
 clear()
 local target=add(100,1.9);tickHook=function()state.preempt=true end
@@ -229,8 +257,30 @@ cfg.detected.fastshowertween=false
 target=add(30,1.9);showerController:Collect(target,{})
 assert(humanoid.WalkSpeed==40 and (root.Position-target.Position).Magnitude<=3)
 clear()
+-- Restore on cancellation while preserving an external buff update.
+showerController:ApplySpeed(humanoid,100);assert(humanoid.WalkSpeed==100)
+showerController:CancelMovement();assert(humanoid.WalkSpeed==40)
+showerController:ApplySpeed(humanoid,100);humanoid.WalkSpeed=32
+assert(showerController:BaseSpeed(humanoid)==32)
+showerController:ApplySpeed(humanoid,80);showerController:CancelMovement()
+assert(humanoid.WalkSpeed==32)
+showerController:ApplySpeed(humanoid,80);humanoid.WalkSpeed=28
+showerController:CancelMovement();assert(humanoid.WalkSpeed==28)
+clear()
+state.preempt=true;target=add(30,1.9)
+showerController:Collect(target,{standalone=true,ignorefield=true,showerfield="field"})
+assert(showerController.entries[target].done and humanoid.WalkSpeed==40)
+clear()
+target=add(100,1.9);tickHook=function()cfg.autofarm.enabled=true end
+showerController:Collect(target,{standalone=true})
+assert(humanoid.WalkSpeed==40 and not showerController.entries[target].done)
+clear()
+target=add(100,1.9);tickHook=function()showerController:CancelMovement()end
+showerController:Collect(target,{})
+assert(humanoid.WalkSpeed==40 and not showerController.speedLease)
+clear()
 for i=1,10000 do add(i,0.1)end
 now=1;showerController:Prune(now)
 assert(next(showerController.entries)==nil and not showerController.target)
 assert(liveTweens==0)
-print("PASS: first-falling selection, stable lock, unreachable skips, field/range/hazards, deadline-based speed and cap, 10-star sequence, walking speed preserved, preemption/stop/tween cleanup, 10,000 expired records")
+print("PASS: first-falling selection, stable lock, unreachable skips, field/range/hazards, deadline-based speed and cap, 10-star sequence, walking speed preserved, preemption/stop/restore cleanup, external buff changes, standalone collection/handoff, 10,000 expired records")
