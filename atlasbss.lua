@@ -1899,6 +1899,55 @@ function comboController:OwnLanding()
 	return best
 end
 
+function comboController:TeamField()
+	return cfg.coconutteam.field~="" and cfg.coconutteam.field or cfg.autofarm.field1
+end
+
+function comboController:OutsideMainLanding()
+	if not cfg.coconutteam.enabled or not cfg.coconutteam.fast or self:Role()~="catcher" then return end
+	local char=localPlayer.Character
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local field=getFieldAt(root.Position)
+	local here=field and field.Name or ""
+	local now,best=os.clock(),nil
+	for _,r in ipairs(self.records)do
+		if self:MainOwned(r.owner) and r.field~=self:TeamField() and r.field==here
+			and math.abs(root.Position.Y-r.position.Y)<=12 and r.deadline+0.12>now then
+			-- All helpers use replicated positions and the same name tie-breaker.
+			-- Pick the closest live outside catcher already in this landing's field.
+			local winner,nearest=nil,math.huge
+			for _,player in ipairs(getService("Players"):GetPlayers())do
+				local name=string.lower(player.Name)
+				local c=cfg.coconutteam
+				if name==string.lower(c.catcher1) or name==string.lower(c.catcher2) or name==string.lower(c.catcher3) then
+					local character=player.Character
+					local h=character and character:FindFirstChildOfClass("Humanoid")
+					local part=character and character:FindFirstChild("HumanoidRootPart")
+					local f=part and getFieldAt(part.Position)
+					if h and h.Health>0 and part and (f and f.Name or "")==here and math.abs(part.Position.Y-r.position.Y)<=12 then
+						local d=Vector3.new(part.Position.X-r.position.X,0,part.Position.Z-r.position.Z).Magnitude
+						if d<nearest-0.05 or (math.abs(d-nearest)<=0.05 and (not winner or name<winner)) then winner,nearest=name,d end
+					end
+				end
+			end
+			if winner==string.lower(localPlayer.Name) and (not best or r.deadline<best.deadline) then best=r end
+		end
+	end
+	return best
+end
+
+function comboController:AcceptTeamJob(job)
+	if self:MainOwned(job.owner) then return false end -- handled locally by main/outside catchers
+	local role=self:Role()
+	if role=="alt" then return type(job.owner)=="string" and string.lower(job.owner)==string.lower(localPlayer.Name) end
+	if role=="catcher" then
+		local field=getFieldAt(job.position)
+		return cfg.coconutteam.fast and (field and field.Name or "")~=self:TeamField()
+	end
+	return role=="main"
+end
+
 function comboController:Available()
 	if self.closed or state.stop or (showerController.active and not self.ownPriority) then return false end
 	local char = localPlayer.Character
@@ -1969,16 +2018,16 @@ function comboController:Tick()
 		end
 	end
 	if not self:Managed() then self.ownPriority=false;self:Finish("Disabled");return end
-	local own=self:OwnLanding()
+	local own=self:OwnLanding() or self:OutsideMainLanding()
 	self.ownPriority=own~=nil
-	if own and showerController.active and showerController.cancel then showerController.cancel("Main catching its own combo") end
+	if own and showerController.active and showerController.cancel then showerController.cancel("Prioritizing main account combo") end
 	local available,h,root=self:Available()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
-			if not self:MainOwned(candidate.owner) and candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
+			if self:AcceptTeamJob(candidate) and candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
 		end
 	elseif not job then
 		-- Independent outside-field mode has no ownership rotation and needs no coordinator.
@@ -2097,7 +2146,8 @@ function comboController:Sync()
 			end
 			local lease=math.min(j.lease,12.5)-elapsed
 			if deadline+0.12>os.clock() and lease>0 then
-				jobs[#jobs+1]={key=j.key,owner=j.owner,position=target,deadline=deadline,leaseUntil=os.clock()+lease}
+				local candidate={key=j.key,owner=j.owner,position=target,deadline=deadline,leaseUntil=os.clock()+lease}
+				if self:AcceptTeamJob(candidate) then jobs[#jobs+1]=candidate end
 			end
 		end
 	end
@@ -2164,7 +2214,9 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
-	folder.AddLabel("Main always catches its own combo locally, ahead of showers; other accounts leave it alone.")
+	folder.AddLabel("Main combo: main + outside catchers only. Spawning alts ignore it.")
+	folder.AddLabel("Outside catchers prioritize main combos in their field over showers and farming.")
+	folder.AddLabel("Alt combo: its spawning alt + main; outside catchers help after it changes fields.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
 	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
