@@ -1899,7 +1899,7 @@ end
 
 function comboController:Diagnostics()
 	local c=cfg.coconutteam
-	return {version="combo-trace-v1",account=localPlayer.Name,role=self:Role() or "unassigned",status=self.status,
+	return {version="combo-trace-v2",account=localPlayer.Name,role=self:Role() or "unassigned",status=self.status,
 		tracking=self.effectStatus,enabled=c.enabled,fast=c.fast,main=c.main,alt1=c.alt1,alt2=c.alt2,
 		catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,teamField=self:TeamField(),outsideField=c.outsidefield,
 		mainHelp=c.mainassist or 3,events=self.trace or {}}
@@ -1915,30 +1915,32 @@ function comboController:Observe(effectName, data)
 	local dur=tonumber(data.FallDuration or data.Dur or data.Duration)
 	self.lastEffect=effectName
 	if typeof(goal)~="Vector3" or not dur or dur~=dur or dur<=0 or dur>12 then
-		self.effectStatus="Follow-up FX missing landing position or duration";return
+		self.effectStatus=kicked and "Kick notification; waiting for next landing FX" or "Landing FX missing position or duration";return
 	end
 	local now=os.clock()
 	local id=data.ComboID or data.ChainID or data.FEID or data.ID
 	local chainKey=(type(id)=="number" or type(id)=="string") and tostring(id) or nil
 	local chain=chainKey and self.chains[chainKey]
 	if chain and chain.expires<=now then chain=nil end
-	local explicit=self:Owner(data.Owner)
-	local private=not kicked and tonumber(data.Points)==0
+	local stack=type(data.Combo)=="number" and data.Combo or nil
+	if stack and (stack~=stack or stack<0 or stack==math.huge) then stack=nil end
+	local explicit=self:Owner(data.ComboOwner) or self:Owner(data.Owner)
+	local private=not kicked and stack==0
 	local owner=explicit or (not private and chain and chain.owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
 	if private and not owner then owner=localPlayer.Name end
 	-- Deduplicate only the same immediate FX delivery, not every drop reusing a chain ID.
-	local previous=chain and chain.record
-	if previous and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
+	local runKey=owner and ("owner:"..string.lower(owner))
+	local run=runKey and self.chains[runKey]
+	local previous=(chain and chain.record) or (run and run.expires>now and run.record)
+	if previous and previous.stack==stack and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
 	if #self.records>=32 then return end
 	local field=self:FieldAt(goal)
 	self.serial+=1
 	local key=string.format("%s:%.1f:%.1f:%.1f:%s:%d",string.lower(owner or "unknown"),goal.X,goal.Y,goal.Z,tostring(id or data.Points or 0),self.serial)
-	local runKey=owner and ("owner:"..string.lower(owner))
-	local run=runKey and self.chains[runKey]
 	local fieldName=field and field.Name or ""
 	local fieldDrops=run and run.expires>now and run.record.field==fieldName and (run.record.fieldDrops or 1)+1 or 1
 	local sharedDrops=private and 0 or (run and run.expires>now and run.record.field==fieldName and (run.record.sharedDrops or 0)+1 or 1)
-	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,sharedDrops=sharedDrops,private=private,stackKnown=tonumber(data.Points)~=nil,points=tonumber(data.Points) or 0,
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,sharedDrops=sharedDrops,private=private,stack=stack,stackKnown=stack~=nil,points=tonumber(data.Points) or 0,
 		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
 	if previous then
 		-- The bounce is a new destination; do not continue holding the previous drop.
@@ -1956,9 +1958,9 @@ function comboController:Observe(effectName, data)
 	end
 	self.byKey[key]=record
 	self.records[#self.records+1]=record
-	self:Trace("parsed",{key=key,owner=owner or "unknown",private=private,points=record.points,stackKnown=record.stackKnown,sharedDrops=sharedDrops,field=record.field,help=self:MainHelp(record)})
-	self.lastOwner=owner or "Unknown (team catches paused for this coconut)"
-	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
+	self:Trace("parsed",{key=key,owner=owner or "unknown",private=private,stack=stack,points=record.points,stackKnown=record.stackKnown,sharedDrops=sharedDrops,field=record.field,help=self:MainHelp(record)})
+	self.lastOwner=owner or "Unknown"
+	self.effectStatus=string.format("%s: %s | stack %s | field %s",effectName,owner or "unknown",stack~=nil and tostring(stack) or "unknown",record.field)
 end
 
 -- Use the original Atlas WarningDisk/GuiAttach detector as the landing source.
@@ -2067,7 +2069,7 @@ end
 
 function comboController:AltDropAllowed(record)
 	if not self:IsAltOwner(record.owner) or not record.stackKnown then return true end
-	if record.private or record.points%2==0 then
+	if record.private or record.stack%2==0 then
 		return string.lower(record.owner)==string.lower(localPlayer.Name)
 			or (not record.private and self:Role()=="catcher" and cfg.coconutteam.fast and record.field==cfg.coconutteam.outsidefield)
 	end
@@ -2090,7 +2092,7 @@ function comboController:YieldLanding(root)
 	local held=self.session and self.session.yieldJob
 	if held and held.source.deadline>now then return held end
 	for _,r in ipairs(self.records)do
-		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.points%2==1)
+		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1)
 			or (self:MainOwned(r.owner) and self:MainHelp(r))) then
 			local delta=Vector3.new(root.Position.X-r.position.X,0,root.Position.Z-r.position.Z)
 			if delta.Magnitude<14 and math.abs(root.Position.Y-r.position.Y)<12 and (not best or r.deadline<best.deadline) then
@@ -2148,7 +2150,33 @@ function comboController:AcceptTeamJob(job)
 	return role=="main"
 end
 
+function comboController:TravelBlocked()
+	local lock=self.taskTravel
+	if lock and (coroutine.status(lock.thread)=="dead" or localPlayer.Character~=lock.character) then self.taskTravel=nil;lock=nil end
+	return lock~=nil or state.tweennoclip~=nil or state.fasttween==true or state.movementTween~=nil
+end
+
+function comboController:WithTaskTravel(callback,...)
+	local running=coroutine.running()
+	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
+	while self:TravelBlocked() do
+		if state.stop then error("return",0) end
+		RunService.Heartbeat:Wait()
+	end
+	local lock={thread=running,character=localPlayer.Character}
+	self.taskTravel=lock
+	self.comboPriority,self.ownPriority,self.privatePriority=false,false,false
+	self:Finish("Task travel has movement priority")
+	local result=table.pack(pcall(callback,...))
+	-- Keep the lock while the normal tween's final short fall settles.
+	if not state.stop and self.awaitLanding and localPlayer.Character==lock.character then pcall(self.awaitLanding) end
+	if self.taskTravel==lock then self.taskTravel=nil end
+	if not result[1] then error(result[2],0) end
+	return table.unpack(result,2,result.n)
+end
+
 function comboController:Available()
+	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
 	local char = localPlayer.Character
@@ -2208,7 +2236,7 @@ end
 function comboController:Begin(job, h, root)
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
-	if showerController.active or self.closed then return end
+	if showerController.active or self.closed or self:TravelBlocked() then return end
 	local env = type(getgenv)=="function" and getgenv() or _G
 	local key = "AtlasTemporaryPMS_" .. localPlayer.UserId
 	local s = {key=job.key,h=h,root=root,originalSpeed=h.WalkSpeed,leaseKey=key,lease={},previousLease=env[key],direction=Vector3.zero,speed=0}
@@ -2270,6 +2298,10 @@ function comboController:Tick()
 		end
 	end
 	if not self:Managed() then self.ownPriority=false;self.comboPriority=false;self:Finish("Disabled");return end
+	if self:TravelBlocked() then
+		self.ownPriority,self.comboPriority,self.privatePriority=false,false,false
+		self:Finish("Task travel protected; combo walking deferred");return
+	end
 	local character=localPlayer.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
@@ -2495,6 +2527,7 @@ function comboController:Shutdown()
 	self:Finish("Unloaded")
 	if self.disks then table.clear(self.disks) end
 	self.atlasTargets=nil
+	self.taskTravel=nil
 	if self.trace then table.clear(self.trace) end
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
@@ -8324,6 +8357,13 @@ do
 			end
 		end
 	end
+
+	-- Task travel owns movement until it completes; combo walking must never
+	-- destroy AlignPosition/AlignOrientation while a character is in transit.
+	comboController.awaitLanding=waitForLanding
+	local tweenTaskTravel,graphTaskTravel=tweenTo,travelTo
+	tweenTo=function(...)return comboController:WithTaskTravel(tweenTaskTravel,...)end
+	travelTo=function(...)return comboController:WithTaskTravel(graphTaskTravel,...)end
 
 	goTo = function(target, label, gentleTween)
 		if distanceTo(target) > 10 then

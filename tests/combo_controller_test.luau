@@ -442,7 +442,7 @@ end
 
 function comboController:Diagnostics()
 	local c=cfg.coconutteam
-	return {version="combo-trace-v1",account=localPlayer.Name,role=self:Role() or "unassigned",status=self.status,
+	return {version="combo-trace-v2",account=localPlayer.Name,role=self:Role() or "unassigned",status=self.status,
 		tracking=self.effectStatus,enabled=c.enabled,fast=c.fast,main=c.main,alt1=c.alt1,alt2=c.alt2,
 		catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,teamField=self:TeamField(),outsideField=c.outsidefield,
 		mainHelp=c.mainassist or 3,events=self.trace or {}}
@@ -458,30 +458,32 @@ function comboController:Observe(effectName, data)
 	local dur=tonumber(data.FallDuration or data.Dur or data.Duration)
 	self.lastEffect=effectName
 	if typeof(goal)~="Vector3" or not dur or dur~=dur or dur<=0 or dur>12 then
-		self.effectStatus="Follow-up FX missing landing position or duration";return
+		self.effectStatus=kicked and "Kick notification; waiting for next landing FX" or "Landing FX missing position or duration";return
 	end
 	local now=os.clock()
 	local id=data.ComboID or data.ChainID or data.FEID or data.ID
 	local chainKey=(type(id)=="number" or type(id)=="string") and tostring(id) or nil
 	local chain=chainKey and self.chains[chainKey]
 	if chain and chain.expires<=now then chain=nil end
-	local explicit=self:Owner(data.Owner)
-	local private=not kicked and tonumber(data.Points)==0
+	local stack=type(data.Combo)=="number" and data.Combo or nil
+	if stack and (stack~=stack or stack<0 or stack==math.huge) then stack=nil end
+	local explicit=self:Owner(data.ComboOwner) or self:Owner(data.Owner)
+	local private=not kicked and stack==0
 	local owner=explicit or (not private and chain and chain.owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
 	if private and not owner then owner=localPlayer.Name end
 	-- Deduplicate only the same immediate FX delivery, not every drop reusing a chain ID.
-	local previous=chain and chain.record
-	if previous and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
+	local runKey=owner and ("owner:"..string.lower(owner))
+	local run=runKey and self.chains[runKey]
+	local previous=(chain and chain.record) or (run and run.expires>now and run.record)
+	if previous and previous.stack==stack and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
 	if #self.records>=32 then return end
 	local field=self:FieldAt(goal)
 	self.serial+=1
 	local key=string.format("%s:%.1f:%.1f:%.1f:%s:%d",string.lower(owner or "unknown"),goal.X,goal.Y,goal.Z,tostring(id or data.Points or 0),self.serial)
-	local runKey=owner and ("owner:"..string.lower(owner))
-	local run=runKey and self.chains[runKey]
 	local fieldName=field and field.Name or ""
 	local fieldDrops=run and run.expires>now and run.record.field==fieldName and (run.record.fieldDrops or 1)+1 or 1
 	local sharedDrops=private and 0 or (run and run.expires>now and run.record.field==fieldName and (run.record.sharedDrops or 0)+1 or 1)
-	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,sharedDrops=sharedDrops,private=private,stackKnown=tonumber(data.Points)~=nil,points=tonumber(data.Points) or 0,
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,sharedDrops=sharedDrops,private=private,stack=stack,stackKnown=stack~=nil,points=tonumber(data.Points) or 0,
 		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
 	if previous then
 		-- The bounce is a new destination; do not continue holding the previous drop.
@@ -499,9 +501,9 @@ function comboController:Observe(effectName, data)
 	end
 	self.byKey[key]=record
 	self.records[#self.records+1]=record
-	self:Trace("parsed",{key=key,owner=owner or "unknown",private=private,points=record.points,stackKnown=record.stackKnown,sharedDrops=sharedDrops,field=record.field,help=self:MainHelp(record)})
-	self.lastOwner=owner or "Unknown (team catches paused for this coconut)"
-	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
+	self:Trace("parsed",{key=key,owner=owner or "unknown",private=private,stack=stack,points=record.points,stackKnown=record.stackKnown,sharedDrops=sharedDrops,field=record.field,help=self:MainHelp(record)})
+	self.lastOwner=owner or "Unknown"
+	self.effectStatus=string.format("%s: %s | stack %s | field %s",effectName,owner or "unknown",stack~=nil and tostring(stack) or "unknown",record.field)
 end
 
 -- Use the original Atlas WarningDisk/GuiAttach detector as the landing source.
@@ -610,7 +612,7 @@ end
 
 function comboController:AltDropAllowed(record)
 	if not self:IsAltOwner(record.owner) or not record.stackKnown then return true end
-	if record.private or record.points%2==0 then
+	if record.private or record.stack%2==0 then
 		return string.lower(record.owner)==string.lower(localPlayer.Name)
 			or (not record.private and self:Role()=="catcher" and cfg.coconutteam.fast and record.field==cfg.coconutteam.outsidefield)
 	end
@@ -633,7 +635,7 @@ function comboController:YieldLanding(root)
 	local held=self.session and self.session.yieldJob
 	if held and held.source.deadline>now then return held end
 	for _,r in ipairs(self.records)do
-		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.points%2==1)
+		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1)
 			or (self:MainOwned(r.owner) and self:MainHelp(r))) then
 			local delta=Vector3.new(root.Position.X-r.position.X,0,root.Position.Z-r.position.Z)
 			if delta.Magnitude<14 and math.abs(root.Position.Y-r.position.Y)<12 and (not best or r.deadline<best.deadline) then
@@ -691,7 +693,33 @@ function comboController:AcceptTeamJob(job)
 	return role=="main"
 end
 
+function comboController:TravelBlocked()
+	local lock=self.taskTravel
+	if lock and (coroutine.status(lock.thread)=="dead" or localPlayer.Character~=lock.character) then self.taskTravel=nil;lock=nil end
+	return lock~=nil or state.tweennoclip~=nil or state.fasttween==true or state.movementTween~=nil
+end
+
+function comboController:WithTaskTravel(callback,...)
+	local running=coroutine.running()
+	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
+	while self:TravelBlocked() do
+		if state.stop then error("return",0) end
+		RunService.Heartbeat:Wait()
+	end
+	local lock={thread=running,character=localPlayer.Character}
+	self.taskTravel=lock
+	self.comboPriority,self.ownPriority,self.privatePriority=false,false,false
+	self:Finish("Task travel has movement priority")
+	local result=table.pack(pcall(callback,...))
+	-- Keep the lock while the normal tween's final short fall settles.
+	if not state.stop and self.awaitLanding and localPlayer.Character==lock.character then pcall(self.awaitLanding) end
+	if self.taskTravel==lock then self.taskTravel=nil end
+	if not result[1] then error(result[2],0) end
+	return table.unpack(result,2,result.n)
+end
+
 function comboController:Available()
+	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
 	local char = localPlayer.Character
@@ -751,7 +779,7 @@ end
 function comboController:Begin(job, h, root)
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
-	if showerController.active or self.closed then return end
+	if showerController.active or self.closed or self:TravelBlocked() then return end
 	local env = type(getgenv)=="function" and getgenv() or _G
 	local key = "AtlasTemporaryPMS_" .. localPlayer.UserId
 	local s = {key=job.key,h=h,root=root,originalSpeed=h.WalkSpeed,leaseKey=key,lease={},previousLease=env[key],direction=Vector3.zero,speed=0}
@@ -813,6 +841,10 @@ function comboController:Tick()
 		end
 	end
 	if not self:Managed() then self.ownPriority=false;self.comboPriority=false;self:Finish("Disabled");return end
+	if self:TravelBlocked() then
+		self.ownPriority,self.comboPriority,self.privatePriority=false,false,false
+		self:Finish("Task travel protected; combo walking deferred");return
+	end
 	local character=localPlayer.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
@@ -1038,6 +1070,7 @@ function comboController:Shutdown()
 	self:Finish("Unloaded")
 	if self.disks then table.clear(self.disks) end
 	self.atlasTargets=nil
+	self.taskTravel=nil
 	if self.trace then table.clear(self.trace) end
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
@@ -1176,7 +1209,7 @@ comboController:Start()
 local startConnections=liveConnections
 assert(comboController.observesRemote)
 local function observe(x,id,owner,points)
- fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(x,3,0),Dur=2,ID=id,Target=owner or player,Points=points})
+ fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=points~=nil and points or true,Pos=vector(x,3,0),Dur=2,ID=id,ComboOwner=owner or player,Points=100})
 end
 observe(5,"inside");comboController:Tick();assert(not comboController.active,"solo fast stole in-field combo")
 observe(35,"outside");comboController:Tick()
@@ -1201,7 +1234,7 @@ comboController:Tick();assert(comboController.active and not showerController.ac
 state.activityStatus=1
 now+=.5;comboController:Tick();assert(not comboController.active,"expired network lease still moving")
 assert(comboController:Sync());assert(sent.server==game.JobId and sent.roster.main=="OtherMain")
-assert(#sent.targets==2,"visible combo observations missing")
+assert(#sent.targets==1,"latest visible combo observation missing or old landing retained")
 reply.jobs={{key="remote",owner="Tester",pos={40,3,0},ttl=1,lease=.65}}
 comboController:Sync();assert(#comboController.jobs==1)
 assert(comboController.jobs[1].leaseUntil<=now+.551,"round trip not deducted")
@@ -1240,7 +1273,7 @@ reply.protocol=2
 comboController:Finish("private test")
 comboController.records={};comboController.byKey={};comboController.jobs={};comboController.chains={};comboController.chainCount=0
 cfg.coconutteam.enabled=true;cfg.coconutteam.alt1="Tester";cfg.coconutteam.main="OtherMain"
-fx.OnClientEvent:Fire("FallingCoconut",{Combo=true,Friendly=true,Pos=vector(5,3,0),Dur=2,Points=0,ID="private-alt"})
+fx.OnClientEvent:Fire("FallingCoconut",{Combo=0,Friendly=true,Pos=vector(5,3,0),Dur=2,Points=100,ID="private-alt"})
 comboController:Tick()
 assert(comboController.active and comboController.privatePriority and comboController.session.key==comboController:PrivateLanding().key,"private alt 0x drop waited for assignment")
 assert(comboController:PrivateLanding().owner=="Tester","private 0x owner not resolved")
@@ -1255,12 +1288,12 @@ root.Position=vector(0,3,0)
 local cancelled=0
 showerController.active=true
 showerController.cancel=function()cancelled+=1;showerController.active=false end
-fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(80,3,0),Dur=2,ID="main-chain",Target=player,Points=0})
+fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(80,3,0),Dur=2,ID="main-chain",Target=player,Points=100})
 comboController:Tick()
 assert(comboController.active and comboController.privatePriority and cancelled==1,"main ignored private 0x")
 for count=1,6 do
  now+=.2
- fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(80,3,0),Duration=1.5,ID="main-chain",Target="SomeoneElse",Points=count})
+ fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=count,Pos2=vector(80,3,0),Duration=1.5,ID="main-chain",Target="SomeoneElse",Points=100})
  comboController:Tick()
  if count%3==0 then
   assert(comboController.active and comboController:OwnLanding().owner=="Tester","main missed scheduled help")
@@ -1275,7 +1308,7 @@ end
 for _,fn in pairs(RunService.bound)do fn()end
 assert(h.WalkSpeed>=180,"scheduled help was not accelerated")
 local deliveries=#comboController.records
-fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(80,3,0),Duration=1.5,ID="main-chain",Points=6})
+fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=6,Pos2=vector(80,3,0),Duration=1.5,ID="main-chain",Points=100})
 assert(#comboController.records==deliveries,"duplicate delivery advanced help counter")
 networkFail=true
 assert(not comboController:Sync())
@@ -1283,7 +1316,7 @@ assert(comboController.active and sent.busy==true and #sent.targets==0,"schedule
 networkFail=false
 for count=1,3 do
  now+=.2
- fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=6+count})
+ fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=6+count,Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=100})
  comboController:Tick()
  assert(comboController.active==(count==3),"field change did not reset help interval")
 end
@@ -1303,7 +1336,7 @@ cfg.coconutteam.main="Tester";cfg.coconutteam.alt1="AltOne";cfg.coconutteam.alt2
 cfg.coconutteam.fast=true;cfg.autofarm.enabled=true;state.activityStatus=1
 for points=0,6 do
  now+=.2
- fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(40,3,0),Dur=2,ID="solo-chain",Owner="AltOne",Points=points})
+ fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=points,Pos=vector(40,3,0),Dur=2,ID="solo-chain",Owner="AltOne",Points=100})
  local record=comboController.records[#comboController.records]
  local stale={key="stale",owner="AltOne",position=record.position,deadline=record.deadline,leaseUntil=now+2}
  player.Name="Tester"
@@ -1368,7 +1401,7 @@ state.activityStatus=3;showerController.active=true
 comboController:Tick()
 assert(comboController.active and comboController.ownPriority and not showerController.active,"outside helper did not prioritize main combo over combat/shower")
 now+=.2
-fx.OnClientEvent:Fire("KickedComboCoconut",{EndPos=vector(45,3,0),Dur=2,ID="outside-main",Target="HelperB",Points=2})
+fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=2,EndPos=vector(45,3,0),Dur=2,ID="outside-main",Target="HelperB",Points=100})
 comboController:Tick()
 assert(comboController.active and comboController:OutsideMainLanding().position.X==45 and comboController.lastOwner=="OtherMain","outside catcher ignored next bounce or changed spawning owner")
 comboController:Finish("test")
@@ -1518,10 +1551,114 @@ local priorCalls=moveToCalls
 root.Position=vector(0,3,0)
 cfg.coconutteam.main="Tester";cfg.coconutteam.alt1="AltOne"
 state.activityStatus=3
-fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(5,3,0),Dur=2,ID="reserved-production",Owner="AltOne",Points=1})
+fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=1,Pos=vector(5,3,0),Dur=2,ID="reserved-production",Owner="AltOne",Points=100})
 comboController:Tick()
 assert(comboController.active and comboController.comboPriority and threads:Get("comboAtlasCatch") and moveToCalls>priorCalls,"main reserved turn never reached production collector")
 comboController:Finish("reserved production complete")
+-- A task tween takes ownership safely and retains it until its final landing.
+comboController:Finish("travel test setup")
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.jobs={}
+root.Position=vector(0,3,0)
+fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,ComboOwner=player,Pos=vector(5,3,0),Dur=2,Points=100})
+comboController:Tick();assert(comboController.active,"travel test lacked active combo")
+local align=Instance.new("AlignPosition")
+local landed=false
+comboController.awaitLanding=function()
+ assert(comboController.taskTravel,"lock released before landing")
+ coroutine.yield("landing")
+ landed=true
+end
+local taskThread=coroutine.create(function()
+ return comboController:WithTaskTravel(function()
+  assert(not comboController.active and root.CustomPhysicalProperties==nil,"task began before combo cleanup")
+  align.Parent=root
+  state.tweennoclip={Connected=true}
+  coroutine.yield("in flight")
+  assert(align.Parent==root,"combo removed tween constraint midair")
+  state.tweennoclip=nil
+  align:Destroy()
+  return "arrived"
+ end)
+end)
+local ok,phase=coroutine.resume(taskThread)
+assert(ok and phase=="in flight")
+comboController:Tick()
+assert(not comboController.active and align.Parent==root and not comboController.comboPriority,"combo interrupted task tween")
+ok,phase=coroutine.resume(taskThread)
+assert(ok and phase=="landing")
+comboController:Tick();assert(not comboController.active and not landed,"combo resumed during final fall")
+ok,phase=coroutine.resume(taskThread)
+assert(ok and phase=="arrived" and landed and not comboController.taskTravel,"travel lock not released on success")
+comboController.awaitLanding=nil
+comboController:Tick();assert(comboController.active,"combo did not resume after safe landing")
+comboController:Finish("travel error test")
+local errorOk=pcall(function()comboController:WithTaskTravel(function()error("task travel failed")end)end)
+assert(not errorOk and not comboController.taskTravel,"travel error retained movement lock")
+local cancelledTravel=coroutine.create(function()comboController:WithTaskTravel(function()coroutine.yield()end)end)
+assert(coroutine.resume(cancelledTravel));coroutine.close(cancelledTravel)
+assert(not comboController:TravelBlocked() and not comboController.taskTravel,"cancelled task retained movement lock")
+-- Finish resumes queued task work synchronously; Begin must recheck ownership.
+local resumedAlign=Instance.new("AlignPosition")
+local resumedTask=coroutine.create(function()
+ comboController:WithTaskTravel(function()
+  resumedAlign.Parent=root;state.tweennoclip={Connected=true}
+  coroutine.yield()
+  assert(resumedAlign.Parent==root,"new combo destroyed synchronously resumed task tween")
+  resumedAlign:Destroy();state.tweennoclip=nil
+ end)
+end)
+local firstSession=comboController:Begin({key="before-task",position=vector(5,3,0)},h,root)
+assert(firstSession)
+local resumeOthers=showerController.ResumeOthers
+local armed=true
+showerController.ResumeOthers=function(self)
+ resumeOthers(self)
+ if armed then armed=false;assert(coroutine.resume(resumedTask)) end
+end
+local replacement=comboController:Begin({key="after-task",position=vector(8,3,0)},h,root)
+assert(not replacement and not comboController.active and resumedAlign.Parent==root,"Begin stole movement after Finish resumed task travel")
+assert(coroutine.resume(resumedTask))
+showerController.ResumeOthers=resumeOthers
+assert(not comboController.taskTravel,"resumed travel did not release ownership")
+
+-- Replay the real FX schema, with account names sanitized.
+comboController:Finish("live replay setup")
+comboController.records={};comboController.byKey={};comboController.jobs={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+player.Name="MainAccount";cfg.coconutteam.main="MainAccount";cfg.coconutteam.alt1="AltOne";cfg.coconutteam.mainassist=5
+cfg.autofarm.enabled=true;state.activityStatus=1
+root.Position=vector(-490,123.2,546)
+local liveOwner={ClassName="Player",Name="MainAccount",IsA=function(_,class)return class=="Player"end}
+local realEvents={{time=3474.996,effect="KickedComboCoconut",data={Pos1=vector(-490.0,123.2,546.0),Points=100,Rad=13}},{time=3474.996,effect="FallingCoconut",data={Combo=31,Radius=13,Dur=0.9149405464557394,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-458.0,123.2,554.0)}},{time=3475.927,effect="KickedComboCoconut",data={Pos1=vector(-458.0,123.2,554.0),Points=100,Rad=13}},{time=3475.927,effect="FallingCoconut",data={Combo=32,Radius=13,Dur=0.8835641933074436,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-498.0,123.2,570.0)}},{time=3476.827,effect="KickedComboCoconut",data={Pos1=vector(-498.0,123.2,570.0),Points=100,Rad=13}},{time=3476.827,effect="FallingCoconut",data={Combo=33,Radius=13,Dur=0.8527900328486191,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-518.0,123.2,538.0)}},{time=3477.694,effect="KickedComboCoconut",data={Pos1=vector(-518.0,123.2,538.0),Points=100,Rad=13}},{time=3477.694,effect="FallingCoconut",data={Combo=34,Radius=13,Dur=0.8225887698553866,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-466.0,123.2,534.0)}},{time=3478.51,effect="KickedComboCoconut",data={Pos1=vector(-466.0,123.2,534.0),Points=100,Rad=13}},{time=3478.51,effect="FallingCoconut",data={Combo=35,Radius=13,Dur=0.7929333469863082,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-490.0,123.2,546.0)}},{time=3479.327,effect="KickedComboCoconut",data={Pos1=vector(-490.0,123.2,546.0),Points=100,Rad=13}},{time=3479.327,effect="FallingCoconut",data={Combo=36,Radius=13,Dur=0.7637987152502324,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-482.0,123.2,570.0)}},{time=3480.095,effect="KickedComboCoconut",data={Pos1=vector(-482.0,123.2,570.0),Points=100,Rad=13}},{time=3480.095,effect="FallingCoconut",data={Combo=37,Radius=13,Dur=0.7351616336946107,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-514.0,123.2,554.0)}},{time=3480.844,effect="KickedComboCoconut",data={Pos1=vector(-514.0,123.2,554.0),Points=100,Rad=13}},{time=3480.844,effect="FallingCoconut",data={Combo=38,Radius=13,Dur=0.7070004939101886,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-470.0,123.2,542.0)}},{time=3481.614,effect="KickedComboCoconut",data={Pos1=vector(-470.0,123.2,542.0),Points=100,Rad=13}},{time=3481.614,effect="FallingCoconut",data={Combo=39,Radius=13,Dur=0.6792951657095281,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-494.0,123.2,526.0)}}}
+local observed=0
+local lastTime=realEvents[1].time
+for _,event in ipairs(realEvents)do
+ now+=event.time-lastTime;lastTime=event.time
+ fx.OnClientEvent:Fire(event.effect,event.data)
+ comboController:Tick()
+ if event.effect=="FallingCoconut" then
+  observed+=1
+  local record=comboController.records[#comboController.records]
+  assert(record.owner=="MainAccount" and record.stack==event.data.Combo and record.points==100 and not record.private,"live FX owner/stack parsing wrong")
+  assert(record.sharedDrops==observed,"ownerless live events reset field counter")
+  assert(comboController.active==(observed%5==0),"main caught every live drop instead of interval")
+ end
+end
+assert(observed>=8,"live replay fixture too short")
+comboController:Finish("main live replay complete")
+comboController.records={};comboController.byKey={};comboController.jobs={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+liveOwner.Name="AltOne"
+lastTime=realEvents[1].time
+for _,event in ipairs(realEvents)do
+ now+=event.time-lastTime;lastTime=event.time
+ fx.OnClientEvent:Fire(event.effect,event.data)
+ comboController:Tick()
+ if event.effect=="FallingCoconut" then
+  local record=comboController.records[#comboController.records]
+  assert(record.owner=="AltOne" and record.points==100 and record.stack==event.data.Combo,"live alt owner/count wrong")
+  assert(comboController.active==(event.data.Combo%2==1),"main failed to take actual-schema reserved alt drop")
+ end
+end
+comboController:Finish("live replay complete")
 showerController.shuttingDown=true
 comboController:Shutdown()
 assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)

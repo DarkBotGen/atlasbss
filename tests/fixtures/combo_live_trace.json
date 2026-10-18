@@ -1,0 +1,275 @@
+{
+  "description": "Sanitized real main-account FX trace: ComboOwner is a Player, Combo is the stack count, Points remains 100. KickedComboCoconut only describes the old position.",
+  "events": [
+    {
+      "time": 3474.996,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -490.0,
+          123.2,
+          546.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3474.996,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 31,
+        "Radius": 13,
+        "Dur": 0.9149405464557394,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -458.0,
+          123.2,
+          554.0
+        ]
+      }
+    },
+    {
+      "time": 3475.927,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -458.0,
+          123.2,
+          554.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3475.927,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 32,
+        "Radius": 13,
+        "Dur": 0.8835641933074436,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -498.0,
+          123.2,
+          570.0
+        ]
+      }
+    },
+    {
+      "time": 3476.827,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -498.0,
+          123.2,
+          570.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3476.827,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 33,
+        "Radius": 13,
+        "Dur": 0.8527900328486191,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -518.0,
+          123.2,
+          538.0
+        ]
+      }
+    },
+    {
+      "time": 3477.694,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -518.0,
+          123.2,
+          538.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3477.694,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 34,
+        "Radius": 13,
+        "Dur": 0.8225887698553866,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -466.0,
+          123.2,
+          534.0
+        ]
+      }
+    },
+    {
+      "time": 3478.51,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -466.0,
+          123.2,
+          534.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3478.51,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 35,
+        "Radius": 13,
+        "Dur": 0.7929333469863082,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -490.0,
+          123.2,
+          546.0
+        ]
+      }
+    },
+    {
+      "time": 3479.327,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -490.0,
+          123.2,
+          546.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3479.327,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 36,
+        "Radius": 13,
+        "Dur": 0.7637987152502324,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -482.0,
+          123.2,
+          570.0
+        ]
+      }
+    },
+    {
+      "time": 3480.095,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -482.0,
+          123.2,
+          570.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3480.095,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 37,
+        "Radius": 13,
+        "Dur": 0.7351616336946107,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -514.0,
+          123.2,
+          554.0
+        ]
+      }
+    },
+    {
+      "time": 3480.844,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -514.0,
+          123.2,
+          554.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3480.844,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 38,
+        "Radius": 13,
+        "Dur": 0.7070004939101886,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -470.0,
+          123.2,
+          542.0
+        ]
+      }
+    },
+    {
+      "time": 3481.614,
+      "effect": "KickedComboCoconut",
+      "data": {
+        "Pos1": [
+          -470.0,
+          123.2,
+          542.0
+        ],
+        "Points": 100,
+        "Rad": 13
+      }
+    },
+    {
+      "time": 3481.614,
+      "effect": "FallingCoconut",
+      "data": {
+        "Combo": 39,
+        "Radius": 13,
+        "Dur": 0.6792951657095281,
+        "Friendly": true,
+        "Points": 100,
+        "ComboOwner": "MainAccount",
+        "Pos": [
+          -494.0,
+          123.2,
+          526.0
+        ]
+      }
+    }
+  ]
+}
