@@ -38,6 +38,32 @@ class Assignments(unittest.TestCase):
         self.assertEqual(r["jobs"], [])
         self.assertEqual(len(self.sync("MainBee")["jobs"]), 1)
 
+    def test_catcher_is_not_released_just_before_impact(self):
+        self.sync("MainBee", [self.target()], pos=[10, 0, 0])
+        self.now = 101.9
+        reply = self.sync("MainBee", pos=[10, 0, 0])
+        self.assertEqual(self.assigned()["fall-1"], "mainbee")
+        self.assertEqual(len(reply["jobs"]), 1)
+        self.assertGreater(reply["jobs"][0]["lease"], .3)
+
+    def test_no_reassignment_during_a_committed_landing_lease(self):
+        self.sync("MainBee", [self.target()], pos=[10, 0, 0])
+        self.now += .8
+        self.sync("AltOne")
+        self.assertIsNone(self.assigned()["fall-1"])
+        self.now += .4
+        self.sync("AltOne")
+        self.assertIsNone(self.assigned()["fall-1"], "backup stole a committed landing before its lease ended")
+
+    def test_explicit_busy_release_can_yield_a_committed_landing(self):
+        self.sync("MainBee", [self.target()], pos=[10, 0, 0])
+        self.seq["MainBee"] += 1
+        self.c.sync({"protocol": 2, "active_key": "", "username": "MainBee", "server": "server-1",
+            "session": "MainBee-session", "seq": self.seq["MainBee"], "pos": [10, 0, 0], "speed": 100,
+            "busy": True, "roster": self.roster, "targets": []})
+        self.sync("AltOne")
+        self.assertEqual(self.assigned()["fall-1"], "altone")
+
     def test_alt_owner_first_then_main_then_owner(self):
         self.sync("AltOne", [self.target("AltOne")], pos=[10, 0, 0])
         self.assertEqual(self.assigned()["fall-1"], "altone")

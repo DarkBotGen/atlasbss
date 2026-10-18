@@ -18,10 +18,13 @@ Open **Farming → Coconut Team** on the main account:
 - Set **Team Field** to the field containing the main and two spawning alts.
 - Click **Copy Team Code** and paste that code into the same box on every other account. This copies the connection and roster together. The account choices and connection are saved in each account's config.
 - Enable **Coordinate Coconut Team** on all participating accounts.
+- The ordinary **Farm Combo Coconuts** switch is not needed while team coordination is enabled; leave it off when testing team catching.
 - Enable **Fast Combo Catching** on the three outside catchers. Their autofarm may remain off.
 - Main and spawning alts need autofarm gathering enabled. Shower collection, conversion, combat, death and Stop Everything make an account unavailable for team catches.
 
 The menu's status shows connection/assignment state and the last observed combo owner. **Unknown owner** means the game did not expose a usable player identity; team mode does not invent ownership or alternating turns for that coconut.
+
+Catch-timing v2 fixes early release at impact. A catcher already under a landing keeps ownership through the impact window. The client uses its matching local FX deadline instead of walking away on an early HTTP-based estimate. Existing landing leases remain valid during brief transport gaps; they expire normally and cannot be renewed by an offline client. A busy client explicitly releases control before the coordinator assigns a backup. The script requests a coordinator update if the PC is still running the first version.
 
 ## Catch rules
 

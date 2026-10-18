@@ -1961,7 +1961,7 @@ function comboController:Tick()
 	local job
 	if cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
-			if candidate.deadline>now and candidate.leaseUntil>now then job=candidate;break end
+			if candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
 		end
 	else
 		-- Independent outside-field mode has no ownership rotation and needs no coordinator.
@@ -2002,6 +2002,22 @@ function comboController:Roster()
 	return {main=c.main,alts={c.alt1,c.alt2},catchers=catchers,field=c.field~="" and c.field or cfg.autofarm.field1}
 end
 
+function comboController:KeepLanding()
+	local now=os.clock()
+	local kept={}
+	local available,_,root=self:Available()
+	if available and root then
+		for _,j in ipairs(self.jobs)do
+			if j.leaseUntil>now and j.deadline+0.12>now then
+				local delta=Vector3.new(j.position.X-root.Position.X,0,j.position.Z-root.Position.Z)
+				if delta.Magnitude<=9 and math.abs(j.position.Y-root.Position.Y)<=7 then kept[1]=j;break end
+			end
+		end
+	end
+	self.jobs=kept
+	return kept
+end
+
 function comboController:Sync()
 	local c=cfg.coconutteam
 	if c.url=="" or c.key=="" then self.status="Paste the launcher's connection code";return false end
@@ -2019,15 +2035,16 @@ function comboController:Sync()
 	end
 	self.seq+=1
 	local speed=self.session and c.maxspeed or math.max(h.WalkSpeed,c.maxspeed)
-	local payload={username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
+	local payload={protocol=2,active_key=self.session and self.session.key or "",username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
 		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available,
 		roster=self:Roster(),targets=list}
+	if not available then self:Finish("Busy with another activity");payload.active_key="" end
 	local generation=self.generation
 	local ok,response=pcall(http_request,{Url=c.url.."/v1/sync",Method="POST",Headers={["Content-Type"]="application/json",Authorization="Bearer "..c.key},Body=HttpService:JSONEncode(payload),Timeout=3})
 	if generation~=self.generation or self.closed or not c.enabled then return false end
 	local elapsed=os.clock()-started
 	if not ok or not response or response.StatusCode~=200 then
-		self.jobs={};self.status="Coordinator unavailable; team catches paused"
+		self:KeepLanding();self.status="Coordinator unavailable; no new catches assigned"
 		if ok and response and response.StatusCode==400 then
 			local parsed,problem=pcall(HttpService.JSONDecode,HttpService,response.Body)
 			if parsed and type(problem)=="table" and type(problem.error)=="string" then self.status=problem.error end
@@ -2038,18 +2055,29 @@ function comboController:Sync()
 	if not decoded or type(data)~="table" or not data.ok or type(data.jobs)~="table" then
 		self.jobs={};self.status=type(data)=="table" and (data.message or "Coordinator rejected settings") or "Invalid coordinator reply";return false
 	end
+	if data.protocol~=2 then self.jobs={};self.status="Update coordinator PC to catch-timing v2, then reconnect";return false end
 	local jobs={}
 	for _,j in ipairs(data.jobs) do
 		if #jobs>=1 then break end
 		if type(j.pos)=="table" and #j.pos==3 and type(j.ttl)=="number" and type(j.lease)=="number"
 			and type(j.pos[1])=="number" and type(j.pos[2])=="number" and type(j.pos[3])=="number" then
-			local ttl=math.min(j.ttl,12)-elapsed
-			local lease=math.min(j.lease,0.65)-elapsed
-			if ttl>0 and lease>0 then
-				jobs[#jobs+1]={key=j.key,owner=j.owner,position=Vector3.new(table.unpack(j.pos)),deadline=os.clock()+ttl,leaseUntil=os.clock()+lease}
+			local deadline=os.clock()+math.min(j.ttl,12)-elapsed
+			local target=Vector3.new(table.unpack(j.pos))
+			-- The local FX observation is more precise than an HTTP round trip.
+			-- Do not walk away before impact just because a conservative TTL ended early.
+			for _,r in ipairs(self.records)do
+				if r.deadline+0.12>os.clock() and r.owner and type(j.owner)=="string"
+					and string.lower(r.owner)==string.lower(j.owner) and (r.position-target).Magnitude<2 then
+					deadline=r.deadline;break
+				end
+			end
+			local lease=math.min(j.lease,12.5)-elapsed
+			if deadline+0.12>os.clock() and lease>0 then
+				jobs[#jobs+1]={key=j.key,owner=j.owner,position=target,deadline=deadline,leaseUntil=os.clock()+lease}
 			end
 		end
 	end
+	if #jobs==0 then jobs=self:KeepLanding() end
 	self.jobs=jobs
 	self.status=data.message or "Connected"
 	self.roundTrip=elapsed
@@ -2067,7 +2095,7 @@ function comboController:Configure()
 		local failures=0
 		while not self.closed and cfg.coconutteam.enabled do
 			local ok,result=pcall(function()return self:Sync()end)
-			if ok and result then failures=0 else failures=math.min(failures+1,4);self.jobs={} end
+			if ok and result then failures=0 else failures=math.min(failures+1,4);self:KeepLanding() end
 			task.wait(failures==0 and 0.15 or math.min(4,0.5*2^(failures-1)))
 		end
 	end)
@@ -2093,6 +2121,7 @@ function comboController:Start()
 		if not ok then self:Finish("Combo movement stopped by error");self.status=tostring(err) end
 		if self.statusLabel then self.statusLabel.Text="Team: "..self.status end
 		if self.ownerLabel then self.ownerLabel.Text="Last combo owner: "..(self.lastOwner or "waiting for a new combo") end
+		if self.debugLabel then self.debugLabel.Text=string.format("Detected: %d | Assigned: %d | RTT: %.0f ms | Activity: %s",#self.records,#self.jobs,(self.roundTrip or 0)*1000,tostring(state.activityStatus)) end
 	end))
 	self:Configure()
 end
@@ -2111,6 +2140,7 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
+	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
 	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
 	local names={"None"}
@@ -2147,6 +2177,7 @@ function comboController:BuildMenu(tab)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
 	self.statusLabel=folder.AddLabel("Team: Disabled")
 	self.ownerLabel=folder.AddLabel("Last combo owner: waiting for a new combo")
+	self.debugLabel=folder.AddLabel("Detected: 0 | Assigned: 0 | RTT: waiting")
 	folder.AddLabel("One launcher for all computers. All accounts must be in the same Roblox server.")
 	folder.Toggle(true,true)
 end

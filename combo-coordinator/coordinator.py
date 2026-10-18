@@ -128,7 +128,8 @@ class Coordinator:
             elapsed = max(0, min(float(body.get("sample_age", 0)), 2))
             room["players"][name] = {"seen": now, "sample": now - elapsed, "pos": pos,
                 "speed": max(1, min(speed, 180)), "busy": body.get("busy") is not False,
-                "session": session, "seq": seq}
+                "session": session, "seq": seq, "protocol": body.get("protocol", 1),
+                "active_key": str(body.get("active_key", ""))[:200]}
             for key, owner, target_pos, ttl, pts, field in parsed:
                 target = room["targets"].get(key)
                 if target and target["deadline"] < now and now + ttl - target["deadline"] > 0.6:
@@ -149,10 +150,15 @@ class Coordinator:
             self.assign(room, now)
             jobs = []
             for target in room["targets"].values():
-                if target.get("assigned") == name and now < target["deadline"] and not target["settled"]:
+                if target.get("assigned") == name and now < target["deadline"] + 0.15 and not target["settled"]:
+                    inside = distance(pos, target["pos"]) <= 9 and abs(pos[1] - target["pos"][1]) <= 7
+                    # Standing at the landing is a committed catch, not a new trip.
+                    # Grant enough ownership to remain through impact despite HTTP jitter.
+                    lease = min(12.5, max(0.65, target["deadline"] - now + 0.35)) if inside else 0.65
+                    target["lease_until"] = now + lease
                     jobs.append({"key": target["key"], "pos": target["pos"], "owner": target["owner"],
-                        "ttl": target["deadline"] - now, "lease": min(0.65, target["deadline"] - now)})
-            return {"ok": True, "jobs": jobs[:1], "online": len(room["players"]),
+                        "ttl": target["deadline"] - now, "lease": lease})
+            return {"ok": True, "protocol": 2, "jobs": jobs[:1], "online": len(room["players"]),
                 "message": "Assigned catch" if jobs else "Connected; waiting for a reachable combo"}
 
     def assign(self, room, now):
@@ -172,7 +178,8 @@ class Coordinator:
                 if abs(player["pos"][1] - target["pos"][1]) > 12:
                     continue
                 travel = max(0, distance(player["pos"], target["pos"]) - 5) / player["speed"]
-                if travel + 0.2 < remaining:
+                inside = distance(player["pos"], target["pos"]) <= 9 and abs(player["pos"][1] - target["pos"][1]) <= 7
+                if inside or travel + 0.2 < remaining:
                     eligible[name] = travel
             old = target.get("assigned")
             # Keep an assignment for this landing. No last-millisecond main/alt ping-pong.
@@ -185,7 +192,9 @@ class Coordinator:
             target["assigned"] = None
             if old:
                 # Wait out the old client's lease before another account is allowed to move.
-                target["handoff_after"] = now + 0.75
+                previous = room["players"].get(old)
+                released = previous and previous["protocol"] == 2 and previous["busy"] and previous["active_key"] != target["key"]
+                target["handoff_after"] = now if released else max(now + 0.05, target.get("lease_until", now + 0.65) + 0.05)
                 continue
             if now < target.get("handoff_after", 0):
                 continue
@@ -213,7 +222,7 @@ class Coordinator:
 
 PAGE = r'''<!doctype html><meta charset="utf-8"><title>Atlas+ Coconut Team</title>
 <style>body{font:16px system-ui;background:#101623;color:#ecf1ff;max-width:800px;margin:50px auto;padding:20px}textarea{width:100%;height:100px;background:#1c2638;color:white}button{padding:12px;margin:12px 0}small{color:#abb9d1}</style>
-<h1>Atlas+ Coconut Team</h1><p>Leave the launcher running on this computer. Run Atlas+ on every account.</p>
+<h1>Atlas+ Coconut Team — catch-timing v2</h1><p>Leave the launcher running on this computer. Run Atlas+ on every account.</p>
 <p>In the script, choose the main, two spawning alts and optional outside catchers. Paste this connection code into every account, then copy the team code from the main to the others.</p>
 <textarea id="invite" readonly>Starting secure tunnel…</textarea><button onclick="navigator.clipboard.writeText(document.getElementById('invite').value)">Copy connection code</button>
 <pre id="status"></pre><small>The temporary connection address changes when you restart the launcher. No Roblox passwords or cookies are used.</small>
@@ -362,7 +371,7 @@ def main():
                     match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
                     if match:
                         server.public_url = match.group()
-                        server.message = "Ready. Paste the connection code into Atlas+ on all computers."
+                        server.message = "Ready — catch-timing v2. Paste the connection code into Atlas+ on all computers."
                 server.message = "Tunnel stopped. Restart the launcher and update the connection code."
                 server.public_url = ""
             threading.Thread(target=read_tunnel, daemon=True).start()
