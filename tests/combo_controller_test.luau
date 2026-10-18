@@ -172,8 +172,11 @@ local currentField=home
 local function getFieldAt(p) return p.X>10 and outside or home end
 local function getHumanoid()return h end
 cfg.autofarm.field1="Pepper Patch"
-cfg.coconutteam={enabled=false,fast=true,main="OtherMain",alt1="Tester",alt2="AltTwo",catcher1="OutsideOne",catcher2="None",catcher3="None",field="Pepper Patch",maxspeed=120,url="https://example.test",key=string.rep("x",32)}
+cfg.coconutteam={enabled=false,fast=true,main="OtherMain",alt1="Tester",alt2="AltTwo",catcher1="OutsideOne",catcher2="None",catcher3="None",field="Pepper Patch",outsidefield="Mountain Top Field",maxspeed=120,url="https://example.test",key=string.rep("x",32)}
 state.activityStatus=1
+local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
+root.CurrentPhysicalProperties=PhysicalProperties.new(.7,.5,.2,1,1)
+root.Massless=false
 local gameApi={Events=Instance.new("Folder")}
 local fx=Instance.new("RemoteEvent",gameApi.Events);fx.Name="LocalFX";fx.OnClientEvent=signal()
 local HttpService={GenerateGUID=function()return "session-id"end,JSONEncode=function(_,v)return v end,JSONDecode=function(_,v)return v end}
@@ -429,7 +432,11 @@ function comboController:Observe(effectName, data)
 	local field=getFieldAt(goal)
 	self.serial+=1
 	local key=string.format("%s:%.1f:%.1f:%.1f:%s:%d",string.lower(owner or "unknown"),goal.X,goal.Y,goal.Z,tostring(id or data.Points or 0),self.serial)
-	local record={key=key,owner=owner,position=goal,deadline=now+dur,points=tonumber(data.Points) or 0,
+	local runKey=owner and ("owner:"..string.lower(owner))
+	local run=runKey and self.chains[runKey]
+	local fieldName=field and field.Name or ""
+	local fieldDrops=run and run.expires>now and run.record.field==fieldName and (run.record.fieldDrops or 1)+1 or 1
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,points=tonumber(data.Points) or 0,
 		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
 	if previous then
 		-- The bounce is a new destination; do not continue holding the previous drop.
@@ -440,6 +447,10 @@ function comboController:Observe(effectName, data)
 			if not self.chains[chainKey] then self.chainCount+=1 end
 			self.chains[chainKey]={owner=owner,record=record,expires=now+30}
 		end
+	end
+	if runKey and (self.chains[runKey] or self.chainCount<64) then
+		if not self.chains[runKey] then self.chainCount+=1 end
+		self.chains[runKey]={owner=owner,record=record,expires=now+30}
 	end
 	self.byKey[key]=record
 	self.records[#self.records+1]=record
@@ -456,7 +467,7 @@ function comboController:OwnLanding()
 	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
 	local now, best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+		if self:MainOwned(r.owner) and (r.fieldDrops or 1)>=2 and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
 end
@@ -466,37 +477,32 @@ function comboController:TeamField()
 end
 
 function comboController:OutsideMainLanding()
-	if not cfg.coconutteam.enabled or not cfg.coconutteam.fast or self:Role()~="catcher" then return end
-	local char=localPlayer.Character
-	local root=char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	local field=getFieldAt(root.Position)
-	local here=field and field.Name or ""
+	if not cfg.coconutteam.enabled then return end
+	local role=self:Role()
+	if role~="alt" and role~="catcher" then return end
+	if role=="catcher" and not cfg.coconutteam.fast then return end
+	local field=role=="alt" and self:TeamField() or cfg.coconutteam.outsidefield
 	local now,best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and r.field~=self:TeamField() and r.field==here
-			and math.abs(root.Position.Y-r.position.Y)<=12 and r.deadline+0.12>now then
-			-- All helpers use replicated positions and the same name tie-breaker.
-			-- Pick the closest live outside catcher already in this landing's field.
-			local winner,nearest=nil,math.huge
-			for _,player in ipairs(getService("Players"):GetPlayers())do
-				local name=string.lower(player.Name)
-				local c=cfg.coconutteam
-				if name==string.lower(c.catcher1) or name==string.lower(c.catcher2) or name==string.lower(c.catcher3) then
-					local character=player.Character
-					local h=character and character:FindFirstChildOfClass("Humanoid")
-					local part=character and character:FindFirstChild("HumanoidRootPart")
-					local f=part and getFieldAt(part.Position)
-					if h and h.Health>0 and part and (f and f.Name or "")==here and math.abs(part.Position.Y-r.position.Y)<=12 then
-						local d=Vector3.new(part.Position.X-r.position.X,0,part.Position.Z-r.position.Z).Magnitude
-						if d<nearest-0.05 or (math.abs(d-nearest)<=0.05 and (not winner or name<winner)) then winner,nearest=name,d end
-					end
-				end
-			end
-			if winner==string.lower(localPlayer.Name) and (not best or r.deadline<best.deadline) then best=r end
-		end
+		if self:MainOwned(r.owner) and r.field==field and r.deadline+0.12>now
+			and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
+end
+
+function comboController:WantsTeamCombo()
+	if not cfg.coconutteam.enabled then return false end
+	local role=self:Role()
+	if not role or (role=="catcher" and not cfg.coconutteam.fast) then return false end
+	local now=os.clock()
+	for _,r in ipairs(self.records)do
+		if not self:MainOwned(r.owner) and r.owner and r.deadline+0.12>now then
+			local owner=string.lower(r.owner)
+			if (owner==string.lower(cfg.coconutteam.alt1) or owner==string.lower(cfg.coconutteam.alt2))
+				and (role~="alt" or owner==string.lower(localPlayer.Name)) then return true end
+		end
+	end
+	return false
 end
 
 function comboController:AcceptTeamJob(job)
@@ -505,22 +511,23 @@ function comboController:AcceptTeamJob(job)
 	if role=="alt" then return type(job.owner)=="string" and string.lower(job.owner)==string.lower(localPlayer.Name) end
 	if role=="catcher" then
 		local field=getFieldAt(job.position)
-		return cfg.coconutteam.fast and (field and field.Name or "")~=self:TeamField()
+		return cfg.coconutteam.fast and (field and field.Name or "")==cfg.coconutteam.outsidefield
 	end
 	return role=="main"
 end
 
 function comboController:Available()
-	if self.closed or state.stop or (showerController.active and not self.ownPriority) then return false end
+	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
+	if self.closed or state.stop or (showerController.active and not focused) then return false end
 	local char = localPlayer.Character
 	local h = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not h or not root or h.Health <= 0 then return false end
-	if not self.ownPriority and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
+	if not focused and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
 	if cfg.coconutteam.enabled then
 		local role = self:Role()
 		if not role or (role == "catcher" and not cfg.coconutteam.fast) then return false end
-		if not self.ownPriority and role ~= "catcher" and not cfg.autofarm.enabled then return false end
+		if not focused and role ~= "catcher" and not cfg.autofarm.enabled then return false end
 	end
 	return true, h, root
 end
@@ -529,10 +536,29 @@ function comboController:IsMovementJob(id)
 	return showerController:IsMovementJob(id)
 end
 
+function comboController:ApplyDensity(session)
+	pcall(function()
+		local root=session.root
+		local physical=root.CurrentPhysicalProperties
+		if not physical then return end
+		session.originalPhysical=root.CustomPhysicalProperties
+		session.originalMassless=root.Massless
+		session.densityChanged=true
+		root.Massless=false
+		root.CustomPhysicalProperties=PhysicalProperties.new(math.clamp(physical.Density*10,0.01,100),physical.Friction,physical.Elasticity,physical.FrictionWeight,physical.ElasticityWeight)
+	end)
+end
+
 function comboController:Finish(reason)
 	local session = self.session
 	if not session then return end
 	self.session, self.active = nil, false
+	threads:Cancel("comboFieldTravel")
+	if session.travelling then pcall(stopMovement) end
+	if session.densityChanged then
+		pcall(function()session.root.CustomPhysicalProperties=session.originalPhysical end)
+		pcall(function()session.root.Massless=session.originalMassless end)
+	end
 	RunService:UnbindFromRenderStep("AtlasComboMovement")
 	local env = type(getgenv)=="function" and getgenv() or _G
 	if env[session.leaseKey] == session.lease then env[session.leaseKey] = session.previousLease end
@@ -559,15 +585,37 @@ function comboController:Begin(job, h, root)
 	end)
 	self.session,self.active=s,true
 	showerController:PauseOthers()
+	self:ApplyDensity(s)
 	RunService:BindToRenderStep("AtlasComboMovement",Enum.RenderPriority.Character.Value+1,function()
 		if self.session~=s then return end
 		if not self:Available() or not s.root.Parent then self:Finish("Combo movement interrupted");return end
 		s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
 		env[key]=s.lease
 		s.h.WalkSpeed=s.speed
-		s.h:Move(s.direction,false)
+		if not s.travelling then s.h:Move(s.direction,false) end
 	end)
 	return s
+end
+
+function comboController:TravelToField(job, session)
+	if not cfg.coconutteam.enabled or not self.travel or not job.field or job.field=="" then return false end
+	local here=getFieldAt(session.root.Position)
+	if here and here.Name==job.field then
+		if session.travelling then threads:Cancel("comboFieldTravel");session.travelling=false;pcall(stopMovement) end
+		return false
+	end
+	if session.routeTried then return session.travelling end
+	session.routeTried=true
+	session.travelling=true
+	session.speed=math.max(180,cfg.coconutteam.maxspeed)
+	threads:Add("comboFieldTravel",function()
+		local ok,reached=pcall(self.travel,job.position,job.field,job.deadline)
+		if self.session==session then
+			session.travelling=false
+			if not ok or reached==false then pcall(stopMovement);self.status="Field travel interrupted; adjusting to landing" end
+		end
+	end)
+	return session.travelling
 end
 
 function comboController:Tick()
@@ -582,13 +630,11 @@ function comboController:Tick()
 			table.remove(self.records,i)
 		end
 	end
-	if not self:Managed() then self.ownPriority=false;self:Finish("Disabled");return end
+	if not self:Managed() then self.ownPriority=false;self.comboPriority=false;self:Finish("Disabled");return end
+	local character=localPlayer.Character
+	local root=character and character:FindFirstChild("HumanoidRootPart")
+	if not root then self:Finish("No character");return end
 	local own=self:OwnLanding() or self:OutsideMainLanding()
-	self.ownPriority=own~=nil
-	if own and showerController.active and showerController.cancel then showerController.cancel("Prioritizing main account combo") end
-	local available,h,root=self:Available()
-	if not available then self:Finish("Busy with another activity");return end
-	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -606,28 +652,29 @@ function comboController:Tick()
 			end
 		end
 	end
+	self.ownPriority=own~=nil
+	self.comboPriority=job~=nil
+	if job and showerController.active and showerController.cancel then showerController.cancel("Combo catching has priority") end
+	local available,h,root=self:Available()
+	if not available then self:Finish("Busy with another activity");return end
+	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then self:Finish(cfg.coconutteam.enabled and "Waiting for assignment" or "Waiting for outside-field combo");return end
 	local s=self:Begin(job,h,root)
 	if not s then return end
+	if self:TravelToField(job,s) then self.status="Following combo to "..job.field;return end
 	local delta=Vector3.new(job.position.X-root.Position.X,0,job.position.Z-root.Position.Z)
 	local d=delta.Magnitude
-	local lead=0.15
-	local ok,ping=pcall(function()return getService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()end)
-	if ok and type(ping)=="number" and ping>=0 and ping<1000 then lead=math.clamp(ping*0.002,0.1,0.4) end
-	-- Shower-style continuous Move + dynamic WalkSpeed, using the coconut's own expiry.
-	-- No tween, CFrame teleport, density change, or invented fixed shower lifetime.
-	local travelTime=math.max(0.05,job.deadline-now-lead)
-	local cap=self.ownPriority and math.max(180,cfg.coconutteam.maxspeed) or cfg.coconutteam.maxspeed
-	if self.ownPriority then
-		-- Depart immediately; brake near the center instead of spending the fall time walking slowly.
-		s.speed=d>0.5 and math.min(cap,math.max(20,d/0.05)) or 0
-	else
-		s.speed=d>0.5 and math.clamp(d/travelTime*1.15,math.min(s.originalSpeed,cap),cap) or 0
-	end
+	-- Full-speed approach with a short final step; the observed deadline controls holding.
+	local cap=math.max(180,cfg.coconutteam.maxspeed)
+	-- Commit immediately and shorten the final step; do not wait for the fall timer.
+	local elapsed=now-(s.lastUpdate or (now-1/30))
+	s.lastUpdate=now
+	s.speed=d>0.5 and math.min(cap,d/math.max(0.05,elapsed+1/60)) or 0
 	s.direction=d>0.5 and delta.Unit or Vector3.zero
 	if d<=0.5 then
 		local v=root.AssemblyLinearVelocity
 		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
+		root.AssemblyAngularVelocity=Vector3.zero
 	end
 	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
 end
@@ -711,7 +758,8 @@ function comboController:Sync()
 			end
 			local lease=math.min(j.lease,12.5)-elapsed
 			if deadline+0.12>os.clock() and lease>0 then
-				local candidate={key=j.key,owner=j.owner,position=target,deadline=deadline,leaseUntil=os.clock()+lease}
+				local targetField=getFieldAt(target)
+				local candidate={key=j.key,owner=j.owner,position=target,field=targetField and targetField.Name or "",deadline=deadline,leaseUntil=os.clock()+lease}
 				if self:AcceptTeamJob(candidate) then jobs[#jobs+1]=candidate end
 			end
 		end
@@ -780,9 +828,10 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
-	folder.AddLabel("Main combo: main + outside catchers only. Spawning alts ignore it.")
-	folder.AddLabel("Outside catchers prioritize main combos in their field over showers and farming.")
-	folder.AddLabel("Alt combo: its spawning alt + main; outside catchers help after it changes fields.")
+	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
+	folder.AddLabel("Main joins its own combo after two consecutive drops in the same field.")
+	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
+	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
 	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
@@ -793,6 +842,7 @@ function comboController:BuildMenu(tab)
 		selectors[entry[2]]=folder.AddDropdown(entry[1],names,nil,function()self:Configure()end,"coconutteam",entry[2])
 	end
 	local fieldSelector=folder.AddDropdown("Team Field",availableFields,true,function()self:Configure()end,"coconutteam","field",{Field=true})
+	local outsideSelector=folder.AddDropdown("Outside Catch Field",availableFields,true,function()self:Configure()end,"coconutteam","outsidefield",{Field=true})
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,180,"coconutteam","maxspeed",{Left=true})
 	folder.AddTextBox("Paste Connection / Team Code",function(text)
 		local ok,code=pcall(HttpService.JSONDecode,HttpService,text)
@@ -808,13 +858,14 @@ function comboController:BuildMenu(tab)
 			end
 		end
 		if type(code.field)=="string" and availableFields[code.field] then cfg.coconutteam.field=code.field;fieldSelector.SetValue(code.field) end
+		if type(code.outsidefield)=="string" and availableFields[code.outsidefield] then cfg.coconutteam.outsidefield=code.outsidefield;outsideSelector.SetValue(code.outsidefield) end
 		saveConfig();self:Configure();ui.Notify("Coconut Team","Connection and account settings saved")
 	end)
 	folder.AddButton("Copy Team Code",function()
 		local c=cfg.coconutteam
 		local copy=setclipboard or toclipboard
 		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
-		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field}))
+		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
 	end)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
@@ -838,24 +889,32 @@ end
 observe(5,"inside");comboController:Tick();assert(not comboController.active,"solo fast stole in-field combo")
 observe(35,"outside");comboController:Tick()
 assert(comboController.active and not controls.controlsEnabled)
+assert(root.CustomPhysicalProperties.Density==7 and root.Massless==false,"combo density was not applied")
 assert(not threads:Get("Autofarm") and threads:Get("Stats")==stats)
 threads:Add("Autofarm",worker);assert(not threads:Get("Autofarm"),"watchdog stole combo movement")
 for i=1,25 do step(0.03)end
 assert(root.Position.X>25,"continuous movement did not approach coconut")
-showerController.active=true;comboController:Tick()
-assert(not comboController.active and h.WalkSpeed==40 and controls.controlsEnabled,"shower interruption did not restore")
+showerController.active=true
+showerController.cancel=function()showerController.active=false end
+comboController:Tick()
+assert(comboController.active and not showerController.active,"combo did not override shower")
+state.stop=true;comboController:Tick()
+assert(not comboController.active and h.WalkSpeed==40 and controls.controlsEnabled and root.CustomPhysicalProperties==nil and root.Massless==false,"stop did not restore density and movement")
+state.stop=false
 showerController.active=false
 cfg.coconutteam.enabled=true;cfg.coconutteam.fast=false
 comboController.jobs={{key="assigned",owner="Tester",position=vector(40,3,0),deadline=now+1,leaseUntil=now+.4}}
-comboController:Tick();assert(comboController.active)
+state.activityStatus=3;showerController.active=true
+comboController:Tick();assert(comboController.active and not showerController.active and comboController.comboPriority,"assigned alt catch did not preempt other work")
+state.activityStatus=1
 now+=.5;comboController:Tick();assert(not comboController.active,"expired network lease still moving")
 assert(comboController:Sync());assert(sent.server==game.JobId and sent.roster.main=="OtherMain")
 assert(#sent.targets==2,"visible combo observations missing")
 reply.jobs={{key="remote",owner="Tester",pos={40,3,0},ttl=1,lease=.65}}
 comboController:Sync();assert(#comboController.jobs==1)
 assert(comboController.jobs[1].leaseUntil<=now+.551,"round trip not deducted")
-networkFail=true;assert(not comboController:Sync() and #comboController.jobs==0)
-networkFail=false;changeSettings=true
+networkFail=true;assert(not comboController:Sync() and #comboController.jobs==1,"brief failure discarded an already-reached leased landing")
+networkFail=false;comboController.jobs={};changeSettings=true
 assert(not comboController:Sync() and #comboController.jobs==0,"late reply applied after settings changed")
 changeSettings=false;requestDuration=1
 comboController:Sync();assert(#comboController.jobs==0,"slow reply granted expired lease")
@@ -888,14 +947,17 @@ reply.protocol=2
 -- Main-owned landings are immediate, local and preempt showers/conversion.
 cfg.coconutteam.main="Tester";cfg.coconutteam.alt1="AltOne"
 cfg.autofarm.enabled=false;state.activityStatus=2
-comboController.records={};comboController.byKey={};comboController.jobs={}
+comboController.records={};comboController.byKey={};comboController.jobs={};comboController.chains={};comboController.chainCount=0
 root.Position=vector(0,3,0)
 observe(80,"main-priority")
 local cancelled=0
 showerController.active=true
 showerController.cancel=function()cancelled+=1;showerController.active=false end
 comboController:Tick()
-assert(comboController.active and comboController.ownPriority and cancelled==1,"own combo did not preempt shower/conversion")
+assert(not comboController.active,"main joined its own combo before repeated field drops")
+now+=.2;observe(80,"main-priority")
+comboController:Tick()
+assert(comboController.active and comboController.ownPriority and cancelled==1,"main did not join repeated same-field combo")
 for _,fn in pairs(RunService.bound)do fn()end
 assert(h.WalkSpeed>=180,"main-owned approach was not accelerated")
 networkFail=true
@@ -905,7 +967,8 @@ networkFail=false
 -- Reused chain IDs and kicked FX must advance the main to each next drop.
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(40,3,0),Dur=2,ID="main-chain",Target=player,Points=1})
-comboController:Tick();local firstKey=comboController.session.key
+comboController:Tick();assert(not comboController:OwnLanding(),"new field chain did not reset repeat counter")
+local firstKey="first-not-joined"
 now+=.2
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(80,3,0),Dur=2,ID="main-chain",Target="SomeoneElse",Points=2})
 comboController:Tick()
@@ -921,6 +984,21 @@ now+=.2
 local oldKey=comboController.session.key
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(90,3,0),Duration=1.5,ID="main-chain",Points=4})
 comboController:Tick();assert(comboController.session.key~=oldKey,"repeated-position drop with reused ID was discarded")
+now+=.2
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=5})
+assert(comboController:OwnLanding()==nil,"field change did not reset repeated-drop rule")
+comboController:Tick()
+now+=.2
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=6})
+comboController:Tick();assert(comboController.active and comboController:OwnLanding().field=="Pepper Patch","main did not join after repeated Pepper drops")
+comboController:Finish("test")
+-- Main's assigned turn on an alt combo is hyperfocused, but has no local ownership override.
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
+observe(50,"alt-main-turn","AltOne")
+comboController.jobs={{key="main-turn",owner="AltOne",position=vector(50,3,0),deadline=now+2,leaseUntil=now+1}}
+state.activityStatus=3;showerController.active=true
+comboController:Tick()
+assert(comboController.active and comboController.comboPriority and not comboController.ownPriority and not showerController.active,"main's alt-combo turn was not hyperfocused")
 comboController:Finish("test")
 -- An alt rejects coordinator assignments for the main, including stale server jobs.
 cfg.coconutteam.main="OtherMain";cfg.coconutteam.alt1="Tester"
@@ -959,9 +1037,14 @@ fx.OnClientEvent:Fire("KickedComboCoconut",{EndPos=vector(45,3,0),Dur=2,ID="outs
 comboController:Tick()
 assert(comboController.active and comboController:OutsideMainLanding().position.X==45 and comboController.lastOwner=="OtherMain","outside catcher ignored next bounce or changed spawning owner")
 comboController:Finish("test")
--- A closer helper wins; ties resolve by account name rather than oscillating.
+-- Every configured outside helper focuses its assigned outside field.
 br.Position=vector(49,3,0)
-assert(comboController:OutsideMainLanding()==nil,"helpers competed for same landing")
+assert(comboController:OutsideMainLanding()~=nil,"all configured outside catchers should focus their field")
+for _,name in ipairs({"Tester","HelperB","HelperC"})do
+ player.Name=name
+ assert(comboController:OutsideMainLanding()~=nil,"outside helper was excluded from its field")
+end
+player.Name="Tester"
 -- Outside helpers may take alt-owned jobs only outside the home field.
 assert(comboController:AcceptTeamJob({owner="AltOne",position=vector(50,3,0)}))
 assert(not comboController:AcceptTeamJob({owner="AltOne",position=vector(5,3,0)}))
@@ -971,8 +1054,36 @@ assert(comboController:AcceptTeamJob({owner="Tester",position=vector(50,3,0)}))
 assert(not comboController:AcceptTeamJob({owner="AltTwo",position=vector(50,3,0)}))
 assert(not comboController:AcceptTeamJob({owner="OtherMain",position=vector(50,3,0)}))
 assert(comboController:OutsideMainLanding()==nil)
+-- Both on-field alts now focus main-owned Pepper drops, even on the first drop.
+now+=.2
+fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(5,3,0),Dur=2,ID="pepper-support",Target="OtherMain"})
+comboController:Tick()
+assert(comboController.active and comboController.ownPriority,"on-field alt ignored main's Pepper drop")
+assert(root.CustomPhysicalProperties.Density==7)
+comboController:Finish("test")
+player.Name="AltTwo";assert(comboController:OutsideMainLanding()~=nil,"second on-field alt did not focus Pepper")
+player.Name="Tester"
 state.activityStatus=1
+-- Cross-field travel uses the normal navigation helper and restores custom density exactly.
+local savedPhysical=PhysicalProperties.new(1.2,.4,.1,2,3)
+root.CurrentPhysicalProperties=savedPhysical;root.CustomPhysicalProperties=savedPhysical;root.Massless=true
+root.Position=vector(50,3,0)
+local routeCalls=0
+comboController.travel=function(goal,field)routeCalls+=1;assert(field=="Pepper Patch");coroutine.yield()end
+local routeJob={key="route-test",owner="Tester",position=vector(5,3,0),field="Pepper Patch"}
+local routeSession=comboController:Begin(routeJob,h,root)
+assert(routeSession and root.CustomPhysicalProperties.Density==12 and root.Massless==false)
+assert(comboController:TravelToField(routeJob,routeSession) and routeCalls==1 and threads:Get("comboFieldTravel"))
+comboController:Finish("route cancelled")
+assert(not threads:Get("comboFieldTravel") and root.CustomPhysicalProperties==savedPhysical and root.Massless==true,"route cancellation failed density restoration")
+comboController.travel=nil
+root.CurrentPhysicalProperties=PhysicalProperties.new(.7,.5,.2,1,1);root.CustomPhysicalProperties=nil;root.Massless=false
 cfg.coconutteam.enabled=false;cfg.coconutteam.fast=true
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
+root.Position=vector(0,3,0)
+observe(35,"low-fps")
+for i=1,10 do step(.1)end
+assert(math.abs(root.Position.X-35)<.6 and root.CustomPhysicalProperties.Density==7,"low-FPS combo approach drifted/oscillated past target")
 for i=1,1000 do
  now+=.1
  observe(50,"transient"..i)
@@ -985,7 +1096,7 @@ cfg.autofarm.enabled=false
 observe(50,"outside-autofarm-off");comboController:Tick();assert(comboController.active,"fast mode requires autofarm")
 showerController.shuttingDown=true
 comboController:Shutdown()
-assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0)
+assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)
 assert(not RunService.bound.AtlasComboMovement and h.WalkSpeed==40 and controls.controlsEnabled)
 assert(not connections.list.comboTeamTick and not connections.list.comboTeamFX)
 assert(not threads:Get("Autofarm"),"unload resumed farming")
