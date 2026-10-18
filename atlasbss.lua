@@ -1980,7 +1980,7 @@ function comboController:OwnLanding()
 	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
 	local now, best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and (r.fieldDrops or 1)>=2 and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
 end
@@ -2386,7 +2386,7 @@ function comboController:BuildMenu(tab)
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
-	folder.AddLabel("Main joins its own combo after two consecutive drops in the same field.")
+	folder.AddLabel("Main catches its own combo from the first drop, including after field changes.")
 	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")

@@ -523,7 +523,7 @@ function comboController:OwnLanding()
 	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
 	local now, best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and (r.fieldDrops or 1)>=2 and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
 end
@@ -929,7 +929,7 @@ function comboController:BuildMenu(tab)
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
-	folder.AddLabel("Main joins its own combo after two consecutive drops in the same field.")
+	folder.AddLabel("Main catches its own combo from the first drop, including after field changes.")
 	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
@@ -1115,7 +1115,7 @@ local cancelled=0
 showerController.active=true
 showerController.cancel=function()cancelled+=1;showerController.active=false end
 comboController:Tick()
-assert(not comboController.active,"main joined its own combo before repeated field drops")
+assert(comboController.active and comboController.ownPriority and cancelled==1,"main ignored first own drop")
 now+=.2;observe(80,"main-priority")
 comboController:Tick()
 assert(comboController.active and comboController.ownPriority and cancelled==1,"main did not join repeated same-field combo")
@@ -1128,8 +1128,8 @@ networkFail=false
 -- Reused chain IDs and kicked FX must advance the main to each next drop.
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(40,3,0),Dur=2,ID="main-chain",Target=player,Points=1})
-comboController:Tick();assert(not comboController:OwnLanding(),"new field chain did not reset repeat counter")
-local firstKey="first-not-joined"
+comboController:Tick();assert(comboController:OwnLanding() and comboController.active,"main ignored first drop of a new chain")
+local firstKey=comboController.session.key
 now+=.2
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=true,Pos=vector(80,3,0),Dur=2,ID="main-chain",Target="SomeoneElse",Points=2})
 comboController:Tick()
@@ -1147,7 +1147,7 @@ fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(90,3,0),Duration=1.5,ID=
 comboController:Tick();assert(comboController.session.key~=oldKey,"repeated-position drop with reused ID was discarded")
 now+=.2
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=5})
-assert(comboController:OwnLanding()==nil,"field change did not reset repeated-drop rule")
+assert(comboController:OwnLanding() and comboController:OwnLanding().field=="Pepper Patch","main ignored first drop after field change")
 comboController:Tick()
 now+=.2
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos2=vector(5,3,0),Duration=1.5,ID="main-chain",Points=6})
