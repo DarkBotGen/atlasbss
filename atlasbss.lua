@@ -687,6 +687,7 @@ local cfg = {
 		materials2 = false,
 		stickerstacker = false,
 		stackmethod = "Tickets",
+		stackall = true,
 		stackselect = false,
 		discardstickers = false,
 		discardselect = false,
@@ -45894,8 +45895,9 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			end
 
 			if ok then
-				if cfg.toys.stackmethod ~= "Tickets" or inventory:Has({ Ticket = 25 }) then
-					if cfg.toys.stackmethod ~= "Stickers" then
+				local stackMethod=cfg.toys.stackall~=false and "Stickers" or cfg.toys.stackmethod
+				if stackMethod ~= "Tickets" or inventory:Has({ Ticket = 25 }) then
+					if stackMethod ~= "Stickers" then
 						reportStatus(3)
 						logger.log("Doing Sticker Stacker")
 						goTo(workspace.Toys[label].Platform.Position, label)
@@ -45910,7 +45912,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 							end
 						end
 
-						if selectedCount == 0 then
+						if cfg.toys.stackall==false and selectedCount == 0 then
 							controls["Auto Sticker Stacker"].Set(false)
 							ui.Notify("Auto Sticker Stacker", "No stickers selected")
 							return
@@ -45927,16 +45929,10 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 						for _, file in ipairs(donatableFiles) do
 							local typeName = secureCall(file.GetTypeName, file)
 
-							if typeName then
-								if not string.find(typeName, "Star Sign") then
-									if not string.find(typeName, "Cub Skin") then
-										if cfg.toys.stackselect[typeName] then
-											stickerName = typeName
-											stickerFile = file
-											break
-										end
-									end
-								end
+							if typeName and (cfg.toys.stackall~=false or (cfg.toys.stackselect and cfg.toys.stackselect[typeName])) then
+								stickerName = typeName
+								stickerFile = file
+								break
 							end
 						end
 
@@ -67711,6 +67707,7 @@ which bees and get all 3 targets if
 				}, 135, "Materials")
 
 				controls["Auto Sticker Stacker"] = Stickers.AddSwitch("Auto Sticker Stacker", nil, "toys", "stickerstacker")
+				Stickers.AddSwitch("Stack All Eligible Inventory Stickers", nil, "toys", "stackall", { Tooltip = "Use any sticker the game allows stacking, including rare stickers. Overrides Stack Method and the selected list." })
 				Stickers.AddDropdown("Stack Method", { "Tickets", "Stickers" }, nil, nil, "toys", "stackmethod")
 				local stackDropdown = nil
 
@@ -67748,17 +67745,17 @@ which bees and get all 3 targets if
 					local foundAny = false
 					local stickerFiles = secureCall(gameApi.StickerStack.GetDonatableStickerFiles, gameApi:Cache())
 
-					for _, stickerFile in ipairs(stickerFiles) do
+					for _, stickerFile in ipairs(stickerFiles or {}) do
 						local stickerType = secureCall(stickerFile.GetTypeName, stickerFile)
 
-						if not (not stickerType or not (not string.find(stickerType, "Star Sign") and not string.find(stickerType, "Cub Skin"))) then
+						if stickerType then
 							cfg.toys.stackselect[stickerType] = true
-							saveConfig()
 							foundAny = true
 							stackDropdown.Add(stickerType)
 						end
 					end
 
+					if foundAny then saveConfig() end
 					if not foundAny then
 						ui.Notify("Auto Sticker Stacker", "No donatable stickers found")
 					else
