@@ -1837,7 +1837,7 @@ end
 smoothMovement.showerController = showerController
 
 -- Atlas+ combo movement and team client. One bounded observation set and one HTTP worker.
-local comboController = {records={}, byKey={}, jobs={}, seq=0, generation=0, active=false, status="Disabled"}
+local comboController = {records={}, byKey={}, jobs={}, chains={}, chainCount=0, serial=0, seq=0, generation=0, active=false, status="Disabled"}
 smoothMovement.comboController = comboController
 
 function comboController:Managed()
@@ -1865,24 +1865,45 @@ function comboController:Owner(value)
 end
 
 function comboController:Observe(effectName, data)
-	if not self:Managed() or effectName ~= "FallingCoconut" or not data.Combo or not data.Friendly then return end
-	if typeof(data.Pos) ~= "Vector3" then return end
-	local dur = tonumber(data.Dur)
-	if not dur or dur ~= dur or dur <= 0 or dur > 12 then return end
-	local owner = self:Owner(data.Owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
-	local now = os.clock()
-	local field = getFieldAt(data.Pos)
-	-- Positions and expiry are available in the existing FX stream even with Hide Particles off.
-	-- Ownership is retained only when an actual player identifier is exposed by that stream.
-	local key = string.format("%s:%.1f:%.1f:%.1f:%s",string.lower(owner or "unknown"),data.Pos.X,data.Pos.Y,data.Pos.Z,tostring(data.ID or data.FEID or data.Points or 0))
-	local old = self.byKey[key]
-	if old and old.deadline > now then return end
-	if #self.records >= 32 then return end
-	local record = {key=key, owner=owner, position=data.Pos, deadline=now+dur, points=tonumber(data.Points) or 0,
-		field=field and field.Name or "", seen=now}
+	local kicked=effectName=="KickedComboCoconut"
+	if not self:Managed() or (effectName~="FallingCoconut" and not kicked) then return end
+	if type(data)~="table" or (not kicked and not data.Combo) or data.Friendly==false then return end
+	local goal=kicked and (data.GoalPos or data.EndPos or data.Pos2 or data.Pos) or data.Pos
+	local dur=tonumber(data.FallDuration or data.Dur or data.Duration)
+	self.lastEffect=effectName
+	if typeof(goal)~="Vector3" or not dur or dur~=dur or dur<=0 or dur>12 then
+		self.effectStatus="Follow-up FX missing landing position or duration";return
+	end
+	local now=os.clock()
+	local id=data.ComboID or data.ChainID or data.FEID or data.ID
+	local chainKey=(type(id)=="number" or type(id)=="string") and tostring(id) or nil
+	local chain=chainKey and self.chains[chainKey]
+	if chain and chain.expires<=now then chain=nil end
+	local explicit=self:Owner(data.Owner)
+	local owner=explicit or (chain and chain.owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
+	-- Deduplicate only the same immediate FX delivery, not every drop reusing a chain ID.
+	local previous=chain and chain.record
+	if previous and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
+	if #self.records>=32 then return end
+	local field=getFieldAt(goal)
+	self.serial+=1
+	local key=string.format("%s:%.1f:%.1f:%.1f:%s:%d",string.lower(owner or "unknown"),goal.X,goal.Y,goal.Z,tostring(id or data.Points or 0),self.serial)
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,points=tonumber(data.Points) or 0,
+		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
+	if previous then
+		-- The bounce is a new destination; do not continue holding the previous drop.
+		previous.deadline=math.min(previous.deadline,now-0.26)
+	end
+	if chainKey and owner then
+		if self.chains[chainKey] or self.chainCount<64 then
+			if not self.chains[chainKey] then self.chainCount+=1 end
+			self.chains[chainKey]={owner=owner,record=record,expires=now+30}
+		end
+	end
 	self.byKey[key]=record
 	self.records[#self.records+1]=record
-	self.lastOwner = owner or "Unknown (team catches paused for this coconut)"
+	self.lastOwner=owner or "Unknown (team catches paused for this coconut)"
+	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
 end
 
 function comboController:MainOwned(owner)
@@ -2010,6 +2031,9 @@ end
 
 function comboController:Tick()
 	local now=os.clock()
+	for key,chain in pairs(self.chains)do
+		if chain.expires<=now then self.chains[key]=nil;self.chainCount-=1 end
+	end
 	for i=#self.records,1,-1 do
 		local r=self.records[i]
 		if now>r.deadline+0.25 then
@@ -2195,6 +2219,7 @@ function comboController:Start()
 		if not ok then self:Finish("Combo movement stopped by error");self.status=tostring(err) end
 		if self.statusLabel then self.statusLabel.Text="Team: "..self.status end
 		if self.ownerLabel then self.ownerLabel.Text="Last combo owner: "..(self.lastOwner or "waiting for a new combo") end
+		if self.effectLabel then self.effectLabel.Text="Tracking: "..(self.effectStatus or "waiting for combo FX") end
 		if self.debugLabel then self.debugLabel.Text=string.format("Detected: %d | Assigned: %d | RTT: %.0f ms | Activity: %s",#self.records,#self.jobs,(self.roundTrip or 0)*1000,tostring(state.activityStatus)) end
 	end))
 	self:Configure()
@@ -2207,7 +2232,7 @@ function comboController:Shutdown()
 	connections:Cancel("comboTeamTick")
 	connections:Cancel("comboTeamFX")
 	self:Finish("Unloaded")
-	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs)
+	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
 function comboController:BuildMenu(tab)
@@ -2255,6 +2280,7 @@ function comboController:BuildMenu(tab)
 	self.statusLabel=folder.AddLabel("Team: Disabled")
 	self.ownerLabel=folder.AddLabel("Last combo owner: waiting for a new combo")
 	self.debugLabel=folder.AddLabel("Detected: 0 | Assigned: 0 | RTT: waiting")
+	self.effectLabel=folder.AddLabel("Tracking: waiting for combo FX")
 	folder.AddLabel("One launcher for all computers. All accounts must be in the same Roblox server.")
 	folder.Toggle(true,true)
 end

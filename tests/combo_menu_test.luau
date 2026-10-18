@@ -58,6 +58,7 @@ function comboController:BuildMenu(tab)
 	self.statusLabel=folder.AddLabel("Team: Disabled")
 	self.ownerLabel=folder.AddLabel("Last combo owner: waiting for a new combo")
 	self.debugLabel=folder.AddLabel("Detected: 0 | Assigned: 0 | RTT: waiting")
+	self.effectLabel=folder.AddLabel("Tracking: waiting for combo FX")
 	folder.AddLabel("One launcher for all computers. All accounts must be in the same Roblox server.")
 	folder.Toggle(true,true)
 end
