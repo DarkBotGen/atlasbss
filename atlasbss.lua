@@ -2003,6 +2003,20 @@ function comboController:OutsideMainLanding()
 	return best
 end
 
+function comboController:OutsideAltLanding()
+	if not cfg.coconutteam.enabled then return end
+	local role,now,best=self:Role(),os.clock(),nil
+	for _,r in ipairs(self.records)do
+		local owner=type(r.owner)=="string" and string.lower(r.owner)
+		local alt=owner and (owner==string.lower(cfg.coconutteam.alt1) or owner==string.lower(cfg.coconutteam.alt2))
+		if alt and r.deadline+0.12>now then
+			local catch=role=="catcher" and cfg.coconutteam.fast and r.field==cfg.coconutteam.outsidefield
+			if catch and (not best or r.deadline<best.deadline) then best=r end
+		end
+	end
+	return best
+end
+
 function comboController:WantsTeamCombo()
 	if not cfg.coconutteam.enabled then return false end
 	local role=self:Role()
@@ -2067,6 +2081,7 @@ function comboController:Finish(reason)
 	if not session then self.status=reason or "Waiting for combo";return end
 	self.session, self.active = nil, false
 	threads:Cancel("comboFieldTravel")
+	threads:Cancel("comboAtlasCatch")
 	if session.travelling then pcall(stopMovement) end
 	if session.densityChanged then
 		pcall(function()session.root.CustomPhysicalProperties=session.originalPhysical end)
@@ -2113,7 +2128,7 @@ function comboController:Drive(s)
 	s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
 	env[s.leaseKey]=s.lease
 	s.h.WalkSpeed=s.speed
-	if not s.travelling then s.h:Move(s.direction,false) end
+	if not s.travelling and (not self.atlasCatch or s.speed==0) then s.h:Move(s.direction,false) end
 end
 
 function comboController:TravelToField(job, session)
@@ -2154,7 +2169,7 @@ function comboController:Tick()
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
 	local diskLanding=self:DiskLanding()
-	local own=self:OwnLanding() or self:OutsideMainLanding() or diskLanding
+	local own=self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -2201,7 +2216,12 @@ function comboController:Tick()
 		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		root.AssemblyAngularVelocity=Vector3.zero
 	end
+	s.target=s.target or {Name=true}
+	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
+	if self.atlasCatch and not s.travelling and not threads:Get("comboAtlasCatch") then
+		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
+	end
 	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
 end
 
@@ -52328,7 +52348,7 @@ end
 			end
 		end
 
-		collectObject = function(object, trackedKey, reachDistance, longTimeout, keepMoving, useTween, cloudMode, hasId)
+		collectObject = function(object, trackedKey, reachDistance, longTimeout, keepMoving, useTween, cloudMode, hasId, comboSession)
 			if not useTween then
 				if (reachDistance or 5) < distanceTo(object.Position, true) then
 					smoothMovement:MoveTo(object.Position)
@@ -52344,7 +52364,9 @@ end
 			end
 
 			while true do
-				if gatheringPriorities:ShouldPreempt() then return true end
+				if comboSession then
+					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
+				elseif gatheringPriorities:ShouldPreempt() then return true end
 				if cloudMode then
 					if not ((buffs.Cloud and buffs.Cloud.Size.Y.Scale or 0) < 0.8) then
 						return
@@ -52374,6 +52396,7 @@ end
 				end
 			end
 
+			if comboSession then return true end
 			if not trackedKey then
 				touchedMarks[object] = os.clock() + 3
 			elseif trackedKey ~= "flames" then
@@ -69668,6 +69691,9 @@ Are you sure you want to enable it?]])
 					end
 				end
 				return best
+			end
+			comboController.atlasCatch=function(target,session)
+				return collectObject(target,nil,0.5,true,true,false,nil,nil,session)
 			end
 			local atlasComboTargets=tracked.combococonuts
 			comboController.atlasTargets=function()return atlasComboTargets end

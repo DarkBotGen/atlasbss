@@ -546,6 +546,20 @@ function comboController:OutsideMainLanding()
 	return best
 end
 
+function comboController:OutsideAltLanding()
+	if not cfg.coconutteam.enabled then return end
+	local role,now,best=self:Role(),os.clock(),nil
+	for _,r in ipairs(self.records)do
+		local owner=type(r.owner)=="string" and string.lower(r.owner)
+		local alt=owner and (owner==string.lower(cfg.coconutteam.alt1) or owner==string.lower(cfg.coconutteam.alt2))
+		if alt and r.deadline+0.12>now then
+			local catch=role=="catcher" and cfg.coconutteam.fast and r.field==cfg.coconutteam.outsidefield
+			if catch and (not best or r.deadline<best.deadline) then best=r end
+		end
+	end
+	return best
+end
+
 function comboController:WantsTeamCombo()
 	if not cfg.coconutteam.enabled then return false end
 	local role=self:Role()
@@ -610,6 +624,7 @@ function comboController:Finish(reason)
 	if not session then self.status=reason or "Waiting for combo";return end
 	self.session, self.active = nil, false
 	threads:Cancel("comboFieldTravel")
+	threads:Cancel("comboAtlasCatch")
 	if session.travelling then pcall(stopMovement) end
 	if session.densityChanged then
 		pcall(function()session.root.CustomPhysicalProperties=session.originalPhysical end)
@@ -656,7 +671,7 @@ function comboController:Drive(s)
 	s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
 	env[s.leaseKey]=s.lease
 	s.h.WalkSpeed=s.speed
-	if not s.travelling then s.h:Move(s.direction,false) end
+	if not s.travelling and (not self.atlasCatch or s.speed==0) then s.h:Move(s.direction,false) end
 end
 
 function comboController:TravelToField(job, session)
@@ -697,7 +712,7 @@ function comboController:Tick()
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
 	local diskLanding=self:DiskLanding()
-	local own=self:OwnLanding() or self:OutsideMainLanding() or diskLanding
+	local own=self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -744,7 +759,12 @@ function comboController:Tick()
 		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		root.AssemblyAngularVelocity=Vector3.zero
 	end
+	s.target=s.target or {Name=true}
+	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
+	if self.atlasCatch and not s.travelling and not threads:Get("comboAtlasCatch") then
+		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
+	end
 	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
 end
 
@@ -957,6 +977,67 @@ function comboController:BuildMenu(tab)
 	folder.Toggle(true,true)
 end
 
+
+local function distanceTo(position)return (position-root.Position).Magnitude end
+local gatheringPriorities={ShouldPreempt=function()error("combo must bypass ordinary gather preemption")end}
+local collectObject
+		collectObject = function(object, trackedKey, reachDistance, longTimeout, keepMoving, useTween, cloudMode, hasId, comboSession)
+			if not useTween then
+				if (reachDistance or 5) < distanceTo(object.Position, true) then
+					smoothMovement:MoveTo(object.Position)
+				end
+			end
+
+			local now = os.clock()
+
+			if useTween then
+				local linear = Enum.EasingStyle.Linear
+				local out = Enum.EasingDirection.Out
+				showerController:CreateMovementTween(getRootPart(), TweenInfo.new(distanceTo(object.Position) / 400, linear, out), { CFrame = CFrame.new(object.Position) }):Play()
+			end
+
+			while true do
+				if comboSession then
+					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
+				elseif gatheringPriorities:ShouldPreempt() then return true end
+				if cloudMode then
+					if not ((buffs.Cloud and buffs.Cloud.Size.Y.Scale or 0) < 0.8) then
+						return
+					end
+				end
+
+				if not RunService.Heartbeat:Wait() then
+					return
+				end
+
+				if not ((object.Name == true or object.Parent) and (object.Name ~= true or not trackedKey or not (not hasId and not tracked[trackedKey][object] or not (not hasId or tracked[trackedKey][object.ID])))) then
+					break
+				end
+
+				if (longTimeout and 5 or 3) < os.clock() - now then
+					break
+				end
+
+				if not longTimeout then
+					if distanceTo(object.Position, true) < (reachDistance or 5) then
+						break
+					end
+				end
+
+				if not useTween and not (not keepMoving or not (not cloudMode or not not (distanceTo(object.Position, true) > 6))) then
+					smoothMovement:MoveTo(object.Position)
+				end
+			end
+
+			if comboSession then return true end
+			if not trackedKey then
+				touchedMarks[object] = os.clock() + 3
+			elseif trackedKey ~= "flames" then
+				tracked[trackedKey][object.Name == true and hasId and object.ID or object] = nil
+			end
+
+			return true
+		end
 
 threads:Add("Autofarm",worker);threads:Add("walkspeed",worker);threads:Add("Stats",worker)
 local stats=threads:Get("Stats")
@@ -1223,6 +1304,38 @@ RunService.bound.AtlasComboMovement=renderDrive
 now+=2.1;atlasTargets[virtual]=nil
 comboController:Tick()
 assert(not comboController.active and next(comboController.disks)==nil,"expired virtual combo retained")
+-- Exercise the production Atlas collectObject path, not the fallback Humanoid:Move path.
+comboController:Finish("collector integration")
+now+=1
+local target={Name=true,Position=vector(5,3,0),ExpiresAt=now+2,Points=1}
+atlasTargets[target]=true
+root.Position=vector(0,3,0)
+local moveToCalls=0
+function RunService.Heartbeat:Wait()return coroutine.yield()end
+rawset(h,"MoveTo",function(self,goal)
+ moveToCalls+=1
+ local delta=vector(goal.X-root.Position.X,0,goal.Z-root.Position.Z)
+ self.direction=delta.Magnitude>.01 and delta.Unit or Vector3.zero
+end)
+function smoothMovement:MoveTo(goal)h:MoveTo(goal)end
+comboController.atlasCatch=function(object,session)return collectObject(object,nil,.5,true,true,false,nil,nil,session)end
+comboController:Tick()
+step(.03)
+assert(comboController.active and threads:Get("comboAtlasCatch") and moveToCalls>0,"production Atlas collector not started")
+local collectorTask=threads:Get("comboAtlasCatch")
+RunService.bound.AtlasComboMovement=nil
+for i=1,3 do
+ step(.03)
+ if coroutine.status(collectorTask)=="suspended" then assert(coroutine.resume(collectorTask,true)) end
+end
+assert(root.Position.X>0,"production Atlas collector never moved")
+local calls=moveToCalls
+comboController.session.target.Position=vector(8,3,0)
+assert(coroutine.resume(collectorTask,true))
+assert(moveToCalls>calls,"production collector failed to follow updated landing")
+comboController:Finish("collector cancellation")
+assert(not threads:Get("comboAtlasCatch") and h.WalkSpeed==40 and root.CustomPhysicalProperties==nil,"collector cancellation leaked movement")
+atlasTargets[target]=nil
 showerController.shuttingDown=true
 comboController:Shutdown()
 assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)
