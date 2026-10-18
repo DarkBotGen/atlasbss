@@ -384,6 +384,12 @@ smoothMovement.showerController = showerController
 local comboController = {records={}, byKey={}, jobs={}, chains={}, chainCount=0, serial=0, seq=0, generation=0, active=false, status="Disabled"}
 smoothMovement.comboController = comboController
 
+function comboController:FieldAt(position)
+	local field=getFieldAt(position)
+	if field then return field end
+	if self.fieldFallback then return self.fieldFallback(position) end
+end
+
 function comboController:Managed()
 	return cfg.coconutteam.enabled or cfg.coconutteam.fast
 end
@@ -429,7 +435,7 @@ function comboController:Observe(effectName, data)
 	local previous=chain and chain.record
 	if previous and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
 	if #self.records>=32 then return end
-	local field=getFieldAt(goal)
+	local field=self:FieldAt(goal)
 	self.serial+=1
 	local key=string.format("%s:%.1f:%.1f:%.1f:%s:%d",string.lower(owner or "unknown"),goal.X,goal.Y,goal.Z,tostring(id or data.Points or 0),self.serial)
 	local runKey=owner and ("owner:"..string.lower(owner))
@@ -487,7 +493,7 @@ function comboController:DiskLanding()
 				entry.record=match
 				match.position=position
 			elseif not entry.record then
-				local field=getFieldAt(position)
+				local field=self:FieldAt(position)
 				local fieldName=field and field.Name or ""
 				-- An unlabelled first landing is caught locally; never invent its owner
 				-- or submit it to the coordinator as another account's combo.
@@ -560,7 +566,7 @@ function comboController:AcceptTeamJob(job)
 	local role=self:Role()
 	if role=="alt" then return type(job.owner)=="string" and string.lower(job.owner)==string.lower(localPlayer.Name) end
 	if role=="catcher" then
-		local field=getFieldAt(job.position)
+		local field=self:FieldAt(job.position)
 		return cfg.coconutteam.fast and (field and field.Name or "")==cfg.coconutteam.outsidefield
 	end
 	return role=="main"
@@ -601,7 +607,7 @@ end
 
 function comboController:Finish(reason)
 	local session = self.session
-	if not session then return end
+	if not session then self.status=reason or "Waiting for combo";return end
 	self.session, self.active = nil, false
 	threads:Cancel("comboFieldTravel")
 	if session.travelling then pcall(stopMovement) end
@@ -637,19 +643,25 @@ function comboController:Begin(job, h, root)
 	showerController:PauseOthers()
 	self:ApplyDensity(s)
 	RunService:BindToRenderStep("AtlasComboMovement",Enum.RenderPriority.Character.Value+1,function()
-		if self.session~=s then return end
-		if not self:Available() or not s.root.Parent then self:Finish("Combo movement interrupted");return end
-		s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
-		env[key]=s.lease
-		s.h.WalkSpeed=s.speed
-		if not s.travelling then s.h:Move(s.direction,false) end
+		self:Drive(s)
 	end)
 	return s
 end
 
+-- Heartbeat also drives movement, since rendering can be disabled or throttled.
+function comboController:Drive(s)
+	if self.session~=s then return end
+	if not self:Available() or not s.root.Parent then self:Finish("Combo movement interrupted");return end
+	local env=type(getgenv)=="function" and getgenv() or _G
+	s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
+	env[s.leaseKey]=s.lease
+	s.h.WalkSpeed=s.speed
+	if not s.travelling then s.h:Move(s.direction,false) end
+end
+
 function comboController:TravelToField(job, session)
 	if not cfg.coconutteam.enabled or not self.travel or not job.field or job.field=="" then return false end
-	local here=getFieldAt(session.root.Position)
+	local here=self:FieldAt(session.root.Position)
 	if here and here.Name==job.field then
 		if session.travelling then threads:Cancel("comboFieldTravel");session.travelling=false;pcall(stopMovement) end
 		return false
@@ -709,10 +721,15 @@ function comboController:Tick()
 	local available,h,root=self:Available()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
-	if not job then self:Finish(cfg.coconutteam.enabled and "Waiting for assignment" or "Waiting for outside-field combo");return end
+	if not job then
+		local reason=cfg.coconutteam.enabled and "Waiting for assignment" or "Waiting for outside-field combo"
+		if cfg.coconutteam.enabled and not self:Role() then reason="This account is not selected in Coconut Team"
+		elseif #self.records==0 and not next(self.disks or {}) then reason="No combo target detected" end
+		self:Finish(reason);return
+	end
 	local s=self:Begin(job,h,root)
 	if not s then return end
-	if self:TravelToField(job,s) then self.status="Following combo to "..job.field;return end
+	if self:TravelToField(job,s) then self:Drive(s);self.status="Following combo to "..job.field;return end
 	local delta=Vector3.new(job.position.X-root.Position.X,0,job.position.Z-root.Position.Z)
 	local d=delta.Magnitude
 	-- Full-speed approach with a short final step; the observed deadline controls holding.
@@ -727,6 +744,7 @@ function comboController:Tick()
 		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		root.AssemblyAngularVelocity=Vector3.zero
 	end
+	self:Drive(s)
 	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
 end
 
@@ -809,7 +827,7 @@ function comboController:Sync()
 			end
 			local lease=math.min(j.lease,12.5)-elapsed
 			if deadline+0.12>os.clock() and lease>0 then
-				local targetField=getFieldAt(target)
+				local targetField=self:FieldAt(target)
 				local candidate={key=j.key,owner=j.owner,position=target,field=targetField and targetField.Name or "",deadline=deadline,leaseUntil=os.clock()+lease}
 				if self:AcceptTeamJob(candidate) then jobs[#jobs+1]=candidate end
 			end
@@ -860,7 +878,10 @@ function comboController:Start()
 		if self.statusLabel then self.statusLabel.Text="Team: "..self.status end
 		if self.ownerLabel then self.ownerLabel.Text="Last combo owner: "..(self.lastOwner or "waiting for a new combo") end
 		if self.effectLabel then self.effectLabel.Text="Tracking: "..(self.effectStatus or "waiting for combo FX") end
-		if self.debugLabel then self.debugLabel.Text=string.format("Detected: %d | Assigned: %d | RTT: %.0f ms | Activity: %s",#self.records,#self.jobs,(self.roundTrip or 0)*1000,tostring(state.activityStatus)) end
+		if self.debugLabel then
+			local disks=0;for _ in pairs(self.disks or {})do disks+=1 end
+			self.debugLabel.Text=string.format("FX: %d | Atlas: %d | Assigned: %d | Role: %s | RTT: %.0f ms",#self.records,disks,#self.jobs,self:Role() or "unassigned",(self.roundTrip or 0)*1000)
+		end
 	end))
 	local particles=workspace:FindFirstChild("Particles")
 	if particles then
@@ -1182,8 +1203,23 @@ cfg.autofarm.farmcombococonuts=false
 local virtual={Name=true,Position=vector(5,3,0),Points=1,ExpiresAt=now+2}
 local atlasTargets={[virtual]=true}
 comboController.atlasTargets=function()return atlasTargets end
+local originalFieldAt=getFieldAt
+getFieldAt=function()return nil end
+comboController.fieldFallback=function()return home end
+assert(comboController:FieldAt(vector(5,100,0))==home,"airborne field fallback ignored")
+getFieldAt=originalFieldAt
+comboController.fieldFallback=nil
 comboController:Tick()
 assert(comboController.active,"Atlas virtual combo ignored with Farm Combo off")
+assert(h.WalkSpeed>0,"Heartbeat did not apply combo speed without render callbacks")
+local renderDrive=RunService.bound.AtlasComboMovement
+RunService.bound.AtlasComboMovement=nil
+root.Position=vector(0,3,0)
+h.WalkSpeed=0;h.direction=Vector3.zero
+step(.04)
+assert(root.Position.X>0 and h.WalkSpeed>0,"render-disabled combo movement stalled")
+RunService.bound.AtlasComboMovement=renderDrive
+
 now+=2.1;atlasTargets[virtual]=nil
 comboController:Tick()
 assert(not comboController.active and next(comboController.disks)==nil,"expired virtual combo retained")
