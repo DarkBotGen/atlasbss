@@ -18,8 +18,9 @@ function comboController:BuildMenu(tab)
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
-	folder.AddLabel("Main always catches its own combo. Every spawner catches its private 0x drop locally.")
-	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
+	folder.AddLabel("Main catches 0x, then helps every N shared drops in the same field. Spawners catch their own 0x locally.")
+	folder.AddLabel("Keep the help interval identical on every client; Copy Team Code includes it.")
+	folder.AddLabel("Alt combo: 0x owner, odd stacks main SOLO, even stacks owner/outside helpers.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
@@ -30,6 +31,7 @@ function comboController:BuildMenu(tab)
 	for _,entry in ipairs({{"Main Account","main"},{"Spawning Alt 1","alt1"},{"Spawning Alt 2","alt2"},{"Outside Catcher 1","catcher1"},{"Outside Catcher 2","catcher2"},{"Outside Catcher 3","catcher3"}})do
 		selectors[entry[2]]=folder.AddDropdown(entry[1],names,nil,function()self:Configure()end,"coconutteam",entry[2])
 	end
+	local assistSelector=folder.AddSlider("Main Help Every N Shared Drops",function()self:Configure()end,2,10,"coconutteam","mainassist",{Left=true})
 	local fieldSelector=folder.AddDropdown("Team Field",availableFields,true,function()self:Configure()end,"coconutteam","field",{Field=true})
 	local outsideSelector=folder.AddDropdown("Outside Catch Field",availableFields,true,function()self:Configure()end,"coconutteam","outsidefield",{Field=true})
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,180,"coconutteam","maxspeed",{Left=true})
@@ -46,6 +48,10 @@ function comboController:BuildMenu(tab)
 				selectors[key].Add(code[key]);selectors[key].SetValue(code[key])
 			end
 		end
+		if type(code.mainassist)=="number" and code.mainassist>=2 and code.mainassist<=10 then
+			cfg.coconutteam.mainassist=math.floor(code.mainassist)
+			if assistSelector then assistSelector.Set(cfg.coconutteam.mainassist) end
+		end
 		if type(code.field)=="string" and availableFields[code.field] then cfg.coconutteam.field=code.field;fieldSelector.SetValue(code.field) end
 		if type(code.outsidefield)=="string" and availableFields[code.outsidefield] then cfg.coconutteam.outsidefield=code.outsidefield;outsideSelector.SetValue(code.outsidefield) end
 		saveConfig();self:Configure();ui.Notify("Coconut Team","Connection and account settings saved")
@@ -54,7 +60,7 @@ function comboController:BuildMenu(tab)
 		local c=cfg.coconutteam
 		local copy=setclipboard or toclipboard
 		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
-		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield}))
+		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
 	end)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)

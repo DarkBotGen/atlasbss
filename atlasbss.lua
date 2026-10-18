@@ -130,7 +130,7 @@ end
 
 local cfg = {
 	prioritization = { enabled = true, order = {} },
-	coconutteam = {enabled=false,fast=false,url="",key="",main="None",alt1="None",alt2="None",catcher1="None",catcher2="None",catcher3="None",field="",outsidefield="Coconut Field",maxspeed=120},
+	coconutteam = {enabled=false,fast=false,url="",key="",main="None",alt1="None",alt2="None",catcher1="None",catcher2="None",catcher3="None",field="",outsidefield="Coconut Field",mainassist=3,maxspeed=120},
 	vars = {
 		walkspeedenabled = false,
 		walkspeed = 45,
@@ -1901,7 +1901,8 @@ function comboController:Observe(effectName, data)
 	local run=runKey and self.chains[runKey]
 	local fieldName=field and field.Name or ""
 	local fieldDrops=run and run.expires>now and run.record.field==fieldName and (run.record.fieldDrops or 1)+1 or 1
-	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,private=private,points=tonumber(data.Points) or 0,
+	local sharedDrops=private and 0 or (run and run.expires>now and run.record.field==fieldName and (run.record.sharedDrops or 0)+1 or 1)
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,sharedDrops=sharedDrops,private=private,stackKnown=tonumber(data.Points)~=nil,points=tonumber(data.Points) or 0,
 		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
 	if previous then
 		-- The bounce is a new destination; do not continue holding the previous drop.
@@ -1988,11 +1989,17 @@ function comboController:PrivateLanding()
 	return best
 end
 
+function comboController:MainHelp(record)
+	local interval=math.floor(math.clamp(tonumber(cfg.coconutteam.mainassist) or 3,2,10))
+	return record.private or ((record.sharedDrops or 0)>0 and record.sharedDrops%interval==0)
+end
+
 function comboController:OwnLanding()
 	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
 	local now, best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+		if self:MainOwned(r.owner) and self:MainHelp(r)
+			and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
 end
@@ -2009,8 +2016,52 @@ function comboController:OutsideMainLanding()
 	local field=role=="alt" and self:TeamField() or cfg.coconutteam.outsidefield
 	local now,best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if not r.private and self:MainOwned(r.owner) and r.field==field and r.deadline+0.12>now
+		if not r.private and self:MainOwned(r.owner) and not self:MainHelp(r) and r.field==field and r.deadline+0.12>now
 			and (not best or r.deadline<best.deadline) then best=r end
+	end
+	return best
+end
+
+-- Visible alt-combo stacks reserve odd drops for the main alone.
+function comboController:IsAltOwner(owner)
+	return type(owner)=="string" and (string.lower(owner)==string.lower(cfg.coconutteam.alt1)
+		or string.lower(owner)==string.lower(cfg.coconutteam.alt2))
+end
+
+function comboController:AltDropAllowed(record)
+	if not self:IsAltOwner(record.owner) or not record.stackKnown then return true end
+	if record.private or record.points%2==0 then
+		return string.lower(record.owner)==string.lower(localPlayer.Name)
+			or (not record.private and self:Role()=="catcher" and cfg.coconutteam.fast and record.field==cfg.coconutteam.outsidefield)
+	end
+	return self:Role()=="main"
+end
+
+function comboController:LocalAltTurn()
+	if not cfg.coconutteam.enabled or (self:Role()~="main" and self:Role()~="alt") then return end
+	local best,now=nil,os.clock()
+	for _,r in ipairs(self.records)do
+		if self:IsAltOwner(r.owner) and r.stackKnown and r.deadline+0.12>now and self:AltDropAllowed(r)
+			and self:Role()~="catcher" and (not best or r.deadline<best.deadline) then best=r end
+	end
+	return best
+end
+
+function comboController:YieldLanding(root)
+	if not cfg.coconutteam.enabled or not self:Role() or self:Role()=="main" then return end
+	local best,now=nil,os.clock()
+	local held=self.session and self.session.yieldJob
+	if held and held.source.deadline>now then return held end
+	for _,r in ipairs(self.records)do
+		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.points%2==1)
+			or (self:MainOwned(r.owner) and self:MainHelp(r))) then
+			local delta=Vector3.new(root.Position.X-r.position.X,0,root.Position.Z-r.position.Z)
+			if delta.Magnitude<14 and math.abs(root.Position.Y-r.position.Y)<12 and (not best or r.deadline<best.deadline) then
+				local direction=delta.Magnitude>.1 and delta.Unit or Vector3.new(1,0,0)
+				best={key="yield:"..r.key,owner=r.owner,position=Vector3.new(r.position.X,root.Position.Y,r.position.Z)+direction*18,
+					deadline=r.deadline,field="",yielding=true,source=r}
+			end
+		end
 	end
 	return best
 end
@@ -2021,7 +2072,7 @@ function comboController:OutsideAltLanding()
 	for _,r in ipairs(self.records)do
 		local owner=type(r.owner)=="string" and string.lower(r.owner)
 		local alt=owner and (owner==string.lower(cfg.coconutteam.alt1) or owner==string.lower(cfg.coconutteam.alt2))
-		if alt and not r.private and r.deadline+0.12>now then
+		if alt and not r.private and self:AltDropAllowed(r) and r.deadline+0.12>now then
 			local catch=role=="catcher" and cfg.coconutteam.fast and r.field==cfg.coconutteam.outsidefield
 			if catch and (not best or r.deadline<best.deadline) then best=r end
 		end
@@ -2046,6 +2097,11 @@ end
 
 function comboController:AcceptTeamJob(job)
 	if self:MainOwned(job.owner) then return false end -- handled locally by main/outside catchers
+	for _,r in ipairs(self.records)do
+		if r.owner and type(job.owner)=="string" and string.lower(r.owner)==string.lower(job.owner)
+			and r.deadline+0.12>os.clock() and (r.position-job.position).Magnitude<2
+			and not self:AltDropAllowed(r) then return false end
+	end
 	local role=self:Role()
 	if role=="alt" then return type(job.owner)=="string" and string.lower(job.owner)==string.lower(localPlayer.Name) end
 	if role=="catcher" then
@@ -2182,7 +2238,7 @@ function comboController:Tick()
 	if not root then self:Finish("No character");return end
 	local diskLanding=self:DiskLanding()
 	local private=self:PrivateLanding()
-	local own=private or self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
+	local own=private or self:LocalAltTurn() or self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -2200,6 +2256,8 @@ function comboController:Tick()
 			end
 		end
 	end
+	if not job then job=self:YieldLanding(root) end
+	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
 	self.comboPriority=job~=nil
@@ -2230,13 +2288,14 @@ function comboController:Tick()
 		root.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		root.AssemblyAngularVelocity=Vector3.zero
 	end
+	s.yieldJob=job.yielding and job or nil
 	s.target=s.target or {Name=true}
 	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
 	if self.atlasCatch and not s.travelling and not threads:Get("comboAtlasCatch") then
 		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
 	end
-	self.status=string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
+	self.status=job.yielding and "Moving clear for main solo catch" or string.format("Catching %s combo | %.0f PMS",job.owner or "outside",s.speed)
 end
 
 function comboController:Roster()
@@ -2400,8 +2459,9 @@ function comboController:BuildMenu(tab)
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
-	folder.AddLabel("Main always catches its own combo. Every spawner catches its private 0x drop locally.")
-	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
+	folder.AddLabel("Main catches 0x, then helps every N shared drops in the same field. Spawners catch their own 0x locally.")
+	folder.AddLabel("Keep the help interval identical on every client; Copy Team Code includes it.")
+	folder.AddLabel("Alt combo: 0x owner, odd stacks main SOLO, even stacks owner/outside helpers.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
@@ -2412,6 +2472,7 @@ function comboController:BuildMenu(tab)
 	for _,entry in ipairs({{"Main Account","main"},{"Spawning Alt 1","alt1"},{"Spawning Alt 2","alt2"},{"Outside Catcher 1","catcher1"},{"Outside Catcher 2","catcher2"},{"Outside Catcher 3","catcher3"}})do
 		selectors[entry[2]]=folder.AddDropdown(entry[1],names,nil,function()self:Configure()end,"coconutteam",entry[2])
 	end
+	local assistSelector=folder.AddSlider("Main Help Every N Shared Drops",function()self:Configure()end,2,10,"coconutteam","mainassist",{Left=true})
 	local fieldSelector=folder.AddDropdown("Team Field",availableFields,true,function()self:Configure()end,"coconutteam","field",{Field=true})
 	local outsideSelector=folder.AddDropdown("Outside Catch Field",availableFields,true,function()self:Configure()end,"coconutteam","outsidefield",{Field=true})
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,180,"coconutteam","maxspeed",{Left=true})
@@ -2428,6 +2489,10 @@ function comboController:BuildMenu(tab)
 				selectors[key].Add(code[key]);selectors[key].SetValue(code[key])
 			end
 		end
+		if type(code.mainassist)=="number" and code.mainassist>=2 and code.mainassist<=10 then
+			cfg.coconutteam.mainassist=math.floor(code.mainassist)
+			if assistSelector then assistSelector.Set(cfg.coconutteam.mainassist) end
+		end
 		if type(code.field)=="string" and availableFields[code.field] then cfg.coconutteam.field=code.field;fieldSelector.SetValue(code.field) end
 		if type(code.outsidefield)=="string" and availableFields[code.outsidefield] then cfg.coconutteam.outsidefield=code.outsidefield;outsideSelector.SetValue(code.outsidefield) end
 		saveConfig();self:Configure();ui.Notify("Coconut Team","Connection and account settings saved")
@@ -2436,7 +2501,7 @@ function comboController:BuildMenu(tab)
 		local c=cfg.coconutteam
 		local copy=setclipboard or toclipboard
 		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
-		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield}))
+		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
 	end)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
