@@ -1885,17 +1885,31 @@ function comboController:Observe(effectName, data)
 	self.lastOwner = owner or "Unknown (team catches paused for this coconut)"
 end
 
+function comboController:MainOwned(owner)
+	return type(owner)=="string" and cfg.coconutteam.main~="None" and cfg.coconutteam.main~=""
+		and string.lower(owner)==string.lower(cfg.coconutteam.main)
+end
+
+function comboController:OwnLanding()
+	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
+	local now, best=os.clock(),nil
+	for _,r in ipairs(self.records)do
+		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+	end
+	return best
+end
+
 function comboController:Available()
-	if self.closed or state.stop or showerController.active then return false end
+	if self.closed or state.stop or (showerController.active and not self.ownPriority) then return false end
 	local char = localPlayer.Character
 	local h = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not h or not root or h.Health <= 0 then return false end
-	if cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
+	if not self.ownPriority and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
 	if cfg.coconutteam.enabled then
 		local role = self:Role()
 		if not role or (role == "catcher" and not cfg.coconutteam.fast) then return false end
-		if role ~= "catcher" and not cfg.autofarm.enabled then return false end
+		if not self.ownPriority and role ~= "catcher" and not cfg.autofarm.enabled then return false end
 	end
 	return true, h, root
 end
@@ -1954,20 +1968,23 @@ function comboController:Tick()
 			table.remove(self.records,i)
 		end
 	end
-	if not self:Managed() then self:Finish("Disabled");return end
+	if not self:Managed() then self.ownPriority=false;self:Finish("Disabled");return end
+	local own=self:OwnLanding()
+	self.ownPriority=own~=nil
+	if own and showerController.active and showerController.cancel then showerController.cancel("Main catching its own combo") end
 	local available,h,root=self:Available()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
-	local job
-	if cfg.coconutteam.enabled then
+	local job=own
+	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
-			if candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
+			if not self:MainOwned(candidate.owner) and candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
 		end
-	else
+	elseif not job then
 		-- Independent outside-field mode has no ownership rotation and needs no coordinator.
 		local home=cfg.coconutteam.field~="" and cfg.coconutteam.field or cfg.autofarm.field1
 		for _, r in ipairs(self.records) do
-			if r.field~=home and r.deadline>now and math.abs(r.position.Y-root.Position.Y)<=12 then
+			if not self:MainOwned(r.owner) and r.field~=home and r.deadline>now and math.abs(r.position.Y-root.Position.Y)<=12 then
 				local d=(Vector3.new(r.position.X,root.Position.Y,r.position.Z)-root.Position).Magnitude
 				if math.max(0,d-5)/cfg.coconutteam.maxspeed+0.12<r.deadline-now then
 					if not job or r.deadline<job.deadline then job=r end
@@ -1986,7 +2003,13 @@ function comboController:Tick()
 	-- Shower-style continuous Move + dynamic WalkSpeed, using the coconut's own expiry.
 	-- No tween, CFrame teleport, density change, or invented fixed shower lifetime.
 	local travelTime=math.max(0.05,job.deadline-now-lead)
-	s.speed=d>0.5 and math.clamp(d/travelTime,math.min(s.originalSpeed,cfg.coconutteam.maxspeed),cfg.coconutteam.maxspeed) or 0
+	local cap=self.ownPriority and math.max(180,cfg.coconutteam.maxspeed) or cfg.coconutteam.maxspeed
+	if self.ownPriority then
+		-- Depart immediately; brake near the center instead of spending the fall time walking slowly.
+		s.speed=d>0.5 and math.min(cap,math.max(20,d/0.05)) or 0
+	else
+		s.speed=d>0.5 and math.clamp(d/travelTime*1.15,math.min(s.originalSpeed,cap),cap) or 0
+	end
 	s.direction=d>0.5 and delta.Unit or Vector3.zero
 	if d<=0.5 then
 		local v=root.AssemblyLinearVelocity
@@ -2008,7 +2031,7 @@ function comboController:KeepLanding()
 	local available,_,root=self:Available()
 	if available and root then
 		for _,j in ipairs(self.jobs)do
-			if j.leaseUntil>now and j.deadline+0.12>now then
+			if not self:MainOwned(j.owner) and j.leaseUntil>now and j.deadline+0.12>now then
 				local delta=Vector3.new(j.position.X-root.Position.X,0,j.position.Z-root.Position.Z)
 				if delta.Magnitude<=9 and math.abs(j.position.Y-root.Position.Y)<=7 then kept[1]=j;break end
 			end
@@ -2029,14 +2052,14 @@ function comboController:Sync()
 	local started=os.clock()
 	local list={}
 	for _,r in ipairs(self.records) do
-		if r.owner and r.deadline>started then
+		if r.owner and not self:MainOwned(r.owner) and r.deadline>started then
 			list[#list+1]={key=r.key,owner=r.owner,pos={r.position.X,r.position.Y,r.position.Z},ttl=r.deadline-started-math.min((self.roundTrip or 0.2)/2,1),points=r.points,field=r.field}
 		end
 	end
 	self.seq+=1
 	local speed=self.session and c.maxspeed or math.max(h.WalkSpeed,c.maxspeed)
 	local payload={protocol=2,active_key=self.session and self.session.key or "",username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
-		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available,
+		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available or self.ownPriority,
 		roster=self:Roster(),targets=list}
 	if not available then self:Finish("Busy with another activity");payload.active_key="" end
 	local generation=self.generation
@@ -2059,6 +2082,7 @@ function comboController:Sync()
 	local jobs={}
 	for _,j in ipairs(data.jobs) do
 		if #jobs>=1 then break end
+		if self:MainOwned(j.owner) then continue end
 		if type(j.pos)=="table" and #j.pos==3 and type(j.ttl)=="number" and type(j.lease)=="number"
 			and type(j.pos[1])=="number" and type(j.pos[2])=="number" and type(j.pos[3])=="number" then
 			local deadline=os.clock()+math.min(j.ttl,12)-elapsed
@@ -2140,6 +2164,7 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
+	folder.AddLabel("Main always catches its own combo locally, ahead of showers; other accounts leave it alone.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
 	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
@@ -65106,7 +65131,7 @@ function showerController:Start()
  local bridge=self
  bridge.allowed=function()
   return not bridge.shuttingDown and cfg and state and not state.stop
-   and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
+   and not comboController.ownPriority and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
    and currentField ~= nil and getHumanoid().Health > 0 and getFieldAt(getRootPart().Position) == currentField
  end
  bridge.realPMS=function(h)
@@ -65138,7 +65163,7 @@ local appearanceSerial=0
 local appearanceOrder=setmetatable({}, {__mode="k"})
 local lastClientStallAt=-math.huge
 local stallCounter=0
-local closed,maxSpeed=false,180
+local closed,maxSpeed=false,210
 local movementBind="StarShowerX10Movement_" .. player.UserId
 local session,controls=nil,nil
 local triggers,lights,guides,connections={},{},{},{}
@@ -65546,7 +65571,7 @@ local function updateChase(dt)
   local point=contactPoint(s,first,now)
   local realPMS=bridge.realPMS(s.h)
   if not realPMS then bridge.lastStatus="Waiting for valid real in-game PMS";return end
-  s.firstRealPMS=realPMS
+  s.firstRealPMS=math.min(maxSpeed,realPMS*1.2)
   local travel=(point-xy(s.root.Position)).Magnitude/realPMS
   local lead=0.5 -- Aim to reach light 1 half a second before its estimated expiry.
   local departAt=first.time+LIFETIME-lead-travel
@@ -65639,10 +65664,9 @@ local function updateChase(dt)
  local delta=s.point-xy(s.root.Position)
  local distance=delta.Magnitude
  local available=(s.target.time+LIFETIME)-now-LEAD
- -- Only request the speed estimated to reach the safe edge before disappearance.
- -- Zero is allowed; do not force a 36.8 or 50 PMS minimum.
- local speed=s.target.order==1 and s.firstRealPMS or (available>0 and distance/available or maxSpeed)
- speed=math.clamp(speed,0,s.firstRealTravel and s.firstRealPMS or maxSpeed)
+ -- Add a travel margin, then shorten the final step to avoid overshooting the safe edge.
+ local speed=s.target.order==1 and s.firstRealPMS or (available>0 and math.max(s.originalSpeed*1.15,distance/available*1.2) or maxSpeed)
+ speed=math.min(math.clamp(speed,0,s.firstRealTravel and s.firstRealPMS or maxSpeed),distance/math.max(dt,1/120))
  if distance<=0.06 then speed=0 end
  setSpeed(s,speed)
  if distance>0.05 then s.direction=Vector3.new(delta.X,0,delta.Y).Unit;s.h:Move(s.direction,false) else hold(s) end

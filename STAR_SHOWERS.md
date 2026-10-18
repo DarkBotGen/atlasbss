@@ -5,8 +5,8 @@ The previous shower tween/priority selector has been replaced with the Safeshowe
 ## Operation
 
 - Enable **Farm Showers** and autofarm. The chaser runs only during gathering in the current field; conversion, travel outside that field, stopping, or death disables it. During gathering, the detector watches for your Star Shower passive popup (`5101364168`) and a matching Star Shower Guide. Overlapping/ambiguous owners are rejected rather than guessed.
-- Once your guide is accepted, shower handling takes **absolute priority**, regardless of gathering order. Main farming, standalone movement, facing, speed overrides, auto-dig and other named movement jobs are suspended. Existing character movement tweens and travel constraints are canceled.
-- The supplied chaser starts toward light 1 at the live starting WalkSpeed, aiming to arrive 500ms before the estimated expiry. Subsequent transitions use its live twice-ping lead and 180 PMS cap.
+- Once your guide is accepted, shower handling takes priority over normal gathering, regardless of gathering order. A main account's own combo takes priority over showers. Main farming, standalone movement, facing, speed overrides, auto-dig and other named movement jobs are suspended. Existing character movement tweens and travel constraints are canceled.
+- The supplied chaser starts toward light 1 with a 20% WalkSpeed boost (capped at 210), with departure still planned from the live starting WalkSpeed, aiming to arrive 500ms before the estimated expiry. Subsequent transitions use its live twice-ping lead and 210 PMS cap.
 - Light numbers follow observed first appearance. Actual visual removal advances the sequence, with the supplied ping-based early transition when a next light is known. There is no invented fixed 0.3-second spawn schedule.
 - Near a light, it brakes and uses the supplied small circular path on the edge facing the next light. It uses `Humanoid:Move`, WalkSpeed and velocity braking, with **no shower tween or density change**.
 - On completion or cancellation, the engine restores speed, camera and controls. Paused jobs resume when their settings still permit them. Stop Everything and unloading prevent automatic resumption.
@@ -33,3 +33,5 @@ The prior config fix remains: `prioritization.order` replaces the empty default 
 Config saves also remember the active preset for the current account. Loading a config launches this Atlas+ release, and startup preserves an existing default config.
 
 Enabled combo coconuts override other gathering targets and cannot be interrupted by lower priority targets. An active shower retains exclusive movement control. Catch success still depends on distance, timing and latency.
+
+Main-owned combos are now handled locally by the selected main account, without waiting for a coordinator assignment. They interrupt showers and conversion; all other updated clients reject main-owned combo assignments. The main approaches at up to 180 PMS, brakes near the center and stays through the observed impact window. Stop Everything and character death remain authoritative. Existing coordinator software is unchanged.

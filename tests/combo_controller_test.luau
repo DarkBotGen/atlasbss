@@ -172,7 +172,7 @@ local currentField=home
 local function getFieldAt(p) return p.X>10 and outside or home end
 local function getHumanoid()return h end
 cfg.autofarm.field1="Pepper Patch"
-cfg.coconutteam={enabled=false,fast=true,main="Tester",alt1="AltOne",alt2="AltTwo",catcher1="OutsideOne",catcher2="None",catcher3="None",field="Pepper Patch",maxspeed=120,url="https://example.test",key=string.rep("x",32)}
+cfg.coconutteam={enabled=false,fast=true,main="OtherMain",alt1="Tester",alt2="AltTwo",catcher1="OutsideOne",catcher2="None",catcher3="None",field="Pepper Patch",maxspeed=120,url="https://example.test",key=string.rep("x",32)}
 state.activityStatus=1
 local gameApi={Events=Instance.new("Folder")}
 local fx=Instance.new("RemoteEvent",gameApi.Events);fx.Name="LocalFX";fx.OnClientEvent=signal()
@@ -426,17 +426,31 @@ function comboController:Observe(effectName, data)
 	self.lastOwner = owner or "Unknown (team catches paused for this coconut)"
 end
 
+function comboController:MainOwned(owner)
+	return type(owner)=="string" and cfg.coconutteam.main~="None" and cfg.coconutteam.main~=""
+		and string.lower(owner)==string.lower(cfg.coconutteam.main)
+end
+
+function comboController:OwnLanding()
+	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
+	local now, best=os.clock(),nil
+	for _,r in ipairs(self.records)do
+		if self:MainOwned(r.owner) and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+	end
+	return best
+end
+
 function comboController:Available()
-	if self.closed or state.stop or showerController.active then return false end
+	if self.closed or state.stop or (showerController.active and not self.ownPriority) then return false end
 	local char = localPlayer.Character
 	local h = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not h or not root or h.Health <= 0 then return false end
-	if cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
+	if not self.ownPriority and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
 	if cfg.coconutteam.enabled then
 		local role = self:Role()
 		if not role or (role == "catcher" and not cfg.coconutteam.fast) then return false end
-		if role ~= "catcher" and not cfg.autofarm.enabled then return false end
+		if not self.ownPriority and role ~= "catcher" and not cfg.autofarm.enabled then return false end
 	end
 	return true, h, root
 end
@@ -495,20 +509,23 @@ function comboController:Tick()
 			table.remove(self.records,i)
 		end
 	end
-	if not self:Managed() then self:Finish("Disabled");return end
+	if not self:Managed() then self.ownPriority=false;self:Finish("Disabled");return end
+	local own=self:OwnLanding()
+	self.ownPriority=own~=nil
+	if own and showerController.active and showerController.cancel then showerController.cancel("Main catching its own combo") end
 	local available,h,root=self:Available()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=root or self.session.h~=h) then self:Finish("Character changed") end
-	local job
-	if cfg.coconutteam.enabled then
+	local job=own
+	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
-			if candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
+			if not self:MainOwned(candidate.owner) and candidate.deadline+0.12>now and candidate.leaseUntil>now then job=candidate;break end
 		end
-	else
+	elseif not job then
 		-- Independent outside-field mode has no ownership rotation and needs no coordinator.
 		local home=cfg.coconutteam.field~="" and cfg.coconutteam.field or cfg.autofarm.field1
 		for _, r in ipairs(self.records) do
-			if r.field~=home and r.deadline>now and math.abs(r.position.Y-root.Position.Y)<=12 then
+			if not self:MainOwned(r.owner) and r.field~=home and r.deadline>now and math.abs(r.position.Y-root.Position.Y)<=12 then
 				local d=(Vector3.new(r.position.X,root.Position.Y,r.position.Z)-root.Position).Magnitude
 				if math.max(0,d-5)/cfg.coconutteam.maxspeed+0.12<r.deadline-now then
 					if not job or r.deadline<job.deadline then job=r end
@@ -527,7 +544,13 @@ function comboController:Tick()
 	-- Shower-style continuous Move + dynamic WalkSpeed, using the coconut's own expiry.
 	-- No tween, CFrame teleport, density change, or invented fixed shower lifetime.
 	local travelTime=math.max(0.05,job.deadline-now-lead)
-	s.speed=d>0.5 and math.clamp(d/travelTime,math.min(s.originalSpeed,cfg.coconutteam.maxspeed),cfg.coconutteam.maxspeed) or 0
+	local cap=self.ownPriority and math.max(180,cfg.coconutteam.maxspeed) or cfg.coconutteam.maxspeed
+	if self.ownPriority then
+		-- Depart immediately; brake near the center instead of spending the fall time walking slowly.
+		s.speed=d>0.5 and math.min(cap,math.max(20,d/0.05)) or 0
+	else
+		s.speed=d>0.5 and math.clamp(d/travelTime*1.15,math.min(s.originalSpeed,cap),cap) or 0
+	end
 	s.direction=d>0.5 and delta.Unit or Vector3.zero
 	if d<=0.5 then
 		local v=root.AssemblyLinearVelocity
@@ -549,7 +572,7 @@ function comboController:KeepLanding()
 	local available,_,root=self:Available()
 	if available and root then
 		for _,j in ipairs(self.jobs)do
-			if j.leaseUntil>now and j.deadline+0.12>now then
+			if not self:MainOwned(j.owner) and j.leaseUntil>now and j.deadline+0.12>now then
 				local delta=Vector3.new(j.position.X-root.Position.X,0,j.position.Z-root.Position.Z)
 				if delta.Magnitude<=9 and math.abs(j.position.Y-root.Position.Y)<=7 then kept[1]=j;break end
 			end
@@ -570,14 +593,14 @@ function comboController:Sync()
 	local started=os.clock()
 	local list={}
 	for _,r in ipairs(self.records) do
-		if r.owner and r.deadline>started then
+		if r.owner and not self:MainOwned(r.owner) and r.deadline>started then
 			list[#list+1]={key=r.key,owner=r.owner,pos={r.position.X,r.position.Y,r.position.Z},ttl=r.deadline-started-math.min((self.roundTrip or 0.2)/2,1),points=r.points,field=r.field}
 		end
 	end
 	self.seq+=1
 	local speed=self.session and c.maxspeed or math.max(h.WalkSpeed,c.maxspeed)
 	local payload={protocol=2,active_key=self.session and self.session.key or "",username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
-		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available,
+		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available or self.ownPriority,
 		roster=self:Roster(),targets=list}
 	if not available then self:Finish("Busy with another activity");payload.active_key="" end
 	local generation=self.generation
@@ -600,6 +623,7 @@ function comboController:Sync()
 	local jobs={}
 	for _,j in ipairs(data.jobs) do
 		if #jobs>=1 then break end
+		if self:MainOwned(j.owner) then continue end
 		if type(j.pos)=="table" and #j.pos==3 and type(j.ttl)=="number" and type(j.lease)=="number"
 			and type(j.pos[1])=="number" and type(j.pos[2])=="number" and type(j.pos[3])=="number" then
 			local deadline=os.clock()+math.min(j.ttl,12)-elapsed
@@ -681,6 +705,7 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
+	folder.AddLabel("Main always catches its own combo locally, ahead of showers; other accounts leave it alone.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
 	folder.AddLabel("Solo fast mode catches outside the selected team field without alternating.")
@@ -746,7 +771,7 @@ cfg.coconutteam.enabled=true;cfg.coconutteam.fast=false
 comboController.jobs={{key="assigned",owner="Tester",position=vector(40,3,0),deadline=now+1,leaseUntil=now+.4}}
 comboController:Tick();assert(comboController.active)
 now+=.5;comboController:Tick();assert(not comboController.active,"expired network lease still moving")
-assert(comboController:Sync());assert(sent.server==game.JobId and sent.roster.main=="Tester")
+assert(comboController:Sync());assert(sent.server==game.JobId and sent.roster.main=="OtherMain")
 assert(#sent.targets==2,"visible combo observations missing")
 reply.jobs={{key="remote",owner="Tester",pos={40,3,0},ttl=1,lease=.65}}
 comboController:Sync();assert(#comboController.jobs==1)
@@ -782,6 +807,32 @@ comboController:Tick();assert(not comboController.active,"held beyond impact win
 reply.protocol=nil
 assert(not comboController:Sync() and string.find(comboController.status,"Update coordinator PC",1,true))
 reply.protocol=2
+-- Main-owned landings are immediate, local and preempt showers/conversion.
+cfg.coconutteam.main="Tester";cfg.coconutteam.alt1="AltOne"
+cfg.autofarm.enabled=false;state.activityStatus=2
+comboController.records={};comboController.byKey={};comboController.jobs={}
+root.Position=vector(0,3,0)
+observe(80,"main-priority")
+local cancelled=0
+showerController.active=true
+showerController.cancel=function()cancelled+=1;showerController.active=false end
+comboController:Tick()
+assert(comboController.active and comboController.ownPriority and cancelled==1,"own combo did not preempt shower/conversion")
+for _,fn in pairs(RunService.bound)do fn()end
+assert(h.WalkSpeed>=180,"main-owned approach was not accelerated")
+networkFail=true
+assert(not comboController:Sync())
+assert(comboController.active and sent.busy==true and #sent.targets==0,"own combo depends on relay or main is available to other assignments")
+networkFail=false
+comboController:Finish("test")
+-- An alt rejects coordinator assignments for the main, including stale server jobs.
+cfg.coconutteam.main="OtherMain";cfg.coconutteam.alt1="Tester"
+cfg.autofarm.enabled=true;state.activityStatus=1
+comboController.records={};comboController.byKey={}
+reply.jobs={{key="main-only",owner="OtherMain",pos={5,3,0},ttl=2,lease=2}}
+assert(comboController:Sync() and #comboController.jobs==0,"alt accepted main-owned assignment")
+comboController.jobs={{key="stale-main",owner="OtherMain",position=vector(5,3,0),deadline=now+2,leaseUntil=now+2}}
+comboController:Tick();assert(not comboController.active,"alt chased stale main-owned job")
 cfg.coconutteam.enabled=false;cfg.coconutteam.fast=true
 for i=1,1000 do
  now+=.1
