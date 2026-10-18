@@ -69381,7 +69381,7 @@ Are you sure you want to enable it?]])
 				end)
 				if not ok then self.status="Combo FX observer unavailable" end
 			end
-			comboController:BuildMenu(farming)
+			comboController:BuildMenu(controls.farming)
 			showerController:Start()
 			comboController:Start()
 			return
