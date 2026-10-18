@@ -1871,10 +1871,46 @@ function comboController:Owner(value)
 	end
 end
 
+-- Bounded scalar-only trace for verifying the live FX schema and turn decisions.
+function comboController:Trace(kind,fields)
+	self.trace=self.trace or {}
+	if #self.trace>=40 then table.remove(self.trace,1) end
+	local entry={time=math.floor(os.clock()*1000)/1000,kind=kind,fields=fields}
+	self.trace[#self.trace+1]=entry
+end
+
+function comboController:TraceFX(name,data)
+	local fields={effect=name}
+	local count=0
+	for key,value in pairs(data)do
+		if type(key)=="string" and count<40 then
+			local kind=typeof(value)
+			if kind=="Instance" then fields[key]="Instance:"..value.ClassName..":"..value.Name
+			elseif kind=="Vector3" then fields[key]=string.format("%.1f,%.1f,%.1f",value.X,value.Y,value.Z)
+			elseif type(value)=="string" then fields[key]=string.sub(value,1,160)
+			elseif type(value)=="number" then fields[key]=value==value and math.abs(value)<1e100 and value or "non-finite"
+			elseif type(value)=="boolean" then fields[key]=value
+			else fields[key]=kind end
+			count+=1
+		end
+	end
+	self:Trace("fx",fields)
+end
+
+function comboController:Diagnostics()
+	local c=cfg.coconutteam
+	return {version="combo-trace-v1",account=localPlayer.Name,role=self:Role() or "unassigned",status=self.status,
+		tracking=self.effectStatus,enabled=c.enabled,fast=c.fast,main=c.main,alt1=c.alt1,alt2=c.alt2,
+		catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,teamField=self:TeamField(),outsideField=c.outsidefield,
+		mainHelp=c.mainassist or 3,events=self.trace or {}}
+end
+
 function comboController:Observe(effectName, data)
 	local kicked=effectName=="KickedComboCoconut"
 	if not self:Managed() or (effectName~="FallingCoconut" and not kicked) then return end
-	if type(data)~="table" or (not kicked and not data.Combo) or data.Friendly==false then return end
+	if type(data)~="table" then return end
+	if kicked or data.Combo then self:TraceFX(effectName,data) end
+	if (not kicked and not data.Combo) or data.Friendly==false then return end
 	local goal=kicked and (data.GoalPos or data.EndPos or data.Pos2 or data.Pos) or data.Pos
 	local dur=tonumber(data.FallDuration or data.Dur or data.Duration)
 	self.lastEffect=effectName
@@ -1920,6 +1956,7 @@ function comboController:Observe(effectName, data)
 	end
 	self.byKey[key]=record
 	self.records[#self.records+1]=record
+	self:Trace("parsed",{key=key,owner=owner or "unknown",private=private,points=record.points,stackKnown=record.stackKnown,sharedDrops=sharedDrops,field=record.field,help=self:MainHelp(record)})
 	self.lastOwner=owner or "Unknown (team catches paused for this coconut)"
 	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
 end
@@ -2261,6 +2298,13 @@ function comboController:Tick()
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
 	self.comboPriority=job~=nil
+	local decision=(job and job.key or "none")..":"..tostring(job and job.yielding or false)
+	if self.traceDecision~=decision then
+		self.traceDecision=decision
+		self:Trace("decision",{key=job and job.key or "none",owner=job and job.owner or "unknown",role=self:Role() or "unassigned",
+			action=job and (job.yielding and "yield" or "catch") or "skip",private=self.privatePriority,
+			managed=self:Managed(),stop=state.stop==true,activity=tostring(state.activityStatus)})
+	end
 	if job and showerController.active and showerController.cancel then showerController.cancel("Combo catching has priority") end
 	local available,h,root=self:Available()
 	if not available then self:Finish("Busy with another activity");return end
@@ -2451,6 +2495,7 @@ function comboController:Shutdown()
 	self:Finish("Unloaded")
 	if self.disks then table.clear(self.disks) end
 	self.atlasTargets=nil
+	if self.trace then table.clear(self.trace) end
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
@@ -2503,6 +2548,13 @@ function comboController:BuildMenu(tab)
 		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
 		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
+	end)
+	folder.AddButton("Copy Combo Diagnostics",function()
+		local copy=setclipboard or toclipboard
+		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
+		local ok,result=pcall(HttpService.JSONEncode,HttpService,self:Diagnostics())
+		if not ok then ui.Notify("Coconut Team","Could not encode diagnostics");return end
+		copy(result);ui.Notify("Coconut Team","Combo diagnostics copied")
 	end)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
 	self.statusLabel=folder.AddLabel("Team: Disabled")

@@ -63,6 +63,13 @@ function comboController:BuildMenu(tab)
 		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
 	end)
+	folder.AddButton("Copy Combo Diagnostics",function()
+		local copy=setclipboard or toclipboard
+		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
+		local ok,result=pcall(HttpService.JSONEncode,HttpService,self:Diagnostics())
+		if not ok then ui.Notify("Coconut Team","Could not encode diagnostics");return end
+		copy(result);ui.Notify("Coconut Team","Combo diagnostics copied")
+	end)
 	folder.AddButton("Reconnect Coordinator",function()self:Configure()end)
 	self.statusLabel=folder.AddLabel("Team: Disabled")
 	self.ownerLabel=folder.AddLabel("Last combo owner: waiting for a new combo")
