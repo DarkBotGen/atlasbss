@@ -1887,7 +1887,9 @@ function comboController:Observe(effectName, data)
 	local chain=chainKey and self.chains[chainKey]
 	if chain and chain.expires<=now then chain=nil end
 	local explicit=self:Owner(data.Owner)
-	local owner=explicit or (chain and chain.owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
+	local private=not kicked and tonumber(data.Points)==0
+	local owner=explicit or (not private and chain and chain.owner) or self:Owner(data.Player) or self:Owner(data.PID) or self:Owner(data.Target)
+	if private and not owner then owner=localPlayer.Name end
 	-- Deduplicate only the same immediate FX delivery, not every drop reusing a chain ID.
 	local previous=chain and chain.record
 	if previous and now-previous.seen<0.075 and (previous.position-goal).Magnitude<0.1 then return end
@@ -1899,7 +1901,7 @@ function comboController:Observe(effectName, data)
 	local run=runKey and self.chains[runKey]
 	local fieldName=field and field.Name or ""
 	local fieldDrops=run and run.expires>now and run.record.field==fieldName and (run.record.fieldDrops or 1)+1 or 1
-	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,points=tonumber(data.Points) or 0,
+	local record={key=key,owner=owner,position=goal,deadline=now+dur,fieldDrops=fieldDrops,private=private,points=tonumber(data.Points) or 0,
 		field=field and field.Name or "",seen=now,chain=chainKey,effect=effectName}
 	if previous then
 		-- The bounce is a new destination; do not continue holding the previous drop.
@@ -1976,6 +1978,16 @@ function comboController:MainOwned(owner)
 		and string.lower(owner)==string.lower(cfg.coconutteam.main)
 end
 
+function comboController:PrivateLanding()
+	if not cfg.coconutteam.enabled then return end
+	local best,now=nil,os.clock()
+	for _,r in ipairs(self.records)do
+		if r.private and r.owner and string.lower(r.owner)==string.lower(localPlayer.Name)
+			and r.deadline+0.12>now and (not best or r.deadline<best.deadline) then best=r end
+	end
+	return best
+end
+
 function comboController:OwnLanding()
 	if not cfg.coconutteam.enabled or self:Role()~="main" then return end
 	local now, best=os.clock(),nil
@@ -1997,7 +2009,7 @@ function comboController:OutsideMainLanding()
 	local field=role=="alt" and self:TeamField() or cfg.coconutteam.outsidefield
 	local now,best=os.clock(),nil
 	for _,r in ipairs(self.records)do
-		if self:MainOwned(r.owner) and r.field==field and r.deadline+0.12>now
+		if not r.private and self:MainOwned(r.owner) and r.field==field and r.deadline+0.12>now
 			and (not best or r.deadline<best.deadline) then best=r end
 	end
 	return best
@@ -2009,7 +2021,7 @@ function comboController:OutsideAltLanding()
 	for _,r in ipairs(self.records)do
 		local owner=type(r.owner)=="string" and string.lower(r.owner)
 		local alt=owner and (owner==string.lower(cfg.coconutteam.alt1) or owner==string.lower(cfg.coconutteam.alt2))
-		if alt and r.deadline+0.12>now then
+		if alt and not r.private and r.deadline+0.12>now then
 			local catch=role=="catcher" and cfg.coconutteam.fast and r.field==cfg.coconutteam.outsidefield
 			if catch and (not best or r.deadline<best.deadline) then best=r end
 		end
@@ -2169,7 +2181,8 @@ function comboController:Tick()
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
 	local diskLanding=self:DiskLanding()
-	local own=self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
+	local private=self:PrivateLanding()
+	local own=private or self:OwnLanding() or self:OutsideMainLanding() or self:OutsideAltLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -2187,6 +2200,7 @@ function comboController:Tick()
 			end
 		end
 	end
+	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
 	self.comboPriority=job~=nil
 	if job and showerController.active and showerController.cancel then showerController.cancel("Combo catching has priority") end
@@ -2266,7 +2280,7 @@ function comboController:Sync()
 	self.seq+=1
 	local speed=self.session and c.maxspeed or math.max(h.WalkSpeed,c.maxspeed)
 	local payload={protocol=2,active_key=self.session and self.session.key or "",username=localPlayer.Name,server=game.JobId,session=self.sessionId,seq=self.seq,sample_age=math.min((self.roundTrip or 0.2)/2,1),
-		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available or self.ownPriority,
+		pos={root.Position.X,root.Position.Y,root.Position.Z},speed=speed,busy=not available or (self.ownPriority and not self.privatePriority),
 		roster=self:Roster(),targets=list}
 	if not available then self:Finish("Busy with another activity");payload.active_key="" end
 	local generation=self.generation
@@ -2386,7 +2400,7 @@ function comboController:BuildMenu(tab)
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
-	folder.AddLabel("Main catches its own combo from the first drop, including after field changes.")
+	folder.AddLabel("Main always catches its own combo. Every spawner catches its private 0x drop locally.")
 	folder.AddLabel("Alt combo: spawning alt every other turn; main/outside catches take priority over other work.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
