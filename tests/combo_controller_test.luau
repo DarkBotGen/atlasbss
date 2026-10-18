@@ -458,6 +458,54 @@ function comboController:Observe(effectName, data)
 	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
 end
 
+-- Use the original Atlas WarningDisk/GuiAttach detector as the landing source.
+function comboController:TrackDisk(disk)
+	if not self:Managed() then return end
+	self.disks=self.disks or {}
+	if not self.disks[disk] then self.disks[disk]={seen=os.clock()} end
+end
+
+function comboController:DiskLanding()
+	local now,best=os.clock(),nil
+	local role=self:Role()
+	for disk,entry in pairs(self.disks or {}) do
+		if not disk.Parent or now-entry.seen>12 then
+			if entry.record then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
+			self.disks[disk]=nil
+		elseif disk:FindFirstChild("GuiAttach") then
+			local position=disk.Position
+			local match
+			for _,r in ipairs(self.records) do
+				if r.deadline+0.12>now and math.abs(r.seen-entry.seen)<2
+					and (r.position-position).Magnitude<14
+					and (not match or (r.position-position).Magnitude<(match.position-position).Magnitude) then match=r end
+			end
+			if match then match.position=position end
+			if match and match.owner then
+				entry.record=match
+				match.position=position
+			elseif not entry.record then
+				local field=getFieldAt(position)
+				local fieldName=field and field.Name or ""
+				-- An unlabelled first landing is caught locally; never invent its owner
+				-- or submit it to the coordinator as another account's combo.
+				local eligible=cfg.coconutteam.enabled and ((role=="main" or role=="alt") and fieldName==self:TeamField()
+					or role=="catcher" and cfg.coconutteam.fast and fieldName==cfg.coconutteam.outsidefield)
+				if not cfg.coconutteam.enabled and cfg.coconutteam.fast then
+					eligible=fieldName~=self:TeamField()
+				end
+				if eligible then
+					entry.fallback=entry.fallback or {key="disk:"..tostring(disk),deadline=entry.seen+12,field=fieldName,seen=entry.seen}
+					entry.fallback.position=position
+					if not best or entry.seen<best.seen then best=entry.fallback end
+					self.effectStatus="Atlas landing disk (owner pending)"
+				end
+			end
+		end
+	end
+	return best
+end
+
 function comboController:MainOwned(owner)
 	return type(owner)=="string" and cfg.coconutteam.main~="None" and cfg.coconutteam.main~=""
 		and string.lower(owner)==string.lower(cfg.coconutteam.main)
@@ -634,7 +682,8 @@ function comboController:Tick()
 	local character=localPlayer.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
-	local own=self:OwnLanding() or self:OutsideMainLanding()
+	local diskLanding=self:DiskLanding()
+	local own=self:OwnLanding() or self:OutsideMainLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -811,6 +860,12 @@ function comboController:Start()
 		if self.effectLabel then self.effectLabel.Text="Tracking: "..(self.effectStatus or "waiting for combo FX") end
 		if self.debugLabel then self.debugLabel.Text=string.format("Detected: %d | Assigned: %d | RTT: %.0f ms | Activity: %s",#self.records,#self.jobs,(self.roundTrip or 0)*1000,tostring(state.activityStatus)) end
 	end))
+	local particles=workspace:FindFirstChild("Particles")
+	if particles then
+		for _,disk in ipairs(particles:GetChildren()) do
+			if disk.Name=="WarningDisk" and disk:IsA("BasePart") and disk.Size.X>20 and disk.Size.X<=38 then self:TrackDisk(disk) end
+		end
+	end
 	self:Configure()
 end
 
@@ -821,6 +876,7 @@ function comboController:Shutdown()
 	connections:Cancel("comboTeamTick")
 	connections:Cancel("comboTeamFX")
 	self:Finish("Unloaded")
+	if self.disks then table.clear(self.disks) end
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
@@ -1094,6 +1150,29 @@ state.stop=true;comboController:Tick();assert(not comboController.active and h.W
 state.stop=false
 cfg.autofarm.enabled=false
 observe(50,"outside-autofarm-off");comboController:Tick();assert(comboController.active,"fast mode requires autofarm")
+-- Atlas physical marker fallback catches the first drop without FX or the Farm Combo toggle.
+comboController:Finish("disk test")
+comboController.records={};comboController.jobs={};comboController.byKey={}
+cfg.coconutteam.enabled=true;cfg.coconutteam.main="Tester";cfg.coconutteam.field="Pepper Patch"
+cfg.autofarm.enabled=true
+local hasGui=false
+local disk={Parent={},Position=vector(5,3,0)}
+function disk:FindFirstChild(name)return hasGui and name=="GuiAttach" and {} or nil end
+comboController:TrackDisk(disk)
+assert(not comboController:DiskLanding(),"ordinary coconut classified as combo")
+hasGui=true
+comboController:Tick()
+assert(comboController.active,"first physical combo missed")
+assert(#comboController.records==0,"unknown owner sent as an FX observation")
+local landing=comboController:DiskLanding()
+assert(landing and landing.position==disk.Position,"physical landing not tracked")
+comboController:Observe("FallingCoconut",{Combo=true,Pos=disk.Position,Dur=2})
+assert(comboController:DiskLanding(),"ownerless FX suppressed first disk catch")
+disk.Position=vector(6,3,0)
+assert(comboController:DiskLanding().position==disk.Position,"marker movement ignored")
+disk.Parent=nil
+comboController:Tick()
+assert(not comboController.active and next(comboController.disks)==nil,"removed marker retained")
 showerController.shuttingDown=true
 comboController:Shutdown()
 assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)

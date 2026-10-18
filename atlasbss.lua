@@ -1914,6 +1914,54 @@ function comboController:Observe(effectName, data)
 	self.effectStatus=string.format("%s: drop %d",effectName,self.serial)
 end
 
+-- Use the original Atlas WarningDisk/GuiAttach detector as the landing source.
+function comboController:TrackDisk(disk)
+	if not self:Managed() then return end
+	self.disks=self.disks or {}
+	if not self.disks[disk] then self.disks[disk]={seen=os.clock()} end
+end
+
+function comboController:DiskLanding()
+	local now,best=os.clock(),nil
+	local role=self:Role()
+	for disk,entry in pairs(self.disks or {}) do
+		if not disk.Parent or now-entry.seen>12 then
+			if entry.record then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
+			self.disks[disk]=nil
+		elseif disk:FindFirstChild("GuiAttach") then
+			local position=disk.Position
+			local match
+			for _,r in ipairs(self.records) do
+				if r.deadline+0.12>now and math.abs(r.seen-entry.seen)<2
+					and (r.position-position).Magnitude<14
+					and (not match or (r.position-position).Magnitude<(match.position-position).Magnitude) then match=r end
+			end
+			if match then match.position=position end
+			if match and match.owner then
+				entry.record=match
+				match.position=position
+			elseif not entry.record then
+				local field=getFieldAt(position)
+				local fieldName=field and field.Name or ""
+				-- An unlabelled first landing is caught locally; never invent its owner
+				-- or submit it to the coordinator as another account's combo.
+				local eligible=cfg.coconutteam.enabled and ((role=="main" or role=="alt") and fieldName==self:TeamField()
+					or role=="catcher" and cfg.coconutteam.fast and fieldName==cfg.coconutteam.outsidefield)
+				if not cfg.coconutteam.enabled and cfg.coconutteam.fast then
+					eligible=fieldName~=self:TeamField()
+				end
+				if eligible then
+					entry.fallback=entry.fallback or {key="disk:"..tostring(disk),deadline=entry.seen+12,field=fieldName,seen=entry.seen}
+					entry.fallback.position=position
+					if not best or entry.seen<best.seen then best=entry.fallback end
+					self.effectStatus="Atlas landing disk (owner pending)"
+				end
+			end
+		end
+	end
+	return best
+end
+
 function comboController:MainOwned(owner)
 	return type(owner)=="string" and cfg.coconutteam.main~="None" and cfg.coconutteam.main~=""
 		and string.lower(owner)==string.lower(cfg.coconutteam.main)
@@ -2090,7 +2138,8 @@ function comboController:Tick()
 	local character=localPlayer.Character
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then self:Finish("No character");return end
-	local own=self:OwnLanding() or self:OutsideMainLanding()
+	local diskLanding=self:DiskLanding()
+	local own=self:OwnLanding() or self:OutsideMainLanding() or diskLanding
 	local job=own
 	if not job and cfg.coconutteam.enabled then
 		for _, candidate in ipairs(self.jobs) do
@@ -2267,6 +2316,12 @@ function comboController:Start()
 		if self.effectLabel then self.effectLabel.Text="Tracking: "..(self.effectStatus or "waiting for combo FX") end
 		if self.debugLabel then self.debugLabel.Text=string.format("Detected: %d | Assigned: %d | RTT: %.0f ms | Activity: %s",#self.records,#self.jobs,(self.roundTrip or 0)*1000,tostring(state.activityStatus)) end
 	end))
+	local particles=workspace:FindFirstChild("Particles")
+	if particles then
+		for _,disk in ipairs(particles:GetChildren()) do
+			if disk.Name=="WarningDisk" and disk:IsA("BasePart") and disk.Size.X>20 and disk.Size.X<=38 then self:TrackDisk(disk) end
+		end
+	end
 	self:Configure()
 end
 
@@ -2277,6 +2332,7 @@ function comboController:Shutdown()
 	connections:Cancel("comboTeamTick")
 	connections:Cancel("comboTeamFX")
 	self:Finish("Unloaded")
+	if self.disks then table.clear(self.disks) end
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
@@ -6659,6 +6715,7 @@ do
 		local L = n.Name
 
 		if L == "WarningDisk" then
+			if n.Size.X>20 and n.Size.X<=38 then comboController:TrackDisk(n) end
 			if cfg.autofarm.farmmeteorshowers and RunService.Heartbeat:Wait() and n.BrickColor.Name == "Royal purple" then
 				tracked.meteors[n] = true
 			end
@@ -6669,9 +6726,10 @@ do
 				if state.coconuts then
 					state.coconuts += 1
 				end
-			elseif n.Size.X > 20 and n.Size.X < 40 and (cfg.autofarm.farmcoconuts or cfg.autofarm.farmcombococonuts or cfg.convert.coconut) then
+			elseif n.Size.X > 20 and n.Size.X < 40 and (cfg.autofarm.farmcoconuts or cfg.autofarm.farmcombococonuts or cfg.convert.coconut or comboController:Managed()) then
 				if n:FindFirstChild("GuiAttach") then
 					tracked.combococonuts[n] = true
+					comboController:TrackDisk(n)
 				else
 					tracked.coconuts[n] = os.time()
 					local P
@@ -6680,6 +6738,7 @@ do
 						if l.Name == "GuiAttach" then
 							tracked.coconuts[n] = nil
 							tracked.combococonuts[n] = true
+							comboController:TrackDisk(n)
 							P:Disconnect()
 						end
 					end)
