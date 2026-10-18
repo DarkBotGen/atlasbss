@@ -1924,11 +1924,13 @@ end
 function comboController:DiskLanding()
 	local now,best=os.clock(),nil
 	local role=self:Role()
+	for target in pairs(self.atlasTargets and self:atlasTargets() or {}) do self:TrackDisk(target) end
 	for disk,entry in pairs(self.disks or {}) do
-		if not disk.Parent or now-entry.seen>12 then
-			if entry.record then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
+		local virtual=disk.Name==true
+		if (virtual and now>=(disk.ExpiresAt or entry.seen+12)) or (not virtual and not disk.Parent) or now-entry.seen>12 then
+			if entry.record and not virtual then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
 			self.disks[disk]=nil
-		elseif disk:FindFirstChild("GuiAttach") then
+		elseif virtual or disk:FindFirstChild("GuiAttach") then
 			local position=disk.Position
 			local match
 			for _,r in ipairs(self.records) do
@@ -2333,6 +2335,7 @@ function comboController:Shutdown()
 	connections:Cancel("comboTeamFX")
 	self:Finish("Unloaded")
 	if self.disks then table.clear(self.disks) end
+	self.atlasTargets=nil
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
@@ -42791,7 +42794,7 @@ do
 							tracked.crabcoconuts[trackedEntry] = os.time()
 
 							trackedEntry.ExpiresAt = os.clock() + 2.6
-						elseif effectData.Radius ~= 13 or not effectData.Friendly or not effectData.Combo or not cfg.autofarm.farmcombococonuts then
+						elseif effectData.Radius ~= 13 or not effectData.Friendly or not effectData.Combo or not (cfg.autofarm.farmcombococonuts or comboController:Managed()) then
 							if not (effectData.Radius ~= 13 or not effectData.Friendly) then
 								local coconutEntry = { Name = true, Position = effectData.Pos, Start = os.time() }
 								tracked.coconuts[coconutEntry] = true
@@ -69637,6 +69640,8 @@ Are you sure you want to enable it?]])
 				end)
 				if not ok then self.status="Combo FX observer unavailable" end
 			end
+			local atlasComboTargets=tracked.combococonuts
+			comboController.atlasTargets=function()return atlasComboTargets end
 			comboController:BuildMenu(controls.farming)
 			showerController:Start()
 			comboController:Start()

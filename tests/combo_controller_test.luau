@@ -468,11 +468,13 @@ end
 function comboController:DiskLanding()
 	local now,best=os.clock(),nil
 	local role=self:Role()
+	for target in pairs(self.atlasTargets and self:atlasTargets() or {}) do self:TrackDisk(target) end
 	for disk,entry in pairs(self.disks or {}) do
-		if not disk.Parent or now-entry.seen>12 then
-			if entry.record then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
+		local virtual=disk.Name==true
+		if (virtual and now>=(disk.ExpiresAt or entry.seen+12)) or (not virtual and not disk.Parent) or now-entry.seen>12 then
+			if entry.record and not virtual then entry.record.deadline=math.min(entry.record.deadline,now-0.26) end
 			self.disks[disk]=nil
-		elseif disk:FindFirstChild("GuiAttach") then
+		elseif virtual or disk:FindFirstChild("GuiAttach") then
 			local position=disk.Position
 			local match
 			for _,r in ipairs(self.records) do
@@ -877,6 +879,7 @@ function comboController:Shutdown()
 	connections:Cancel("comboTeamFX")
 	self:Finish("Unloaded")
 	if self.disks then table.clear(self.disks) end
+	self.atlasTargets=nil
 	table.clear(self.records);table.clear(self.byKey);table.clear(self.jobs);table.clear(self.chains);self.chainCount=0
 end
 
@@ -1173,6 +1176,17 @@ assert(comboController:DiskLanding().position==disk.Position,"marker movement ig
 disk.Parent=nil
 comboController:Tick()
 assert(not comboController.active and next(comboController.disks)==nil,"removed marker retained")
+-- The original anti-lag tracker uses virtual targets, with the regular toggle off.
+comboController.records={};comboController.byKey={};comboController.jobs={}
+cfg.autofarm.farmcombococonuts=false
+local virtual={Name=true,Position=vector(5,3,0),Points=1,ExpiresAt=now+2}
+local atlasTargets={[virtual]=true}
+comboController.atlasTargets=function()return atlasTargets end
+comboController:Tick()
+assert(comboController.active,"Atlas virtual combo ignored with Farm Combo off")
+now+=2.1;atlasTargets[virtual]=nil
+comboController:Tick()
+assert(not comboController.active and next(comboController.disks)==nil,"expired virtual combo retained")
 showerController.shuttingDown=true
 comboController:Shutdown()
 assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)
