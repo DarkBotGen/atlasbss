@@ -35,3 +35,5 @@ Exclusive mode update: Stump Idle: Smileys Only now allows combos as well as smi
 Stump footprint adjustment: shifted up to 1.25 studs outward along both quadrant axes and increased the inner diagonal cut from 38% to 48% of the radii for a moderately thinner band. The same polygon drives the route, preview, target clipping and barriers. Other fields are unchanged.
 
 Latest Stump shape: two straight parallel long sides form a narrower diagonal band, with softly rounded end turns replacing the broad outer ellipse. Each rounded corner uses five samples (20 polygon vertices total). The shifted placement and shared route/preview/collision footprint remain. The preview now uses 32 contained fill slices plus 20 boundary segments; guards follow the same 20 segments.
+
+Shape reverted to e20ba29: the broader curved Stump footprint, before the outward/thinner and parallel-sided corrections. Later exclusive combo/smiley behavior, barrier-entry gating and density/140 PMS options remain.

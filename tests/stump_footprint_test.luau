@@ -332,25 +332,13 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 	local inset=math.min(2,(area.maxX-area.minX)/8,(area.maxZ-area.minZ)/8)
 	local ox=sx>0 and area.minX+inset or area.maxX-inset
 	local oz=sz>0 and area.minZ+inset or area.maxZ-inset
-	-- A small outward shift follows the back flower rows; trim the inner
-	-- diagonal a little further to narrow the band without a drastic change.
-	local shift=math.min(1.25,inset*0.625)
-	ox,oz=ox+sx*shift,oz+sz*shift
 	local rx,rz=(area.maxX-area.minX-2*inset)*0.9,(area.maxZ-area.minZ-2*inset)*0.9
-	-- Two parallel long sides follow the new reference; soften the four
-	-- ends so the continuous driver does not make square direction changes.
-	local corners={Vector3.new(ox+sx*rx*0.48,0,oz),Vector3.new(ox+sx*rx,0,oz),Vector3.new(ox,0,oz+sz*rz),Vector3.new(ox,0,oz+sz*rz*0.48)}
-	local points={}
-	for i,corner in ipairs(corners) do
-		local previous=corners[(i-2)%#corners+1]
-		local following=corners[i%#corners+1]
-		local entry=corner+(previous-corner)*0.12
-		local exit=corner+(following-corner)*0.12
-		for j=0,4 do
-			local t=j/4
-			points[#points+1]=entry*((1-t)^2)+corner*(2*t*(1-t))+exit*(t*t)
-		end
+	local points={Vector3.new(ox+sx*rx*0.38,0,oz),Vector3.new(ox+sx*rx,0,oz)}
+	for i=1,16 do
+		local angle=i*math.pi/32
+		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
 	end
+	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.38)
 	self.stumpShape={key=key,points=points}
 	return points
 end
@@ -709,7 +697,7 @@ root.Position=Vector3.new(100,24,200)
 for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  cfg.autofarm.farmposition=name
  local points=assert(fieldPositionPolicy:StumpPolygon(field))
- assert(#points==20)
+ assert(#points==19)
  local centroid=Vector3.zero
  for _,p in ipairs(points)do centroid+=p end
  centroid/=#points
