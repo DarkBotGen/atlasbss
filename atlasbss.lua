@@ -193,6 +193,7 @@ local cfg = {
 		farmposition = false,
 		strictquadrant = false,
 		idlefieldloop = false,
+		stumpsmileyonly = false,
 		showfieldarea = false,
 		fieldedgeguards = true,
 		prioritytokens = false,
@@ -1936,6 +1937,46 @@ function fieldPositionPolicy:DriveIdle()
 	local direction=Vector3.new(delta.X,0,delta.Z)
 	h:Move(direction.Magnitude>0.05 and direction.Unit or Vector3.zero,false)
 end
+function fieldPositionPolicy:SmileyOnly()
+	return cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and currentField and currentField.Name=="Stump Field"
+end
+function fieldPositionPolicy:StumpPolygon(field,area)
+	if not field or field.Name~="Stump Field" or not cfg.autofarm.idlefieldloop then return end
+	if not area then
+		if not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
+		local _,a=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),field.Position.Y)
+		area=a
+	end
+	local key=string.format("%s:%s:%s:%s",area.minX,area.maxX,area.minZ,area.maxZ)
+	if self.stumpShape and self.stumpShape.key==key then return self.stumpShape.points end
+	local cx,cz=(area.minX+area.maxX)/2,(area.minZ+area.maxZ)/2
+	local sx,sz=cx>=field.Position.X and 1 or -1,cz>=field.Position.Z and 1 or -1
+	local inset=math.min(2,(area.maxX-area.minX)/8,(area.maxZ-area.minZ)/8)
+	local ox=sx>0 and area.minX+inset or area.maxX-inset
+	local oz=sz>0 and area.minZ+inset or area.maxZ-inset
+	local rx,rz=(area.maxX-area.minX-2*inset)*0.9,(area.maxZ-area.minZ-2*inset)*0.9
+	local points={Vector3.new(ox+sx*rx*0.38,0,oz),Vector3.new(ox+sx*rx,0,oz)}
+	for i=1,16 do
+		local angle=i*math.pi/32
+		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
+	end
+	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.38)
+	self.stumpShape={key=key,points=points}
+	return points
+end
+function fieldPositionPolicy:InsidePolygon(point,points)
+	local sign
+	for i,a in ipairs(points) do
+		local b=points[i%#points+1]
+		local cross=(b.X-a.X)*(point.Z-a.Z)-(b.Z-a.Z)*(point.X-a.X)
+		if math.abs(cross)>0.001 then
+			local side=cross>0
+			if sign~=nil and side~=sign then return false end
+			sign=side
+		end
+	end
+	return true
+end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
 	if not a then
@@ -1962,22 +2003,12 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	if not route or route.key~=key then
 		route={key=key,index=1,points={}}
 		if stump and options.area then
-			-- Green reference: two inner sides and a quarter-ellipse across the
-			-- outer corner. Mirror from the field center for all four quadrants.
-			local sx=cx>=currentField.Position.X and 1 or -1
-			local sz=cz>=currentField.Position.Z and 1 or -1
-			local ox=sx>0 and minX+inset or maxX-inset
-			local oz=sz>0 and minZ+inset or maxZ-inset
-			local rx,rz=hx*2,hz*2
-			local function add(x,z)route.points[#route.points+1]=Vector3.new(x,0,z)end
-			local nx,nz=math.max(1,math.ceil(rx/6)),math.max(1,math.ceil(rz/6))
-			for i=0,nx-1 do add(ox+sx*rx*i/nx,oz) end
-			local arcs=math.clamp(math.ceil(math.pi*(rx+rz)/4/5),8,48)
-			for i=0,arcs do
-				local angle=i*math.pi/2/arcs
-				add(ox+sx*rx*math.cos(angle),oz+sz*rz*math.sin(angle))
+			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
+			for i,p in ipairs(polygon) do
+				local q=polygon[i%#polygon+1]
+				local count=math.max(1,math.ceil((q-p).Magnitude/6))
+				for j=0,count-1 do route.points[#route.points+1]=p+(q-p)*(j/count) end
 			end
-			for i=1,nz-1 do add(ox,oz+sz*rz*(1-i/nz)) end
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -2055,6 +2086,8 @@ end
 function fieldPositionPolicy:Allowed(goal,opts)
 	if not self:StrictAllowed(goal) then return false end
 	local area=opts and opts.area
+	local polygon=area and self:StumpPolygon(currentField,area)
+	if polygon and not self:InsidePolygon(goal,polygon) then return false end
 	return not area or (goal.X>=area.minX and goal.X<=area.maxX and goal.Z>=area.minZ and goal.Z<=area.maxZ)
 end
 function fieldPositionPolicy:TargetPosition(object)
@@ -2114,6 +2147,25 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 	local clearance,thickness=3,2
 	local offset=clearance+thickness/2
 	local span=2*(clearance+thickness)
+	local polygon=quadrant~="field" and self:StumpPolygon(field)
+	if polygon then
+		local centroid=Vector3.zero
+		for _,p in ipairs(polygon) do centroid+=p end
+		centroid/=#polygon
+		for i,a in ipairs(polygon) do
+			local b=polygon[i%#polygon+1]
+			local delta=b-a
+			local mid=(a+b)/2
+			local normal=Vector3.new(-delta.Z,0,delta.X).Unit
+			if normal:Dot(mid-centroid)<0 then normal=-normal end
+			local centerPoint=Vector3.new(mid.X,y,mid.Z)+normal*offset
+			local p=Instance.new("Part");p.Name="StumpEdge"..i;p.Anchored=true;p.CanCollide=true;p.CanTouch=false;p.CanQuery=false;p.CastShadow=false;p.Transparency=1
+			p.Size=Vector3.new(thickness,10,delta.Magnitude+span)
+			p.CFrame=CFrame.lookAt(centerPoint,centerPoint+delta);p.Parent=folder
+		end
+		folder.Parent=workspace
+		return
+	end
 	wall("Left",minX-offset,midZ,thickness,maxZ-minZ+span)
 	wall("Right",maxX+offset,midZ,thickness,maxZ-minZ+span)
 	wall("Upper",midX,minZ-offset,maxX-minX+span,thickness)
@@ -2123,7 +2175,56 @@ end
 function fieldPositionPolicy:StopPreview()
 	connections:Cancel("fieldAreaPreview")
 	if self.preview then self.preview:Destroy();self.preview=nil end
-	self.parts=nil
+	self.parts=nil;self.previewMode=nil
+end
+function fieldPositionPolicy:DrawStumpPreview(field,polygon)
+	if self.previewMode~="stump" then
+		if self.preview then self.preview:Destroy() end
+		self.preview,self.parts=nil,nil
+	end
+	self.previewMode="stump"
+	if not self.preview or not self.preview.Parent then
+		self.preview=Instance.new("Folder");self.preview.Name="AtlasFieldAreaPreview";self.preview.Parent=workspace;self.parts={}
+	end
+	local y=field.Position.Y+field.Size.Y/2+0.15
+	local color=Color3.fromRGB(65,230,130)
+	local index=0
+	local function part(size,cf,transparency)
+		index+=1
+		local p=self.parts[index]
+		if not p then
+			p=Instance.new("Part");p.Name="StumpArea"..index;p.Anchored=true;p.CanCollide=false;p.CanTouch=false;p.CanQuery=false;p.CastShadow=false
+			p.Parent=self.preview;self.parts[index]=p
+		end
+		p.Size=size;p.CFrame=cf;p.Color=color;p.Material=Enum.Material.Neon;p.Transparency=transparency
+	end
+	local minZ,maxZ=math.huge,-math.huge
+	for _,p in ipairs(polygon) do minZ=math.min(minZ,p.Z);maxZ=math.max(maxZ,p.Z) end
+	local function span(z)
+		local left,right=math.huge,-math.huge
+		for i,a in ipairs(polygon) do
+			local b=polygon[i%#polygon+1]
+			if math.abs(b.Z-a.Z)>0.000001 and z>=math.min(a.Z,b.Z) and z<=math.max(a.Z,b.Z) then
+				local x=a.X+(b.X-a.X)*(z-a.Z)/(b.Z-a.Z)
+				left,right=math.min(left,x),math.max(right,x)
+			end
+		end
+		return left,right
+	end
+	-- Conservative slices stay inside the polygon, including both trimmed corners.
+	for i=0,31 do
+		local z0=minZ+(maxZ-minZ)*i/32
+		local z1=minZ+(maxZ-minZ)*(i+1)/32
+		local l0,r0=span(z0+0.00001);local l1,r1=span(z1-0.00001)
+		local left,right=math.max(l0,l1),math.min(r0,r1)
+		part(Vector3.new(math.max(.01,right-left),.12,z1-z0),CFrame.new((left+right)/2,y,(z0+z1)/2),right-left>=.02 and .82 or 1)
+	end
+	for i,a in ipairs(polygon) do
+		local b=polygon[i%#polygon+1]
+		local start,finish=Vector3.new(a.X,y+.03,a.Z),Vector3.new(b.X,y+.03,b.Z)
+		part(Vector3.new(.3,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.05)
+	end
+	for i=#self.parts,index+1,-1 do self.parts[i]:Destroy();self.parts[i]=nil end
 end
 function fieldPositionPolicy:DrawPreview()
 	if not cfg.autofarm.showfieldarea then self:StopPreview();return end
@@ -2134,6 +2235,13 @@ function fieldPositionPolicy:DrawPreview()
 		if self.preview then self.preview:Destroy();self.preview=nil;self.parts=nil end
 		return
 	end
+	local polygon=self:StumpPolygon(field)
+	if polygon then self:DrawStumpPreview(field,polygon);return end
+	if self.previewMode=="stump" then
+		if self.preview then self.preview:Destroy() end
+		self.preview,self.parts=nil,nil
+	end
+	self.previewMode=nil
 	local center=field.Position
 	local size=self:QuadrantSize(field)
 	if not size then return end
@@ -2645,6 +2753,7 @@ function comboController:WithTaskTravel(callback,...)
 end
 
 function comboController:Available()
+	if fieldPositionPolicy:SmileyOnly() then return false end
 	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
@@ -7910,6 +8019,7 @@ do
 	end
 
 	findMeteor = function(anyField)
+		if fieldPositionPolicy:SmileyOnly() then return end
 		local best, bestField, bestDeadline, bestSeen
 		local now=os.clock()
 		for object,meta in pairs(tracked.meteors) do
@@ -47271,6 +47381,7 @@ function gatheringPriorities:Allowed(position, opts, rootPosition)
 end
 
 function gatheringPriorities:Enabled(category, opts)
+	if fieldPositionPolicy:SmileyOnly() then return category=="Duped Smiley" end
 	if opts.mondotokens and category ~= "Tokens" and category ~= "Priority Tokens" and category ~= "Token Links" and category ~= "Duped Tokens" and category ~= "Duped Smiley" and category ~= "Duped Bear" then return false end
 	local farm = cfg.autofarm
 	if category == "Blooms" then return not opts.loot and opts.blooms and farm.farmblooms end
@@ -47614,6 +47725,10 @@ function gatheringPriorities:Precise(opts,upkeep)
 end
 
 		pickTarget = function(opts)
+			if fieldPositionPolicy:SmileyOnly() then
+				opts.area=fieldPositionPolicy:StrictArea() or opts.area
+				return gatheringPriorities:Candidate("Duped Smiley",opts,getRootPart().Position)
+			end
 			opts.area=fieldPositionPolicy:StrictArea() or opts.area
 			if showerController.active then return "Safeshower" end
 			local comboKind, comboObject = gatheringPriorities:Candidate("Combo Coconuts", opts, getRootPart().Position)
@@ -53867,7 +53982,7 @@ end
 
 		farmStep = function(options)
 			if collectTarget(options) then smoothMovement.roam = nil; return end
-			if options.blooms and not options.loot and not options.ignoreflower then
+			if options.blooms and not options.loot and not options.ignoreflower and not fieldPositionPolicy:SmileyOnly() then
 				local bloom = bloomController:Select(options)
 				if bloom then
 					fieldPositionPolicy:ReleaseIdle()
@@ -66192,7 +66307,7 @@ function showerController:Start()
  self.started=true
  local bridge=self
  bridge.allowed=function()
-  return not bridge.shuttingDown and cfg and state and not state.stop
+  return not fieldPositionPolicy:SmileyOnly() and not bridge.shuttingDown and cfg and state and not state.stop
    and not comboController.comboPriority and not comboController:TravelBlocked() and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
    and currentField ~= nil and getHumanoid().Health > 0 and getFieldAt(getRootPart().Position) == currentField
  end
@@ -67472,9 +67587,10 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
+				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
 				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
-				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
+				farmFolder.AddLabel("Preview works while farming is off. Stump visuals follow its trimmed idle footprint.")
 
 				local buffIconIds = {
 					["Blue Boost"] = "1442863423",

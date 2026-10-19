@@ -157,7 +157,7 @@ local function makePart(name,position)
  o.Parent=particles;return o
 end
 
-local fieldPositionPolicy={StrictAllowed=function()return true end,RemoveGuards=function()end,ReleaseIdle=function()end}
+local fieldPositionPolicy={StrictAllowed=function()return true end,RemoveGuards=function()end,ReleaseIdle=function()end,SmileyOnly=function()return false end}
 local meteorMovement={Release=function()end}
 local localPlayer=player
 player.ClassName="Player"
@@ -748,6 +748,7 @@ function comboController:WithTaskTravel(callback,...)
 end
 
 function comboController:Available()
+	if fieldPositionPolicy:SmileyOnly() then return false end
 	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
