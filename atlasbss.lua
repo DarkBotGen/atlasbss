@@ -1758,6 +1758,11 @@ local meteorMovement={}
 function meteorMovement:Release()
 	local h=self.humanoid
 	if h and h.Parent and h.WalkSpeed==self.assigned then h.WalkSpeed=self.original end
+	if self.root and self.root.Parent then
+		if self.root.CustomPhysicalProperties==self.massAssigned then self.root.CustomPhysicalProperties=self.massOriginal end
+		if self.root.Massless==false then self.root.Massless=self.masslessOriginal end
+	end
+	self.root,self.massOriginal,self.massAssigned,self.masslessOriginal,self.massBase,self.massFactor=nil,nil,nil,nil,nil,nil
 	self.humanoid,self.original,self.assigned,self.pulse=nil,nil,nil,nil
 end
 function meteorMovement:Chase(object,deadline)
@@ -1772,8 +1777,41 @@ function meteorMovement:Chase(object,deadline)
 		local remaining=expires and math.max(0.05,expires-os.clock()-0.15) or 0.4
 		local speed=math.max(self.original,math.min(210,math.max(80,distance/remaining)))
 		h.WalkSpeed=speed;self.assigned=speed;self.pulse=os.clock()
+		local root=getRootPart()
+		if not self.root then
+			self.root=root;self.massOriginal=root.CustomPhysicalProperties
+			self.masslessOriginal=root.Massless;self.massBase=root.CurrentPhysicalProperties
+		end
+		local factor=math.clamp(speed/math.max(self.original,1),1,10)
+		if self.massBase and (not self.massFactor or math.abs(factor-self.massFactor)>=0.25) then
+			local base=self.massBase
+			self.massAssigned=PhysicalProperties.new(math.clamp(base.Density*factor,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
+			root.Massless=false;root.CustomPhysicalProperties=self.massAssigned;self.massFactor=factor
+		end
 	end
 	smoothMovement:MoveTo(object.Position)
+end
+function meteorMovement:PickLink(meteor,deadline)
+	local root=getRootPart().Position
+	local now=os.clock()
+	local best,bestDistance
+	self.linkVisits=self.linkVisits or setmetatable({},{__mode="k"})
+	for object in pairs(tracked.tokenlink) do
+		if (type(object)=="table" and object.ExpiresAt and object.ExpiresAt<=now) or (type(object)~="table" and not object.Parent) then continue end
+		local pos=object.Position
+		if getFieldAt(pos)~=currentField or math.abs(pos.Y-root.Y)>8 then continue end
+		local distance=(pos-root).Magnitude
+		if distance<=3 then self.linkVisits[object]=now+0.5;continue end
+		if (self.linkVisits[object] or 0)>now then continue end
+		if meteor then
+			-- Only detour when both the link and the landing spot are reachable in time.
+			if not deadline or deadline==math.huge then continue end
+			local speed=cfg.autofarm.dynamicmeteors and math.max(80,math.min(210,getHumanoid().WalkSpeed)) or math.max(1,getHumanoid().WalkSpeed)
+			if (distance+(meteor.Position-pos).Magnitude)/speed+0.3>=deadline-now then continue end
+		end
+		if not bestDistance or distance<bestDistance then best,bestDistance=object,distance end
+	end
+	return best
 end
 local fieldPositionPolicy={}
 function fieldPositionPolicy:IsQuadrant(name)
@@ -2478,6 +2516,7 @@ function comboController:IsMovementJob(id)
 end
 
 function comboController:ApplyDensity(session)
+	meteorMovement:Release()
 	pcall(function()
 		local root=session.root
 		local physical=root.CurrentPhysicalProperties
@@ -2515,6 +2554,7 @@ function comboController:Finish(reason)
 end
 
 function comboController:Begin(job, h, root)
+	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
 	if showerController.active or self.closed or self:TravelBlocked() then return end
@@ -65491,9 +65531,10 @@ end
 					-- Re-plan every heartbeat; landing deadlines, rather than disk size, determine order.
 					local nextMeteor,_,deadline=findMeteor()
 					object=nextMeteor
-					if object then
-						now2=os.clock()
-						meteorMovement:Chase(object,deadline)
+					local link=meteorMovement:PickLink(object,deadline)
+					if object or link then
+						if object then now2=os.clock() end
+						meteorMovement:Chase(link or object,deadline)
 					else
 						meteorMovement:Release()
 						farmStep({loot=true})
@@ -66252,6 +66293,7 @@ end
 local function releasePassive() end
 local function begin(g)
  if session or not bridge.allowed() then return end
+ meteorMovement:Release()
  comboController:Finish("Yielding to Star Shower")
  releasePassive()
  local char,h,root=atRoot();if not h or not root or h.Health<=0 then return end

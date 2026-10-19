@@ -177,15 +177,23 @@ local function type(v)if rawType(v)=="table" and v.ClassName then return "userda
 local function getHumanoid()return h end
 local commands={}
 function smoothMovement:MoveTo(goal)commands[#commands+1]=goal end
-local tracked={meteors={}}
+local tracked={meteors={},tokenlink={}}
 local availableFields={[field.Name]=true}
 currentField=field
 local function getFieldAt(p)return p.X<500 and field or nil end
 local findMeteor
+local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
+root.CurrentPhysicalProperties=PhysicalProperties.new(1,0.5,0.5,1,1)
+root.Massless=true
 local meteorMovement={}
 function meteorMovement:Release()
 	local h=self.humanoid
 	if h and h.Parent and h.WalkSpeed==self.assigned then h.WalkSpeed=self.original end
+	if self.root and self.root.Parent then
+		if self.root.CustomPhysicalProperties==self.massAssigned then self.root.CustomPhysicalProperties=self.massOriginal end
+		if self.root.Massless==false then self.root.Massless=self.masslessOriginal end
+	end
+	self.root,self.massOriginal,self.massAssigned,self.masslessOriginal,self.massBase,self.massFactor=nil,nil,nil,nil,nil,nil
 	self.humanoid,self.original,self.assigned,self.pulse=nil,nil,nil,nil
 end
 function meteorMovement:Chase(object,deadline)
@@ -200,8 +208,41 @@ function meteorMovement:Chase(object,deadline)
 		local remaining=expires and math.max(0.05,expires-os.clock()-0.15) or 0.4
 		local speed=math.max(self.original,math.min(210,math.max(80,distance/remaining)))
 		h.WalkSpeed=speed;self.assigned=speed;self.pulse=os.clock()
+		local root=getRootPart()
+		if not self.root then
+			self.root=root;self.massOriginal=root.CustomPhysicalProperties
+			self.masslessOriginal=root.Massless;self.massBase=root.CurrentPhysicalProperties
+		end
+		local factor=math.clamp(speed/math.max(self.original,1),1,10)
+		if self.massBase and (not self.massFactor or math.abs(factor-self.massFactor)>=0.25) then
+			local base=self.massBase
+			self.massAssigned=PhysicalProperties.new(math.clamp(base.Density*factor,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
+			root.Massless=false;root.CustomPhysicalProperties=self.massAssigned;self.massFactor=factor
+		end
 	end
 	smoothMovement:MoveTo(object.Position)
+end
+function meteorMovement:PickLink(meteor,deadline)
+	local root=getRootPart().Position
+	local now=os.clock()
+	local best,bestDistance
+	self.linkVisits=self.linkVisits or setmetatable({},{__mode="k"})
+	for object in pairs(tracked.tokenlink) do
+		if (type(object)=="table" and object.ExpiresAt and object.ExpiresAt<=now) or (type(object)~="table" and not object.Parent) then continue end
+		local pos=object.Position
+		if getFieldAt(pos)~=currentField or math.abs(pos.Y-root.Y)>8 then continue end
+		local distance=(pos-root).Magnitude
+		if distance<=3 then self.linkVisits[object]=now+0.5;continue end
+		if (self.linkVisits[object] or 0)>now then continue end
+		if meteor then
+			-- Only detour when both the link and the landing spot are reachable in time.
+			if not deadline or deadline==math.huge then continue end
+			local speed=cfg.autofarm.dynamicmeteors and math.max(80,math.min(210,getHumanoid().WalkSpeed)) or math.max(1,getHumanoid().WalkSpeed)
+			if (distance+(meteor.Position-pos).Magnitude)/speed+0.3>=deadline-now then continue end
+		end
+		if not bestDistance or distance<bestDistance then best,bestDistance=object,distance end
+	end
+	return best
 end
 	findMeteor = function(anyField)
 		local best, bestField, bestDeadline, bestSeen
@@ -242,7 +283,9 @@ cfg.autofarm.dynamicmeteors=true
 root.Position=Vector3.new(50,24,200);h.WalkSpeed=30
 meteorMovement:Chase(last,11.1)
 assert(h.WalkSpeed==210 and commands[#commands]==last.Position)
+assert(root.CustomPhysicalProperties.Density==7 and root.Massless==false,"density must scale with chase speed")
 meteorMovement:Release();assert(h.WalkSpeed==30)
+assert(root.CustomPhysicalProperties==nil and root.Massless==true,"restore exact original physics")
 meteorMovement:Chase(last,13)
 h.WalkSpeed=42
 meteorMovement:Release();assert(h.WalkSpeed==42,"do not overwrite an external speed change")
@@ -262,3 +305,16 @@ local late=Instance.new("Part",workspace);late.Position=Vector3.new(110,24,200)
 tracked.meteors[early]={seen=1};tracked.meteors[late]={seen=2}
 assert(findMeteor()==early,"without FX timing use observed first-to-last order")
 print("PASS: physical/FX deadline matching, destroyed disk pruning, observation fallback")
+
+now=20
+root.Position=Vector3.new(100,24,200)
+local link={Position=Vector3.new(105,24,200),ExpiresAt=30}
+tracked.tokenlink[link]=true
+local meteor={Position=Vector3.new(110,24,200)}
+cfg.autofarm.dynamicmeteors=true
+assert(meteorMovement:PickLink(meteor,22)==link,"reachable links must take priority")
+assert(meteorMovement:PickLink(meteor,20.1)==nil,"do not miss imminent meteor for link")
+assert(meteorMovement:PickLink(nil)==link,"links before ordinary loot")
+root.Position=link.Position
+assert(meteorMovement:PickLink(nil)==nil,"do not wait on already touched link")
+print("PASS: dynamic mass restoration and deadline-aware Token Link priority")
