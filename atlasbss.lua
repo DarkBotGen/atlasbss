@@ -178,6 +178,7 @@ local cfg = {
 		farmmarks = false,
 		farmmeteorshowers = false,
 		farmprecise = true,
+		precisionupkeep = true,
 		farmprecisemark = true,
 		trackprecise = false,
 		precisemin = 30,
@@ -2028,9 +2029,33 @@ function comboController:PrivateLanding()
 	return best
 end
 
+function comboController:MainReady(record)
+	local main
+	for _,candidate in ipairs(getService("Players"):GetPlayers())do
+		if string.lower(candidate.Name)==string.lower(cfg.coconutteam.main) then main=candidate;break end
+	end
+	local character=main and main.Character
+	local root=character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+	local field=root and self:FieldAt(root.Position)
+	if not root or not humanoid or humanoid.Health<=0 or not field or field.Name~=record.field
+		or math.abs(root.Position.Y-record.position.Y)>12 then record.mainReserved=nil;return false end
+	if main==localPlayer and self:TravelBlocked() then record.mainReserved=nil;return false end
+	local delta=Vector3.new(root.Position.X-record.position.X,0,root.Position.Z-record.position.Z)
+	local cap=math.max(180,cfg.coconutteam.maxspeed)
+	local remaining=record.deadline-os.clock()
+	if record.mainReserved then
+		if delta.Magnitude<=9 or math.max(0,delta.Magnitude-9)/cap<remaining+0.05 then return true end
+		record.mainReserved=nil
+	end
+	local ready=delta.Magnitude<=9 or math.max(0,delta.Magnitude-5)/cap+0.2<remaining
+	if ready then record.mainReserved=true end
+	return ready
+end
+
 function comboController:MainHelp(record)
 	local interval=math.floor(math.clamp(tonumber(cfg.coconutteam.mainassist) or 3,2,10))
-	return record.private or ((record.sharedDrops or 0)>0 and record.sharedDrops%interval==0)
+	return record.private or ((record.sharedDrops or 0)>0 and record.sharedDrops%interval==0 and self:MainReady(record))
 end
 
 function comboController:OwnLanding()
@@ -2061,7 +2086,7 @@ function comboController:OutsideMainLanding()
 	return best
 end
 
--- Visible alt-combo stacks reserve odd drops for the main alone.
+-- Reserve odd alt-combo drops only when the main can reach this field in time.
 function comboController:IsAltOwner(owner)
 	return type(owner)=="string" and (string.lower(owner)==string.lower(cfg.coconutteam.alt1)
 		or string.lower(owner)==string.lower(cfg.coconutteam.alt2))
@@ -2069,7 +2094,7 @@ end
 
 function comboController:AltDropAllowed(record)
 	if not self:IsAltOwner(record.owner) or not record.stackKnown then return true end
-	if record.private or record.stack%2==0 then
+	if record.private or record.stack%2==0 or not self:MainReady(record) then
 		return string.lower(record.owner)==string.lower(localPlayer.Name)
 			or (not record.private and self:Role()=="catcher" and cfg.coconutteam.fast and record.field==cfg.coconutteam.outsidefield)
 	end
@@ -2090,9 +2115,9 @@ function comboController:YieldLanding(root)
 	if not cfg.coconutteam.enabled or not self:Role() or self:Role()=="main" then return end
 	local best,now=nil,os.clock()
 	local held=self.session and self.session.yieldJob
-	if held and held.source.deadline>now then return held end
+	if held and held.source.deadline>now and self:MainReady(held.source) then return held end
 	for _,r in ipairs(self.records)do
-		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1)
+		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1 and self:MainReady(r))
 			or (self:MainOwned(r.owner) and self:MainHelp(r))) then
 			local delta=Vector3.new(root.Position.X-r.position.X,0,root.Position.Z-r.position.Z)
 			if delta.Magnitude<14 and math.abs(root.Position.Y-r.position.Y)<12 and (not best or r.deadline<best.deadline) then
@@ -2539,7 +2564,7 @@ function comboController:BuildMenu(tab)
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
 	folder.AddLabel("Main catches 0x, then helps every N shared drops in the same field. Spawners catch their own 0x locally.")
 	folder.AddLabel("Keep the help interval identical on every client; Copy Team Code includes it.")
-	folder.AddLabel("Alt combo: 0x owner, odd stacks main SOLO, even stacks owner/outside helpers.")
+	folder.AddLabel("Alt combo: 0x owner; odd stacks main solo when reachable; helpers keep unreachable drops alive.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
@@ -6965,7 +6990,7 @@ do
 			tracked.marks[n] = true
 		elseif L == "Bubble" and (cfg.autofarm.farmbubbles or cfg.autofarm.autopopstar or cfg.face.bubbles or cfg.face.gbubbles) then
 			tracked.bubbles[n] = true
-		elseif L == "Crosshair" and not state.precise and (cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise) then
+		elseif L == "Crosshair" and not state.precise and (cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.autofarm.precisionupkeep~=false) then
 			tracked.precise[n] = true
 		elseif L == "DustBunnyInstance" and cfg.autofarm.farmfuzzbombs then
 			tracked.fuzzbombs[n] = true
@@ -46942,6 +46967,8 @@ function gatheringPriorities:ShouldPreempt()
 	if showerController.active then return true end
 	if self.activeCategory == "Combo Coconuts" then return false end
 	if self.activeCategory ~= "Combo Coconuts" and self:Candidate("Combo Coconuts", self.activeOptions or {}, getRootPart().Position) then return true end
+	if self.precisionActive and cfg.autofarm.precisionupkeep~=false then return false end
+	if not self.precisionActive and self.activeCategory~="Precise Targets" and self:PrecisionUpkeep(self.activeOptions or {}) then return true end
     if bearCombat.active then return false end
     local now = os.clock()
     if self.nextPreemptCheck and now < self.nextPreemptCheck then return false end
@@ -46953,12 +46980,14 @@ end
 
 function gatheringPriorities:HigherThanPetals(opts)
 	if self:Candidate("Combo Coconuts", opts, getRootPart().Position) then return true end
+	if self:PrecisionUpkeep(opts) then return true end
 	if bearCombat:Pick(opts) then return true end
 	if not cfg.prioritization.enabled then return false end
 	return self:Pick(opts, "Petals") ~= nil
 end
 
 function gatheringPriorities:Record(kind, object)
+	self.precisionActive=kind and string.sub(kind,1,7)=="Precise" or false
 	local category = cfg.prioritization.enabled and self.last or nil
 	if not category then
 		category = self.kindCategories[kind] or (kind and string.sub(kind, 1, 7) == "Precise" and "Precise Targets")
@@ -47018,15 +47047,41 @@ function gatheringPriorities:BuildMenu(tab)
 	list.Toggle(true, true)
 end
 
-function gatheringPriorities:Precise(opts)
+function gatheringPriorities:PrecisionReady()
+	local precision=buffs.Precision
+	if not precision then return false end
+	local stacks=tonumber(string.match(precision.Text.Text,"%d+")) or 0
+	return stacks>=10 and precision.Percent.Size.Y.Scale>0.65
+end
+
+function gatheringPriorities:PrecisionOptions(opts)
+	local copy=table.clone(opts)
+	copy.avoid=table.clone(opts.avoid or {})
+	return copy
+end
+
+function gatheringPriorities:PrecisionUpkeep(opts)
+	local farm=cfg.autofarm
+	if farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1
+		or opts.loot or opts.mondotokens then return end
+	if comboController.active or showerController.active or comboController:TravelBlocked() then return end
+	if not self:PrecisionReady() and opts.avoid then
+		for target in pairs(tracked.precise)do opts.avoid[target]=nil end
+		for _,target in pairs(tracked.precise2)do opts.avoid[target]=nil;opts.avoid[target.Position]=nil end
+	end
+	return self:Precise(self:PrecisionOptions(opts),true)
+end
+
+function gatheringPriorities:Precise(opts,upkeep)
 	local autofarm = cfg.autofarm
 	local preciseCount, bestPrecise = 0, nil
-	local scorchingStarAura = autofarm.autoscorchingstar and buffs["Scorching Star Aura"]
-	local standInPrecise = cfg.convert.standInPrecise and localPlayer.CoreStats.Pollen.Value / localPlayer.CoreStats.Capacity.Value * 100 >= cfg.convert.standInPreciseAt
+	local scorchingStarAura = not upkeep and autofarm.autoscorchingstar and buffs["Scorching Star Aura"]
+	local standInPrecise = not upkeep and cfg.convert.standInPrecise and localPlayer.CoreStats.Pollen.Value / localPlayer.CoreStats.Capacity.Value * 100 >= cfg.convert.standInPreciseAt
 	local precision, preciseMarkActive, preciseMarkCount, name, isPurpleMark, preciseKind, preciseDistance, precise2Kind, ownGroup, otherMark, sameGroupMark, precise2Distance
-				if not (not standInPrecise and not autofarm.farmprecise and not autofarm.farmprecisemark) then
+				if upkeep or not (not standInPrecise and not autofarm.farmprecise and not autofarm.farmprecisemark) then
 					precision = buffs.Precision
-					preciseMarkActive = autofarm.farmprecisemark and precision and precision.Text.Text == "x10" and precision.Percent.Size.Y.Scale > 0.5
+					if upkeep then preciseMarkActive=self:PrecisionReady()
+					else preciseMarkActive = autofarm.farmprecisemark and precision and precision.Text.Text == "x10" and precision.Percent.Size.Y.Scale > 0.5 end
 					preciseMarkCount = 0
 
 					if scorchingStarAura then
@@ -47042,6 +47097,7 @@ function gatheringPriorities:Precise(opts)
 					if not state.precise then
 						for k in pairs(tracked.precise) do
 							preciseCount += 1
+							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
 
 							if not (name == "Flint" or touchedMarks[k]) then
@@ -47057,11 +47113,12 @@ function gatheringPriorities:Precise(opts)
 								end
 
 								if preciseKind then
-									if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
+									if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or (not (upkeep and preciseKind=="Precise Purple") and not (not opts.avoid or not isPathClear(k.Position, opts.avoid)))) then
 										preciseDistance = distanceTo(k.Position, true)
 
-										if not bestPrecise or preciseDistance < bestPrecise.d then
-											bestPrecise = { name = preciseKind, d = preciseDistance, v = k }
+										local rank=upkeep and not preciseMarkActive and isPurpleMark and 1 or 0
+										if not bestPrecise or rank<(bestPrecise.rank or 0) or (rank==(bestPrecise.rank or 0) and preciseDistance < bestPrecise.d) then
+											bestPrecise = { name = preciseKind, d = preciseDistance, v = k,rank=rank }
 										end
 									end
 								end
@@ -47070,6 +47127,7 @@ function gatheringPriorities:Precise(opts)
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
 							preciseCount += 1
+							if upkeep and opts.range and opts.origin and (opts.origin-preciseMark.Position).Magnitude>=opts.range then continue end
 
 							if not preciseMark.Touched and not touchedMarks[preciseMark] then
 								precise2Kind = standInPrecise and "Precise2Convert" or preciseMark.Mark and preciseMarkActive and not scorchingStarAura and "Precise2Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise2"
@@ -47109,11 +47167,12 @@ function gatheringPriorities:Precise(opts)
 								end
 
 								if precise2Kind then
-									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid))) then
+									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
 										precise2Distance = distanceTo(preciseMark.Position, true)
 
-										if not bestPrecise or precise2Distance < bestPrecise.d then
-											bestPrecise = { name = precise2Kind, d = precise2Distance, v = preciseMark }
+										local rank=upkeep and not preciseMarkActive and preciseMark.Mark and 1 or 0
+										if not bestPrecise or rank<(bestPrecise.rank or 0) or (rank==(bestPrecise.rank or 0) and precise2Distance < bestPrecise.d) then
+											bestPrecise = { name = precise2Kind, d = precise2Distance, v = preciseMark,rank=rank }
 										end
 									end
 								end
@@ -47129,6 +47188,8 @@ end
 			if showerController.active then return "Safeshower" end
 			local comboKind, comboObject = gatheringPriorities:Candidate("Combo Coconuts", opts, getRootPart().Position)
 			if comboKind then return comboKind, comboObject end
+			local precisionKind,precisionObject=gatheringPriorities:PrecisionUpkeep(opts)
+			if precisionKind then gatheringPriorities.last="Precise Targets";return precisionKind,precisionObject end
 			local combatKind, combatObject = bearCombat:Pick(opts)
 			bearCombat.active = combatKind ~= nil
             if combatKind then
@@ -52813,6 +52874,9 @@ end
 						break
 					end
 
+					if cfg.autofarm.precisionupkeep~=false and state.activityStatus==1 and not gatheringPriorities:PrecisionReady() then
+						touchedMarks[preciseMark]=os.clock()+0.25;return true
+					end
 					if not preciseMark.Parent or os.clock() - now > 4 then
 						touchedMarks[preciseMark] = os.clock() + 3
 
@@ -52915,6 +52979,9 @@ end
 						break
 					end
 
+					if cfg.autofarm.precisionupkeep~=false and state.activityStatus==1 and not gatheringPriorities:PrecisionReady() then
+						touchedMarks[mark]=os.clock()+0.25;return true
+					end
 					if not tracked.precise2[mark.ID] or os.clock() - now > 4 then
 						touchedMarks[mark] = os.clock() + 3
 
@@ -53102,7 +53169,7 @@ end
 			end
 
 			if targetKind == "Precise Purple" then
-				return dodgePrecise(targetObject, options)
+				return dodgePrecise(targetObject, gatheringPriorities:PrecisionOptions(options))
 			end
 
 			if targetKind == "Precise" then
@@ -53114,7 +53181,7 @@ end
 			end
 
 			if targetKind == "Precise2Purple" then
-				return dodgeMarks(targetObject, options)
+				return dodgeMarks(targetObject, gatheringPriorities:PrecisionOptions(options))
 			end
 
 			if targetKind == "Precise2" or targetKind == "Precise2All" then
@@ -53171,6 +53238,7 @@ end
 			local ok, result = pcall(collectTargetImpl, options)
 			bearCombat.active = false
 			gatheringPriorities.activeCategory = nil
+			gatheringPriorities.precisionActive = false
 			gatheringPriorities.activeOptions = nil
 			if not ok then error(result, 0) end
 			return result
@@ -66719,6 +66787,7 @@ do
 					watchStations(n)
 				end, "autofarm", "farmprecisemark")
 
+				farmFolder.AddSwitch("Maintain Precision / Spam Marks", nil, "autofarm", "precisionupkeep", {Tooltip="Prioritize Precision to 10x, refresh below 65% duration, then prioritize purple marks. Overrides ordinary gathering order."})
 				farmFolder.AddSwitch("Track Precise", function(n)
 					if n then
 						local n, q = pcall(function()

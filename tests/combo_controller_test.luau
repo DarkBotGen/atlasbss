@@ -571,9 +571,33 @@ function comboController:PrivateLanding()
 	return best
 end
 
+function comboController:MainReady(record)
+	local main
+	for _,candidate in ipairs(getService("Players"):GetPlayers())do
+		if string.lower(candidate.Name)==string.lower(cfg.coconutteam.main) then main=candidate;break end
+	end
+	local character=main and main.Character
+	local root=character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+	local field=root and self:FieldAt(root.Position)
+	if not root or not humanoid or humanoid.Health<=0 or not field or field.Name~=record.field
+		or math.abs(root.Position.Y-record.position.Y)>12 then record.mainReserved=nil;return false end
+	if main==localPlayer and self:TravelBlocked() then record.mainReserved=nil;return false end
+	local delta=Vector3.new(root.Position.X-record.position.X,0,root.Position.Z-record.position.Z)
+	local cap=math.max(180,cfg.coconutteam.maxspeed)
+	local remaining=record.deadline-os.clock()
+	if record.mainReserved then
+		if delta.Magnitude<=9 or math.max(0,delta.Magnitude-9)/cap<remaining+0.05 then return true end
+		record.mainReserved=nil
+	end
+	local ready=delta.Magnitude<=9 or math.max(0,delta.Magnitude-5)/cap+0.2<remaining
+	if ready then record.mainReserved=true end
+	return ready
+end
+
 function comboController:MainHelp(record)
 	local interval=math.floor(math.clamp(tonumber(cfg.coconutteam.mainassist) or 3,2,10))
-	return record.private or ((record.sharedDrops or 0)>0 and record.sharedDrops%interval==0)
+	return record.private or ((record.sharedDrops or 0)>0 and record.sharedDrops%interval==0 and self:MainReady(record))
 end
 
 function comboController:OwnLanding()
@@ -604,7 +628,7 @@ function comboController:OutsideMainLanding()
 	return best
 end
 
--- Visible alt-combo stacks reserve odd drops for the main alone.
+-- Reserve odd alt-combo drops only when the main can reach this field in time.
 function comboController:IsAltOwner(owner)
 	return type(owner)=="string" and (string.lower(owner)==string.lower(cfg.coconutteam.alt1)
 		or string.lower(owner)==string.lower(cfg.coconutteam.alt2))
@@ -612,7 +636,7 @@ end
 
 function comboController:AltDropAllowed(record)
 	if not self:IsAltOwner(record.owner) or not record.stackKnown then return true end
-	if record.private or record.stack%2==0 then
+	if record.private or record.stack%2==0 or not self:MainReady(record) then
 		return string.lower(record.owner)==string.lower(localPlayer.Name)
 			or (not record.private and self:Role()=="catcher" and cfg.coconutteam.fast and record.field==cfg.coconutteam.outsidefield)
 	end
@@ -633,9 +657,9 @@ function comboController:YieldLanding(root)
 	if not cfg.coconutteam.enabled or not self:Role() or self:Role()=="main" then return end
 	local best,now=nil,os.clock()
 	local held=self.session and self.session.yieldJob
-	if held and held.source.deadline>now then return held end
+	if held and held.source.deadline>now and self:MainReady(held.source) then return held end
 	for _,r in ipairs(self.records)do
-		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1)
+		if not r.private and r.deadline>now and ((self:IsAltOwner(r.owner) and r.stackKnown and r.stack%2==1 and self:MainReady(r))
 			or (self:MainOwned(r.owner) and self:MainHelp(r))) then
 			local delta=Vector3.new(root.Position.X-r.position.X,0,root.Position.Z-r.position.Z)
 			if delta.Magnitude<14 and math.abs(root.Position.Y-r.position.Y)<12 and (not best or r.deadline<best.deadline) then
@@ -1082,7 +1106,7 @@ function comboController:BuildMenu(tab)
 	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
 	folder.AddLabel("Main catches 0x, then helps every N shared drops in the same field. Spawners catch their own 0x locally.")
 	folder.AddLabel("Keep the help interval identical on every client; Copy Team Code includes it.")
-	folder.AddLabel("Alt combo: 0x owner, odd stacks main SOLO, even stacks owner/outside helpers.")
+	folder.AddLabel("Alt combo: 0x owner; odd stacks main solo when reachable; helpers keep unreachable drops alive.")
 	folder.AddLabel("Temporary 10x root density during combo movement; original properties restore afterward.")
 	folder.AddLabel("Team controls override Farm Combo Coconuts; that regular switch is not required.")
 	folder.AddLabel("Fast mode works with autofarm off. Outside catchers need this enabled.")
@@ -1205,6 +1229,8 @@ local collectObject
 
 threads:Add("Autofarm",worker);threads:Add("walkspeed",worker);threads:Add("Stats",worker)
 local stats=threads:Get("Stats")
+local actualMainReady=comboController.MainReady
+comboController.MainReady=function()return true end
 comboController:Start()
 local startConnections=liveConnections
 assert(comboController.observesRemote)
@@ -1368,6 +1394,38 @@ for points=0,6 do
 end
 player.Name="Tester"
 comboController:Finish("solo test complete")
+-- A remote main must actually be in position before helpers reserve a solo turn.
+comboController:Finish("readiness setup")
+local savedPlayers=Players.list
+local oldRoleName=player.Name
+local savedMain,savedAlt,savedOutside=cfg.coconutteam.main,cfg.coconutteam.alt1,cfg.coconutteam.outsidefield
+local remoteCharacter=Instance.new("Model",workspace)
+local remoteRoot=Instance.new("Part",remoteCharacter);remoteRoot.Name="HumanoidRootPart";remoteRoot.Position=vector(0,3,0)
+local remoteHumanoid=Instance.new("Humanoid",remoteCharacter)
+local remoteMain={Name="RemoteMain",Character=remoteCharacter}
+Players.list={player,remoteMain}
+cfg.coconutteam.main="RemoteMain";cfg.coconutteam.alt1="Tester";cfg.coconutteam.outsidefield="Pepper Patch"
+player.Name="Tester"
+local reserved={key="reachability",owner="Tester",stackKnown=true,stack=3,points=100,position=vector(5,3,0),field="Pepper Patch",deadline=now+1}
+comboController.MainReady=actualMainReady
+assert(comboController:MainReady(reserved) and not comboController:AltDropAllowed(reserved),"reachable main did not reserve solo drop")
+remoteRoot.Position=vector(35,3,0)
+assert(not comboController:MainReady(reserved) and comboController:AltDropAllowed(reserved),"alt waited for main in another field and dropped combo")
+remoteRoot.Position=vector(0,3,0);assert(comboController:MainReady(reserved))
+remoteRoot.Position=vector(-200,3,0)
+assert(not comboController:MainReady(reserved) and comboController:AltDropAllowed(reserved),"stale reservation retained main too far away in the same field")
+local savedRecords=comboController.records;comboController.records={reserved}
+player.Name="OutsideOne";cfg.coconutteam.catcher1="OutsideOne"
+assert(comboController:AltDropAllowed(reserved) and not comboController:YieldLanding(root),"outside helpers yielded to unreachable main")
+remoteRoot.Position=vector(0,100,0)
+assert(not comboController:MainReady(reserved),"airborne main was treated as ready")
+remoteRoot.Position=vector(0,3,0);remoteHumanoid.Health=0
+assert(not comboController:MainReady(reserved),"dead main reserved a drop")
+remoteHumanoid.Health=100
+assert(comboController:MainReady(reserved),"main did not regain solo reservation after returning")
+comboController.records=savedRecords;Players.list=savedPlayers;remoteCharacter:Destroy()
+player.Name=oldRoleName;cfg.coconutteam.main=savedMain;cfg.coconutteam.alt1=savedAlt;cfg.coconutteam.outsidefield=savedOutside
+comboController.MainReady=function()return true end
 -- An alt rejects coordinator assignments for the main, including stale server jobs.
 cfg.coconutteam.main="OtherMain";cfg.coconutteam.alt1="Tester"
 cfg.autofarm.enabled=true;state.activityStatus=1
@@ -1627,6 +1685,7 @@ comboController.records={};comboController.byKey={};comboController.jobs={};comb
 player.Name="MainAccount";cfg.coconutteam.main="MainAccount";cfg.coconutteam.alt1="AltOne";cfg.coconutteam.mainassist=5
 cfg.autofarm.enabled=true;state.activityStatus=1
 root.Position=vector(-490,123.2,546)
+comboController.MainReady=actualMainReady
 local liveOwner={ClassName="Player",Name="MainAccount",IsA=function(_,class)return class=="Player"end}
 local realEvents={{time=3474.996,effect="KickedComboCoconut",data={Pos1=vector(-490.0,123.2,546.0),Points=100,Rad=13}},{time=3474.996,effect="FallingCoconut",data={Combo=31,Radius=13,Dur=0.9149405464557394,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-458.0,123.2,554.0)}},{time=3475.927,effect="KickedComboCoconut",data={Pos1=vector(-458.0,123.2,554.0),Points=100,Rad=13}},{time=3475.927,effect="FallingCoconut",data={Combo=32,Radius=13,Dur=0.8835641933074436,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-498.0,123.2,570.0)}},{time=3476.827,effect="KickedComboCoconut",data={Pos1=vector(-498.0,123.2,570.0),Points=100,Rad=13}},{time=3476.827,effect="FallingCoconut",data={Combo=33,Radius=13,Dur=0.8527900328486191,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-518.0,123.2,538.0)}},{time=3477.694,effect="KickedComboCoconut",data={Pos1=vector(-518.0,123.2,538.0),Points=100,Rad=13}},{time=3477.694,effect="FallingCoconut",data={Combo=34,Radius=13,Dur=0.8225887698553866,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-466.0,123.2,534.0)}},{time=3478.51,effect="KickedComboCoconut",data={Pos1=vector(-466.0,123.2,534.0),Points=100,Rad=13}},{time=3478.51,effect="FallingCoconut",data={Combo=35,Radius=13,Dur=0.7929333469863082,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-490.0,123.2,546.0)}},{time=3479.327,effect="KickedComboCoconut",data={Pos1=vector(-490.0,123.2,546.0),Points=100,Rad=13}},{time=3479.327,effect="FallingCoconut",data={Combo=36,Radius=13,Dur=0.7637987152502324,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-482.0,123.2,570.0)}},{time=3480.095,effect="KickedComboCoconut",data={Pos1=vector(-482.0,123.2,570.0),Points=100,Rad=13}},{time=3480.095,effect="FallingCoconut",data={Combo=37,Radius=13,Dur=0.7351616336946107,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-514.0,123.2,554.0)}},{time=3480.844,effect="KickedComboCoconut",data={Pos1=vector(-514.0,123.2,554.0),Points=100,Rad=13}},{time=3480.844,effect="FallingCoconut",data={Combo=38,Radius=13,Dur=0.7070004939101886,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-470.0,123.2,542.0)}},{time=3481.614,effect="KickedComboCoconut",data={Pos1=vector(-470.0,123.2,542.0),Points=100,Rad=13}},{time=3481.614,effect="FallingCoconut",data={Combo=39,Radius=13,Dur=0.6792951657095281,Friendly=true,Points=100,ComboOwner=liveOwner,Pos=vector(-494.0,123.2,526.0)}}}
 local observed=0
