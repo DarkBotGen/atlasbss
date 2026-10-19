@@ -1974,13 +1974,17 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 	local inset=math.min(2,(area.maxX-area.minX)/8,(area.maxZ-area.minZ)/8)
 	local ox=sx>0 and area.minX+inset or area.maxX-inset
 	local oz=sz>0 and area.minZ+inset or area.maxZ-inset
+	-- A small outward shift follows the back flower rows; trim the inner
+	-- diagonal a little further to narrow the band without a drastic change.
+	local shift=math.min(1.25,inset*0.625)
+	ox,oz=ox+sx*shift,oz+sz*shift
 	local rx,rz=(area.maxX-area.minX-2*inset)*0.9,(area.maxZ-area.minZ-2*inset)*0.9
-	local points={Vector3.new(ox+sx*rx*0.38,0,oz),Vector3.new(ox+sx*rx,0,oz)}
+	local points={Vector3.new(ox+sx*rx*0.48,0,oz),Vector3.new(ox+sx*rx,0,oz)}
 	for i=1,16 do
 		local angle=i*math.pi/32
 		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
 	end
-	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.38)
+	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.48)
 	self.stumpShape={key=key,points=points}
 	return points
 end
