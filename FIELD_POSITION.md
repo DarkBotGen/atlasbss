@@ -9,3 +9,5 @@ Normal gathering targets, Precision upkeep, blooms, petals and roaming use the c
 Both settings save through normal configuration. The overlay uses 15 anchored, non-colliding/non-touching/non-queryable local parts with four labels and one managed 5 Hz update listener. Parts are reused during updates and destroyed on disable/unload. It does not change field collision or server state.
 
 Geometry, original side orientation, target eligibility, 1,000 roaming samples, clipped graph links, preview geometry, field changes while stopped/running, repeated updates and enable/disable cleanup are tested with the source-derived Luau fixture. Appearance and full farming movement still need live Roblox verification.
+
+Prevent Field Edge Drift (enabled by default and saved in config) adds four invisible local collision walls outside the active field footprint while gathering. Walls are reused, removed immediately before wrapped travel, and removed on the next heartbeat for other activity changes, combo/shower control, death, or leaving the field. Disabling the toggle or unloading destroys them. Live collision behavior still needs Roblox verification.

@@ -191,6 +191,7 @@ local cfg = {
 		farmposenabled = false,
 		farmposition = false,
 		showfieldarea = false,
+		fieldedgeguards = true,
 		prioritytokens = false,
 		dupedtokens = false,
 		farmbadges = false,
@@ -1878,6 +1879,36 @@ function fieldPositionPolicy:TrackedAllowed(key,value,opts)
 	local goal=self:TargetPosition(key) or self:TargetPosition(value)
 	return not goal or self:Allowed(goal,opts)
 end
+-- Four reusable local walls outside the flower footprint, only during gathering.
+function fieldPositionPolicy:RemoveGuards()
+	if self.guards then self.guards:Destroy();self.guards=nil;self.guardField=nil end
+end
+function fieldPositionPolicy:UpdateGuards(allowed)
+	local field=currentField
+	local char=localPlayer.Character
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+	if not allowed or not cfg.autofarm.fieldedgeguards or not field or not root or not humanoid or humanoid.Health<=0 then self:RemoveGuards();return end
+	local center,size=field.Position,field.Size
+	if math.abs(root.Position.X-center.X)>size.X/2+3 or math.abs(root.Position.Z-center.Z)>size.Z/2+3
+		or math.abs(root.Position.Y-(center.Y+size.Y/2))>12 then self:RemoveGuards();return end
+	if self.guardField==field and self.guards and self.guards.Parent then return end
+	self:RemoveGuards()
+	local folder=Instance.new("Folder");folder.Name="AtlasFieldEdgeGuards"
+	self.guards,self.guardField=folder,field
+	local y=center.Y+size.Y/2+4
+	local function wall(name,x,z,width,depth)
+		local part=Instance.new("Part");part.Name=name
+		part.Anchored=true;part.CanCollide=true;part.CanTouch=false;part.CanQuery=false
+		part.CastShadow=false;part.Transparency=1
+		part.Size=Vector3.new(width,10,depth);part.CFrame=CFrame.new(x,y,z);part.Parent=folder
+	end
+	wall("Left",center.X-size.X/2-1,center.Z,2,size.Z+4)
+	wall("Right",center.X+size.X/2+1,center.Z,2,size.Z+4)
+	wall("Upper",center.X,center.Z-size.Z/2-1,size.X+4,2)
+	wall("Lower",center.X,center.Z+size.Z/2+1,size.X+4,2)
+	folder.Parent=workspace
+end
 function fieldPositionPolicy:StopPreview()
 	connections:Cancel("fieldAreaPreview")
 	if self.preview then self.preview:Destroy();self.preview=nil end
@@ -2381,6 +2412,7 @@ function comboController:TravelBlocked()
 end
 
 function comboController:WithTaskTravel(callback,...)
+	fieldPositionPolicy:RemoveGuards()
 	local running=coroutine.running()
 	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
 	while self:TravelBlocked() do
@@ -8608,6 +8640,11 @@ do
 			end
 		end
 	end
+
+	connections:Add("fieldEdgeGuards",RunService.Heartbeat:Connect(function()
+		fieldPositionPolicy:UpdateGuards(cfg.autofarm.enabled and not state.stop and state.activityStatus==1
+			and not comboController:TravelBlocked() and not comboController.active and not showerController.active)
+	end))
 
 	local randomWholeFieldPosition=randomFieldPosition
 	randomFieldPosition=function(options,...)
@@ -66520,6 +66557,7 @@ ScreenGui.Destroying:Connect(function()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
 	fieldPositionPolicy:StopPreview()
+	fieldPositionPolicy:RemoveGuards()
 	showerController:Shutdown()
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
@@ -67201,6 +67239,7 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Farm Near Position", nil, "autofarm", "farmposenabled")
 				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
+				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
 				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
 
 				local buffIconIds = {
