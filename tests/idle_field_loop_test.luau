@@ -288,8 +288,15 @@ for _,sx in ipairs({-1,1})do for _,sz in ipairs({-1,1})do
 end end
 print("PASS: Stump green contour mirrored in all four quadrants, connected sides and curved outer edge")
 
-local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
+local function getHumanoid()return h end
+local localPlayer=player
 function fieldPositionPolicy:ReleaseIdle()
+	if self.idleDrive then
+		RunService:UnbindFromRenderStep("AtlasIdleLoopMovement")
+		local char=localPlayer.Character
+		local h=char and char:FindFirstChildOfClass("Humanoid")
+		if h then h:Move(Vector3.zero,false) end
+	end
 	self.idleDrive=nil
 	local mass=self.idleMass
 	self.idleMass=nil
@@ -298,26 +305,27 @@ function fieldPositionPolicy:ReleaseIdle()
 		if mass.root.Massless==false then mass.root.Massless=mass.massless end
 	end
 end
-function fieldPositionPolicy:IdleMass()
-	local root=getRootPart()
-	if self.idleMass and self.idleMass.root==root then return end
-	self:ReleaseIdle()
-	local base=root.CurrentPhysicalProperties
-	if not base then return end
-	local assigned=PhysicalProperties.new(math.clamp(base.Density*10,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
-	self.idleMass={root=root,original=root.CustomPhysicalProperties,massless=root.Massless,assigned=assigned}
-	root.Massless=false;root.CustomPhysicalProperties=assigned
+function fieldPositionPolicy:DriveIdle()
+	local drive=self.idleDrive
+	if not drive or state.stop or not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.activityStatus~=1 then return end
+	local goal=drive.makeGoal()
+	local h=getHumanoid()
+	if not goal or not drive.allowed(goal) then h:Move(Vector3.zero,false);return end
+	local delta=goal-getRootPart().Position
+	local direction=Vector3.new(delta.X,0,delta.Z)
+	h:Move(direction.Magnitude>0.05 and direction.Unit or Vector3.zero,false)
 end
 
+local function getHumanoid()return h end
 
-
-root.CurrentPhysicalProperties=PhysicalProperties.new(0.7,0.5,0.2,1,1)
-root.CustomPhysicalProperties=nil;root.Massless=true
-fieldPositionPolicy:IdleMass()
-local props=root.CustomPhysicalProperties
-assert(math.abs(props.Density-7)<0.0001 and not root.Massless)
-fieldPositionPolicy:IdleMass();assert(root.CustomPhysicalProperties==props,"reuse physics across frames")
-fieldPositionPolicy.idleDrive={}
+cfg.autofarm.enabled=true;cfg.autofarm.idlefieldloop=true;state.activityStatus=1
+root.Position=Vector3.new(0,3,0)
+local goal=Vector3.new(10,3,0)
+fieldPositionPolicy.idleDrive={makeGoal=function()return goal end,allowed=function()return true end}
+for i=1,60 do fieldPositionPolicy:DriveIdle();assert(h.direction and h.direction.X>0.99)end
+local original={Density=1};local temporary={Density=10}
+root.CustomPhysicalProperties=temporary;root.Massless=false
+fieldPositionPolicy.idleMass={root=root,original=original,massless=true,assigned=temporary}
 fieldPositionPolicy:ReleaseIdle()
-assert(root.CustomPhysicalProperties==nil and root.Massless and not fieldPositionPolicy.idleDrive)
-print("PASS: temporary 10x idle density, reuse, exact physics and drive restoration")
+assert(not fieldPositionPolicy.idleDrive and root.CustomPhysicalProperties==original and root.Massless)
+print("PASS: continuous directional commands and cleanup/restoration of previous density")

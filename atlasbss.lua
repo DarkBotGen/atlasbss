@@ -1888,6 +1888,12 @@ function fieldPositionPolicy:InsideGuardedField(field,point)
 end
 -- Rounded perimeter route, scaled to the active field or selected quadrant.
 function fieldPositionPolicy:ReleaseIdle()
+	if self.idleDrive then
+		RunService:UnbindFromRenderStep("AtlasIdleLoopMovement")
+		local char=localPlayer.Character
+		local h=char and char:FindFirstChildOfClass("Humanoid")
+		if h then h:Move(Vector3.zero,false) end
+	end
 	self.idleDrive=nil
 	local mass=self.idleMass
 	self.idleMass=nil
@@ -1896,15 +1902,15 @@ function fieldPositionPolicy:ReleaseIdle()
 		if mass.root.Massless==false then mass.root.Massless=mass.massless end
 	end
 end
-function fieldPositionPolicy:IdleMass()
-	local root=getRootPart()
-	if self.idleMass and self.idleMass.root==root then return end
-	self:ReleaseIdle()
-	local base=root.CurrentPhysicalProperties
-	if not base then return end
-	local assigned=PhysicalProperties.new(math.clamp(base.Density*10,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
-	self.idleMass={root=root,original=root.CustomPhysicalProperties,massless=root.Massless,assigned=assigned}
-	root.Massless=false;root.CustomPhysicalProperties=assigned
+function fieldPositionPolicy:DriveIdle()
+	local drive=self.idleDrive
+	if not drive or state.stop or not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.activityStatus~=1 then return end
+	local goal=drive.makeGoal()
+	local h=getHumanoid()
+	if not goal or not drive.allowed(goal) then h:Move(Vector3.zero,false);return end
+	local delta=goal-getRootPart().Position
+	local direction=Vector3.new(delta.X,0,delta.Z)
+	h:Move(direction.Magnitude>0.05 and direction.Unit or Vector3.zero,false)
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
@@ -8816,7 +8822,7 @@ do
 			if not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.stop or state.activityStatus~=1
 				or currentField~=drive.field or comboController:TravelBlocked() or comboController.active or showerController.active or getHumanoid().Health<=0 then
 				fieldPositionPolicy:ReleaseIdle()
-			else smoothMovement:Roam(drive.makeGoal,drive.allowed) end
+			else fieldPositionPolicy:DriveIdle() end
 		end
 		fieldPositionPolicy:UpdateGuards(cfg.autofarm.enabled and not state.stop and state.activityStatus==1
 			and not comboController:TravelBlocked() and not comboController.active and not showerController.active)
@@ -46667,16 +46673,19 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 					error("return", 0)
 				end
 
-				if i > 1 then
-					task.wait(0.1)
-					disableJumpRequests()
-					task.wait(0.2)
-				else
-					task.wait(0.1)
-				end
-
-				-- Recheck after settling; allow Humanoid's arrival tolerance, without the old five-stud offset.
 				if distanceTo(spot,true)>1.5 then walkTo(spot,true,1.5) end
+				local equipped=sprinklerName or gameApi:Cache("EquippedSprinkler")
+				if equipped~="The Supreme Saturator" then
+					local h=getHumanoid()
+					local deadline=os.clock()+2
+					while h.FloorMaterial==Enum.Material.Air and os.clock()<deadline do task.wait(0.05) end
+					if h.FloorMaterial==Enum.Material.Air then error("return",0) end
+					disableJumpRequests()
+					deadline=os.clock()+1
+					repeat task.wait(0.03) until h.FloorMaterial==Enum.Material.Air or os.clock()>=deadline or h.Health<=0
+					if h.FloorMaterial~=Enum.Material.Air or h.Health<=0 then error("return",0) end
+					task.wait(0.12)
+				else task.wait(0.1) end
 				if distanceTo(spot,true)>1.5 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
 				gameApi:Event("PlayerActivesCommand", { Name = "Sprinkler Builder" })
 
@@ -46693,10 +46702,9 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				local equipped=gameApi:Cache("EquippedSprinkler")
 				-- Use the zone center itself, never a roaming origin or quadrant offset.
 				local center=field.Position
-				local spots={center}
-				if equipped=="Diamond Drenchers" then
-					spots={center+Vector3.new(-16,0,0),center+Vector3.new(16,0,0),center+Vector3.new(0,0,16),center+Vector3.new(0,0,-16)}
-				end
+				local counts={["Silver Soakers"]=2,["Golden Gushers"]=3,["Diamond Drenchers"]=4}
+				local spots={}
+				for i=1,(counts[equipped] or 1) do spots[i]=center end
 				farm:Place(spots,equipped)
 				farm.field=field.Name
 			end)
@@ -53842,10 +53850,17 @@ end
 						(not cfg.autofarm.farmballoons2 and not cfg.autofarm.farmmarks) or questTasks:check(goal)
 				end
 				if cfg.autofarm.idlefieldloop and not options.loot then
-					fieldPositionPolicy:IdleMass()
+					local starting=not fieldPositionPolicy.idleDrive
 					fieldPositionPolicy.idleDrive={makeGoal=makeGoal,allowed=allowed,field=currentField}
-				else fieldPositionPolicy:ReleaseIdle() end
-				smoothMovement:Roam(makeGoal,allowed)
+					if starting then
+						smoothMovement.roam=nil
+						RunService:BindToRenderStep("AtlasIdleLoopMovement",Enum.RenderPriority.Character.Value+1,function()fieldPositionPolicy:DriveIdle()end)
+					end
+					fieldPositionPolicy:DriveIdle()
+				else
+					fieldPositionPolicy:ReleaseIdle()
+					smoothMovement:Roam(makeGoal,allowed)
+				end
 			end
 		end
 
@@ -67611,7 +67626,7 @@ which bees and get all 3 targets if
 			end
 
 			patternFolder.AddDropdown("Pattern Start", { "Top Left", "Top Right", "Center", "Bottom Left", "Bottom Right" }, nil, nil, "autofarm", "patternstart")
-			patternFolder.AddLabel("Auto Sprinkler uses the full field center; Diamond Drenchers use four spots around it.")
+			patternFolder.AddLabel("Auto Sprinkler stacks lower tiers at the field center while jumping; Supreme places once.")
 			patternFolder.AddDropdown("Allowed Fields", availableFields, true, nil, "autofarm", "patternblacklist", { Field = true, Multiple = true, Blacklist = true })
 
 			patternFolder.AddTextBox("Import Pattern", function(importedText)

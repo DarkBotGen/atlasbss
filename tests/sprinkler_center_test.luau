@@ -175,17 +175,22 @@ cfg.autofarm.field1="Pepper Patch";cfg.autofarm.farmposition="Upper Left";cfg.au
 local farmState={}
 local tracked={sprinklers={}}
 currentField=field
-local task={wait=function()end}
+local task={wait=function(dt)now+=dt end}
+local function getHumanoid()return h end
+h.FloorMaterial="Ground"
+local jumps=0
 local function getFieldAt()return currentField end
 local function distanceTo(goal)local d=root.Position-goal;return math.sqrt(d.X*d.X+d.Z*d.Z)end
 local walks={}
 local function walkTo(goal,timeout,range)assert(range==1.5);walks[#walks+1]=goal;root.Position=Vector3.new(goal.X,24,goal.Z)end
-local function disableJumpRequests()end
+local function disableJumpRequests()jumps+=1;h.FloorMaterial=Enum.Material.Air end
 local equipped
 local builds=0
 local gameApi={Cache=function()return equipped end,Event=function(_,_,data)
  assert(data.Name=="Sprinkler Builder")
  assert(distanceTo(walks[#walks])<=1.5)
+ if equipped~="The Supreme Saturator" then assert(h.FloorMaterial==Enum.Material.Air)end
+ h.FloorMaterial="Ground"
  builds+=1
 end}
 local locked=false
@@ -214,16 +219,19 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 					error("return", 0)
 				end
 
-				if i > 1 then
-					task.wait(0.1)
-					disableJumpRequests()
-					task.wait(0.2)
-				else
-					task.wait(0.1)
-				end
-
-				-- Recheck after settling; allow Humanoid's arrival tolerance, without the old five-stud offset.
 				if distanceTo(spot,true)>1.5 then walkTo(spot,true,1.5) end
+				local equipped=sprinklerName or gameApi:Cache("EquippedSprinkler")
+				if equipped~="The Supreme Saturator" then
+					local h=getHumanoid()
+					local deadline=os.clock()+2
+					while h.FloorMaterial==Enum.Material.Air and os.clock()<deadline do task.wait(0.05) end
+					if h.FloorMaterial==Enum.Material.Air then error("return",0) end
+					disableJumpRequests()
+					deadline=os.clock()+1
+					repeat task.wait(0.03) until h.FloorMaterial==Enum.Material.Air or os.clock()>=deadline or h.Health<=0
+					if h.FloorMaterial~=Enum.Material.Air or h.Health<=0 then error("return",0) end
+					task.wait(0.12)
+				else task.wait(0.1) end
 				if distanceTo(spot,true)>1.5 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
 				gameApi:Event("PlayerActivesCommand", { Name = "Sprinkler Builder" })
 
@@ -240,10 +248,9 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 				local equipped=gameApi:Cache("EquippedSprinkler")
 				-- Use the zone center itself, never a roaming origin or quadrant offset.
 				local center=field.Position
-				local spots={center}
-				if equipped=="Diamond Drenchers" then
-					spots={center+Vector3.new(-16,0,0),center+Vector3.new(16,0,0),center+Vector3.new(0,0,16),center+Vector3.new(0,0,-16)}
-				end
+				local counts={["Silver Soakers"]=2,["Golden Gushers"]=3,["Diamond Drenchers"]=4}
+				local spots={}
+				for i=1,(counts[equipped] or 1) do spots[i]=center end
 				farm:Place(spots,equipped)
 				farm.field=field.Name
 			end)
@@ -251,18 +258,17 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 
 local originalPlace=farmState.Place
 farmState.Place=function(...)assert(locked,"placement must be protected");return originalPlace(...)end
+
 cfg.autofarm.sprinklerpos="Top"
-for _,name in ipairs({"Basic Sprinkler","The Supreme Saturator","Silver Soakers","Golden Gushers"})do
- equipped=name
+local expected=0
+for _,entry in ipairs({{"Basic Sprinkler",1},{"The Supreme Saturator",1},{"Silver Soakers",2},{"Golden Gushers",3},{"Diamond Drenchers",4}})do
+ equipped=entry[1]
  root.Position=Vector3.new(104,24,200)
+ local before=jumps
  farmState:Handle()
- assert(farmState.field==field.Name and not locked)
- assert(walks[#walks].X==field.Position.X and walks[#walks].Z==field.Position.Z)
+ expected+=entry[2]
+ assert(builds==expected and farmState.field==field.Name and not locked)
+ assert(jumps-before==(equipped=="The Supreme Saturator" and 0 or entry[2]))
+ for _,spot in ipairs(walks)do assert(spot.X==field.Position.X and spot.Z==field.Position.Z)end
 end
-assert(builds==4)
-equipped="Diamond Drenchers";farmState:Handle()
-assert(builds==8,"Diamond must place four sprinklers")
-local sx,sz=0,0
-for i=#walks-3,#walks do sx+=walks[i].X;sz+=walks[i].Z end
-assert(sx/4==field.Position.X and sz/4==field.Position.Z,"Diamond layout must center on actual field")
-print("PASS: centered single sprinklers, four Diamond placements, 1.5-stud arrival, protected placement")
+print("PASS: lower tiers airborne on every center placement, all sprinkler counts, Supreme grounded")
