@@ -39,3 +39,5 @@ Latest Stump shape: two straight parallel long sides form a narrower diagonal ba
 Shape reverted to e20ba29: the broader curved Stump footprint, before the outward/thinner and parallel-sided corrections. Later exclusive combo/smiley behavior, barrier-entry gating and density/140 PMS options remain.
 
 Stump middle crossing: the restored curved footprint is unchanged. Idle movement covers one perimeter arc, crosses directly through the interior, follows the other perimeter arc in the opposite direction, then crosses back. Each perimeter edge is visited once per cycle; only the direct middle connection is repeated. Endpoints use the widest pair of footprint vertices and mirror with the quadrant. The preview includes a thin crossing line; no collision wall is added across the middle.
+
+Inner-edge adjustment: increased only the Stump inner diagonal cut from 38% to 58% of the radii, bringing that edge closer to the marked red line. Outer curve, original placement and middle-crossing routing are retained. Preview and barriers use the same adjusted polygon.
