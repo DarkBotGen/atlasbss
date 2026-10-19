@@ -177,6 +177,7 @@ local cfg = {
 		farmleaves = false,
 		farmmarks = false,
 		farmmeteorshowers = false,
+		dynamicmeteors = true,
 		farmprecise = true,
 		precisionupkeep = true,
 		farmprecisemark = true,
@@ -1753,6 +1754,27 @@ local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchC
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
 -- Shared geometry for quadrant targeting and its local testing overlay.
+local meteorMovement={}
+function meteorMovement:Release()
+	local h=self.humanoid
+	if h and h.Parent and h.WalkSpeed==self.assigned then h.WalkSpeed=self.original end
+	self.humanoid,self.original,self.assigned,self.pulse=nil,nil,nil,nil
+end
+function meteorMovement:Chase(object,deadline)
+	local h=getHumanoid()
+	if not cfg.autofarm.dynamicmeteors then self:Release()
+	else
+		if self.humanoid~=h then self:Release();self.humanoid=h;self.original=h.WalkSpeed end
+		if self.assigned and h.WalkSpeed~=self.assigned then self.original=h.WalkSpeed end
+		local delta=object.Position-getRootPart().Position
+		local distance=math.sqrt(delta.X*delta.X+delta.Z*delta.Z)
+		local expires=deadline and deadline<math.huge and deadline or (type(object)=="table" and object.ExpiresAt)
+		local remaining=expires and math.max(0.05,expires-os.clock()-0.15) or 0.4
+		local speed=math.max(self.original,math.min(210,math.max(80,distance/remaining)))
+		h.WalkSpeed=speed;self.assigned=speed;self.pulse=os.clock()
+	end
+	smoothMovement:MoveTo(object.Position)
+end
 local fieldPositionPolicy={}
 function fieldPositionPolicy:IsQuadrant(name)
 	return name=="Upper Left" or name=="Upper Right" or name=="Lower Left" or name=="Lower Right"
@@ -2415,6 +2437,7 @@ end
 
 function comboController:WithTaskTravel(callback,...)
 	fieldPositionPolicy:RemoveGuards()
+	meteorMovement:Release()
 	local running=coroutine.running()
 	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
 	while self:TravelBlocked() do
@@ -7135,7 +7158,7 @@ do
 		if L == "WarningDisk" then
 			if n.Size.X>20 and n.Size.X<=38 then comboController:TrackDisk(n) end
 			if cfg.autofarm.farmmeteorshowers and RunService.Heartbeat:Wait() and n.BrickColor.Name == "Royal purple" then
-				tracked.meteors[n] = true
+				tracked.meteors[n] = {seen=os.clock()}
 			end
 
 			if n.Size.X > 38 then
@@ -7694,26 +7717,31 @@ do
 	end
 
 	findMeteor = function(anyField)
-		local bestMeteor = nil
-
-		for k in pairs(tracked.meteors) do
-			local field = getFieldAt(k.Position)
-
-			if field then
-				if availableFields[field.Name] then
-					if not (not anyField and field ~= currentField) then
-						if not bestMeteor or k.Size.X < bestMeteor.s then
-							bestMeteor = { s = k.Size.X, v = k, field = field }
-						end
-					end
+		local best, bestField, bestDeadline, bestSeen
+		local now=os.clock()
+		for object,meta in pairs(tracked.meteors) do
+			local virtual=type(object)=="table"
+			local expires=virtual and object.ExpiresAt
+			if (virtual and expires and expires<=now) or (not virtual and not object.Parent) then
+				tracked.meteors[object]=nil
+				continue
+			end
+			local field=getFieldAt(object.Position)
+			if not field or not availableFields[field.Name] or (not anyField and field~=currentField) then continue end
+			local seen=type(meta)=="table" and meta.seen or now
+			local deadline=expires or math.huge
+			-- Physical warning disks can share the FX entry's authoritative deadline.
+			if not virtual then
+				for other in pairs(tracked.meteors) do
+					if type(other)=="table" and other.ExpiresAt and other.ExpiresAt>now
+						and (other.Position-object.Position).Magnitude<2 then deadline=other.ExpiresAt;break end
 				end
 			end
+			if not best or deadline<bestDeadline or (deadline==bestDeadline and seen<bestSeen) then
+				best,bestField,bestDeadline,bestSeen=object,field,deadline,seen
+			end
 		end
-
-		if not bestMeteor then
-			return
-		end
-		return bestMeteor.v, bestMeteor.field
+		return best,bestField,bestDeadline
 	end
 
 	input.prepareInput = function()
@@ -8634,6 +8662,7 @@ do
 	end
 
 	connections:Add("fieldEdgeGuards",RunService.Heartbeat:Connect(function()
+		if meteorMovement.pulse and (os.clock()-meteorMovement.pulse>0.25 or state.stop or not cfg.autofarm.farmmeteorshowers) then meteorMovement:Release() end
 		fieldPositionPolicy:UpdateGuards(cfg.autofarm.enabled and not state.stop and state.activityStatus==1
 			and not comboController:TravelBlocked() and not comboController.active and not showerController.active)
 	end))
@@ -43206,7 +43235,7 @@ do
 								flame.Dark = effectData.D
 							elseif effectName == "MythicMeteor" then
 								local meteorEntry = { Name = true, Position = effectData.Pos, Size = Vector2.new(effectData.Radius, 0) }
-								tracked.meteors[meteorEntry] = true
+								tracked.meteors[meteorEntry] = {seen=os.clock()}
 
 								meteorEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.FallDuration) or 0)
 							elseif not (effectName ~= "FieldStar" or not ((effectData.Action == "Make" or effectData.Action == "Destroy") and effectData.Type == "Guiding Star")) then
@@ -65439,7 +65468,7 @@ end
 			local object, v136 = findMeteor(true)
 			local now = os.clock()
 
-			while not (not object or not (os.clock() - now < 180)) do
+			while object and cfg.autofarm.farmmeteorshowers and not state.stop and os.clock()-now<180 do
 				if not RunService.Heartbeat:Wait() then
 					break
 				end
@@ -65458,16 +65487,16 @@ end
 						getAggroMobs()
 					end
 
+					if not cfg.autofarm.farmmeteorshowers or state.stop then meteorMovement:Release();break end
+					-- Re-plan every heartbeat; landing deadlines, rather than disk size, determine order.
+					local nextMeteor,_,deadline=findMeteor()
+					object=nextMeteor
 					if object then
-						now2 = os.clock()
-
-						if distanceTo(object.Position, true) > 5 then
-							collectObject(object, "meteors", 5, true)
-						end
-					end
-
-					for i = 1, 2 do
-						farmStep({ loot = true })
+						now2=os.clock()
+						meteorMovement:Chase(object,deadline)
+					else
+						meteorMovement:Release()
+						farmStep({loot=true})
 					end
 
 					object = findMeteor()
@@ -65475,6 +65504,7 @@ end
 
 				object, v136 = findMeteor(true)
 			end
+			meteorMovement:Release()
 		end
 
 		if not (not cfg.toys.enabled or not cfg.boosters.enabled2 or not cfg.boosters.allowed) then
@@ -66548,6 +66578,7 @@ end
 ScreenGui.Destroying:Connect(function()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
+	meteorMovement:Release()
 	fieldPositionPolicy:StopPreview()
 	fieldPositionPolicy:RemoveGuards()
 	showerController:Shutdown()
@@ -67148,7 +67179,8 @@ do
 					questTasks:task(n)
 				end, "autofarm", "farmmarks")
 
-				farmFolder.AddSwitch("Farm Meteor Showers", nil, "autofarm", "farmmeteorshowers")
+				farmFolder.AddSwitch("Farm Meteor Showers", function()meteorMovement:Release()end, "autofarm", "farmmeteorshowers")
+				farmFolder.AddSwitch("Dynamic Meteor Speed", function()meteorMovement:Release()end, "autofarm", "dynamicmeteors")
 
 				farmFolder.AddSwitch("Farm Precise", function(n)
 					watchStations(n)
