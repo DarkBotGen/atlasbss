@@ -333,12 +333,14 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 	local ox=sx>0 and area.minX+inset or area.maxX-inset
 	local oz=sz>0 and area.minZ+inset or area.maxZ-inset
 	local rx,rz=(area.maxX-area.minX-2*inset)*0.9,(area.maxZ-area.minZ-2*inset)*0.9
-	local points={Vector3.new(ox+sx*rx*0.58,0,oz),Vector3.new(ox+sx*rx,0,oz)}
+	-- Full-height inner side, parallel to the middle crossing. Keep small
+	-- inset end caps rather than shortening the entire side toward the origin.
+	local points={Vector3.new(ox+sx*rx*0.86,0,oz+sz*rz*0.02),Vector3.new(ox+sx*rx,0,oz)}
 	for i=1,16 do
 		local angle=i*math.pi/32
 		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
 	end
-	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.58)
+	points[#points+1]=Vector3.new(ox+sx*rx*0.02,0,oz+sz*rz*0.86)
 	self.stumpShape={key=key,points=points}
 	return points
 end
@@ -731,6 +733,11 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  local points=assert(fieldPositionPolicy:StumpPolygon(field))
  assert(#points==19)
  local ia,ib=fieldPositionPolicy:StumpCrossing(points)
+ local inner=points[1]-points[#points]
+ local crossing=points[ia]-points[ib]
+ assert(math.abs(inner.X*crossing.Z-inner.Z*crossing.X)<.0001,"inner side must be parallel to crossing")
+ assert(inner.Magnitude/crossing.Magnitude>0.83,"inner side must span most of the crossing height")
+
  local perimeter=0
  for i,p in ipairs(points)do perimeter+=(points[i%#points+1]-p).Magnitude end
  local route=fieldPositionPolicy:StumpRoute(points)
