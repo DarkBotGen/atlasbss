@@ -287,3 +287,37 @@ for _,sx in ipairs({-1,1})do for _,sz in ipairs({-1,1})do
  assert(curved>=3,"missing broad outer arc")
 end end
 print("PASS: Stump green contour mirrored in all four quadrants, connected sides and curved outer edge")
+
+local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
+function fieldPositionPolicy:ReleaseIdle()
+	self.idleDrive=nil
+	local mass=self.idleMass
+	self.idleMass=nil
+	if mass and mass.root.Parent then
+		if mass.root.CustomPhysicalProperties==mass.assigned then mass.root.CustomPhysicalProperties=mass.original end
+		if mass.root.Massless==false then mass.root.Massless=mass.massless end
+	end
+end
+function fieldPositionPolicy:IdleMass()
+	local root=getRootPart()
+	if self.idleMass and self.idleMass.root==root then return end
+	self:ReleaseIdle()
+	local base=root.CurrentPhysicalProperties
+	if not base then return end
+	local assigned=PhysicalProperties.new(math.clamp(base.Density*10,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
+	self.idleMass={root=root,original=root.CustomPhysicalProperties,massless=root.Massless,assigned=assigned}
+	root.Massless=false;root.CustomPhysicalProperties=assigned
+end
+
+
+
+root.CurrentPhysicalProperties=PhysicalProperties.new(0.7,0.5,0.2,1,1)
+root.CustomPhysicalProperties=nil;root.Massless=true
+fieldPositionPolicy:IdleMass()
+local props=root.CustomPhysicalProperties
+assert(math.abs(props.Density-7)<0.0001 and not root.Massless)
+fieldPositionPolicy:IdleMass();assert(root.CustomPhysicalProperties==props,"reuse physics across frames")
+fieldPositionPolicy.idleDrive={}
+fieldPositionPolicy:ReleaseIdle()
+assert(root.CustomPhysicalProperties==nil and root.Massless and not fieldPositionPolicy.idleDrive)
+print("PASS: temporary 10x idle density, reuse, exact physics and drive restoration")

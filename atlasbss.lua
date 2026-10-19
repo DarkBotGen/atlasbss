@@ -1769,6 +1769,7 @@ function meteorMovement:Release()
 	self.humanoid,self.original,self.assigned,self.pulse=nil,nil,nil,nil
 end
 function meteorMovement:Chase(object,deadline)
+	fieldPositionPolicy:ReleaseIdle()
 	local h=getHumanoid()
 	if not cfg.autofarm.dynamicmeteors then self:Release()
 	else
@@ -1886,6 +1887,25 @@ function fieldPositionPolicy:InsideGuardedField(field,point)
 		and math.abs(point.Y-(center.Y+size.Y/2))<=12
 end
 -- Rounded perimeter route, scaled to the active field or selected quadrant.
+function fieldPositionPolicy:ReleaseIdle()
+	self.idleDrive=nil
+	local mass=self.idleMass
+	self.idleMass=nil
+	if mass and mass.root.Parent then
+		if mass.root.CustomPhysicalProperties==mass.assigned then mass.root.CustomPhysicalProperties=mass.original end
+		if mass.root.Massless==false then mass.root.Massless=mass.massless end
+	end
+end
+function fieldPositionPolicy:IdleMass()
+	local root=getRootPart()
+	if self.idleMass and self.idleMass.root==root then return end
+	self:ReleaseIdle()
+	local base=root.CurrentPhysicalProperties
+	if not base then return end
+	local assigned=PhysicalProperties.new(math.clamp(base.Density*10,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
+	self.idleMass={root=root,original=root.CustomPhysicalProperties,massless=root.Massless,assigned=assigned}
+	root.Massless=false;root.CustomPhysicalProperties=assigned
+end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
 	if not a then
@@ -2558,6 +2578,7 @@ end
 
 function comboController:WithTaskTravel(callback,...)
 	fieldPositionPolicy:RemoveGuards()
+	fieldPositionPolicy:ReleaseIdle()
 	meteorMovement:Release()
 	local running=coroutine.running()
 	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
@@ -2637,6 +2658,7 @@ function comboController:Finish(reason)
 end
 
 function comboController:Begin(job, h, root)
+	fieldPositionPolicy:ReleaseIdle()
 	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
@@ -8789,6 +8811,13 @@ do
 
 	connections:Add("fieldEdgeGuards",RunService.Heartbeat:Connect(function()
 		if meteorMovement.pulse and (os.clock()-meteorMovement.pulse>0.25 or state.stop or not cfg.autofarm.farmmeteorshowers) then meteorMovement:Release() end
+		local drive=fieldPositionPolicy.idleDrive
+		if drive then
+			if not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.stop or state.activityStatus~=1
+				or currentField~=drive.field or comboController:TravelBlocked() or comboController.active or showerController.active or getHumanoid().Health<=0 then
+				fieldPositionPolicy:ReleaseIdle()
+			else smoothMovement:Roam(drive.makeGoal,drive.allowed) end
+		end
 		fieldPositionPolicy:UpdateGuards(cfg.autofarm.enabled and not state.stop and state.activityStatus==1
 			and not comboController:TravelBlocked() and not comboController.active and not showerController.active)
 	end))
@@ -46631,7 +46660,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				local ok = nil
 
 				for i2 = 1, 4 do
-					ok = ok or pcall(walkTo, spot, true, 0.75)
+					ok = ok or pcall(walkTo, spot, true, 1.5)
 				end
 
 				if not ok then
@@ -46646,9 +46675,9 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 					task.wait(0.1)
 				end
 
-				-- Recheck after settling; never build from walkTo's old five-stud tolerance.
-				if distanceTo(spot,true)>0.75 then walkTo(spot,true,0.75) end
-				if distanceTo(spot,true)>0.75 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
+				-- Recheck after settling; allow Humanoid's arrival tolerance, without the old five-stud offset.
+				if distanceTo(spot,true)>1.5 then walkTo(spot,true,1.5) end
+				if distanceTo(spot,true)>1.5 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
 				gameApi:Event("PlayerActivesCommand", { Name = "Sprinkler Builder" })
 
 				if #positions > 1 and i < #positions then
@@ -46663,7 +46692,12 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				if not field then return end
 				local equipped=gameApi:Cache("EquippedSprinkler")
 				-- Use the zone center itself, never a roaming origin or quadrant offset.
-				farm:Place({field.Position},equipped)
+				local center=field.Position
+				local spots={center}
+				if equipped=="Diamond Drenchers" then
+					spots={center+Vector3.new(-16,0,0),center+Vector3.new(16,0,0),center+Vector3.new(0,0,16),center+Vector3.new(0,0,-16)}
+				end
+				farm:Place(spots,equipped)
 				farm.field=field.Name
 			end)
 		end
@@ -53678,6 +53712,7 @@ end
 				local goal=fieldPositionPolicy:TargetPosition(targetObject)
 				if goal and not fieldPositionPolicy:Allowed(goal,options) then return end
 			end
+			if targetKind then fieldPositionPolicy:ReleaseIdle() end
 			gatheringPriorities:Record(targetKind, targetObject)
 			gatheringPriorities.activeOptions = options
 			gatheringPriorities.nextPreemptCheck = nil
@@ -53787,12 +53822,14 @@ end
 			if options.blooms and not options.loot and not options.ignoreflower then
 				local bloom = bloomController:Select(options)
 				if bloom then
+					fieldPositionPolicy:ReleaseIdle()
 					if bloom.d > 2 then smoothMovement:MoveTo(bloom.v.Position) end
 					return
 				end
 			end
 			if not options.ignoreflower then
-				smoothMovement:Roam(function() return randomFieldPosition(options) end, function(goal)
+				local makeGoal=function()return randomFieldPosition(options)end
+				local allowed=function(goal)
 					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
 					if options.range and options.origin and (options.origin - goal).Magnitude >= options.range then return false end
@@ -53803,7 +53840,12 @@ end
 					if options.avoid and not isPathClear(goal, options.avoid) then return false end
 					return options.loot or options.skipoverlap or
 						(not cfg.autofarm.farmballoons2 and not cfg.autofarm.farmmarks) or questTasks:check(goal)
-				end)
+				end
+				if cfg.autofarm.idlefieldloop and not options.loot then
+					fieldPositionPolicy:IdleMass()
+					fieldPositionPolicy.idleDrive={makeGoal=makeGoal,allowed=allowed,field=currentField}
+				else fieldPositionPolicy:ReleaseIdle() end
+				smoothMovement:Roam(makeGoal,allowed)
 			end
 		end
 
@@ -66357,6 +66399,7 @@ end
 local function releasePassive() end
 local function begin(g)
  if session or not bridge.allowed() then return end
+ fieldPositionPolicy:ReleaseIdle()
  meteorMovement:Release()
  comboController:Finish("Yielding to Star Shower")
  releasePassive()
@@ -66693,6 +66736,7 @@ ScreenGui.Destroying:Connect(function()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
 	meteorMovement:Release()
+	fieldPositionPolicy:ReleaseIdle()
 	fieldPositionPolicy:StopPreview()
 	fieldPositionPolicy:RemoveGuards()
 	showerController:Shutdown()
@@ -67378,7 +67422,7 @@ which bees and get all 3 targets if
 				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
-				farmFolder.AddSwitch("Idle Field Loop", function()smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
+				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
 				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
 				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
@@ -67567,7 +67611,7 @@ which bees and get all 3 targets if
 			end
 
 			patternFolder.AddDropdown("Pattern Start", { "Top Left", "Top Right", "Center", "Bottom Left", "Bottom Right" }, nil, nil, "autofarm", "patternstart")
-			patternFolder.AddLabel("Auto Sprinkler always places at the full field center.")
+			patternFolder.AddLabel("Auto Sprinkler uses the full field center; Diamond Drenchers use four spots around it.")
 			patternFolder.AddDropdown("Allowed Fields", availableFields, true, nil, "autofarm", "patternblacklist", { Field = true, Multiple = true, Blacklist = true })
 
 			patternFolder.AddTextBox("Import Pattern", function(importedText)

@@ -157,7 +157,7 @@ local function makePart(name,position)
  o.Parent=particles;return o
 end
 
-local fieldPositionPolicy={StrictAllowed=function()return true end,RemoveGuards=function()end}
+local fieldPositionPolicy={StrictAllowed=function()return true end,RemoveGuards=function()end,ReleaseIdle=function()end}
 local meteorMovement={Release=function()end}
 local localPlayer=player
 player.ClassName="Player"
@@ -727,6 +727,7 @@ end
 
 function comboController:WithTaskTravel(callback,...)
 	fieldPositionPolicy:RemoveGuards()
+	fieldPositionPolicy:ReleaseIdle()
 	meteorMovement:Release()
 	local running=coroutine.running()
 	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
@@ -806,6 +807,7 @@ function comboController:Finish(reason)
 end
 
 function comboController:Begin(job, h, root)
+	fieldPositionPolicy:ReleaseIdle()
 	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end

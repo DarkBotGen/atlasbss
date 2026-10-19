@@ -179,13 +179,13 @@ local task={wait=function()end}
 local function getFieldAt()return currentField end
 local function distanceTo(goal)local d=root.Position-goal;return math.sqrt(d.X*d.X+d.Z*d.Z)end
 local walks={}
-local function walkTo(goal,timeout,range)assert(range==0.75);walks[#walks+1]=goal;root.Position=Vector3.new(goal.X,24,goal.Z)end
+local function walkTo(goal,timeout,range)assert(range==1.5);walks[#walks+1]=goal;root.Position=Vector3.new(goal.X,24,goal.Z)end
 local function disableJumpRequests()end
 local equipped
 local builds=0
 local gameApi={Cache=function()return equipped end,Event=function(_,_,data)
  assert(data.Name=="Sprinkler Builder")
- assert(distanceTo(field.Position)<=0.75)
+ assert(distanceTo(walks[#walks])<=1.5)
  builds+=1
 end}
 local locked=false
@@ -207,7 +207,7 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 				local ok = nil
 
 				for i2 = 1, 4 do
-					ok = ok or pcall(walkTo, spot, true, 0.75)
+					ok = ok or pcall(walkTo, spot, true, 1.5)
 				end
 
 				if not ok then
@@ -222,9 +222,9 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 					task.wait(0.1)
 				end
 
-				-- Recheck after settling; never build from walkTo's old five-stud tolerance.
-				if distanceTo(spot,true)>0.75 then walkTo(spot,true,0.75) end
-				if distanceTo(spot,true)>0.75 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
+				-- Recheck after settling; allow Humanoid's arrival tolerance, without the old five-stud offset.
+				if distanceTo(spot,true)>1.5 then walkTo(spot,true,1.5) end
+				if distanceTo(spot,true)>1.5 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
 				gameApi:Event("PlayerActivesCommand", { Name = "Sprinkler Builder" })
 
 				if #positions > 1 and i < #positions then
@@ -239,7 +239,12 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 				if not field then return end
 				local equipped=gameApi:Cache("EquippedSprinkler")
 				-- Use the zone center itself, never a roaming origin or quadrant offset.
-				farm:Place({field.Position},equipped)
+				local center=field.Position
+				local spots={center}
+				if equipped=="Diamond Drenchers" then
+					spots={center+Vector3.new(-16,0,0),center+Vector3.new(16,0,0),center+Vector3.new(0,0,16),center+Vector3.new(0,0,-16)}
+				end
+				farm:Place(spots,equipped)
 				farm.field=field.Name
 			end)
 		end
@@ -247,12 +252,17 @@ local comboController={WithTaskTravel=function(_,fn)locked=true;local result=fn(
 local originalPlace=farmState.Place
 farmState.Place=function(...)assert(locked,"placement must be protected");return originalPlace(...)end
 cfg.autofarm.sprinklerpos="Top"
-for _,name in ipairs({"Basic Sprinkler","The Supreme Saturator","Silver Soakers","Golden Gushers","Diamond Drenchers"})do
+for _,name in ipairs({"Basic Sprinkler","The Supreme Saturator","Silver Soakers","Golden Gushers"})do
  equipped=name
  root.Position=Vector3.new(104,24,200)
  farmState:Handle()
  assert(farmState.field==field.Name and not locked)
  assert(walks[#walks].X==field.Position.X and walks[#walks].Z==field.Position.Z)
 end
-assert(builds==5,"one center placement per sprinkler type")
-print("PASS: actual center for all sprinkler types, sub-stud arrival, legacy offset ignored, protected placement")
+assert(builds==4)
+equipped="Diamond Drenchers";farmState:Handle()
+assert(builds==8,"Diamond must place four sprinklers")
+local sx,sz=0,0
+for i=#walks-3,#walks do sx+=walks[i].X;sz+=walks[i].Z end
+assert(sx/4==field.Position.X and sz/4==field.Position.Z,"Diamond layout must center on actual field")
+print("PASS: centered single sprinklers, four Diamond placements, 1.5-stud arrival, protected placement")
