@@ -192,6 +192,7 @@ local cfg = {
 		farmposenabled = false,
 		farmposition = false,
 		strictquadrant = false,
+		idlefieldloop = false,
 		showfieldarea = false,
 		fieldedgeguards = true,
 		prioritytokens = false,
@@ -1883,6 +1884,50 @@ function fieldPositionPolicy:InsideGuardedField(field,point)
 	return math.abs(point.X-center.X)<=size.X/2+3
 		and math.abs(point.Z-center.Z)<=size.Z/2+3
 		and math.abs(point.Y-(center.Y+size.Y/2))<=12
+end
+-- Rounded perimeter route, scaled to the active field or selected quadrant.
+function fieldPositionPolicy:IdleLoopGoal(options,blocked)
+	local a=options.area
+	if not a then
+		if not currentField then return end
+		local size=self:UsableSize(currentField)
+		local center=currentField.Position
+		a={minX=center.X-size.X/2,maxX=center.X+size.X/2,minZ=center.Z-size.Z/2,maxZ=center.Z+size.Z/2}
+	end
+	local minX,maxX,minZ,maxZ=a.minX,a.maxX,a.minZ,a.maxZ
+	if options.range and options.origin then
+		local r=options.range*0.7
+		minX,maxX=math.max(minX,options.origin.X-r),math.min(maxX,options.origin.X+r)
+		minZ,maxZ=math.max(minZ,options.origin.Z-r),math.min(maxZ,options.origin.Z+r)
+	end
+	if minX>=maxX or minZ>=maxZ then return end
+	local cx,cz=(minX+maxX)/2,(minZ+maxZ)/2
+	local hx,hz=(maxX-minX)/2,(maxZ-minZ)/2
+	local inset=math.min(2,hx/4,hz/4)
+	hx,hz=hx-inset,hz-inset
+	local key=string.format("%s:%s:%s:%s",minX,maxX,minZ,maxZ)
+	local root=getRootPart().Position
+	local route=self.idleLoop
+	if not route or route.key~=key then
+		route={key=key,index=1,points={}}
+		local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
+		local nearest
+		for i=1,count do
+			local angle=(i-1)*2*math.pi/count
+			local x,z=math.cos(angle),math.sin(angle)
+			local point=Vector3.new(cx+hx*math.sign(x)*math.sqrt(math.abs(x)),0,cz+hz*math.sign(z)*math.sqrt(math.abs(z)))
+			route.points[i]=point
+			local d=(point.X-root.X)^2+(point.Z-root.Z)^2
+			if not nearest or d<nearest then nearest=d;route.index=i end
+		end
+		self.idleLoop=route
+	end
+	for _=1,#route.points do
+		local p=route.points[route.index]
+		local goal=Vector3.new(p.X,root.Y,p.Z)
+		if (p.X-root.X)^2+(p.Z-root.Z)^2>4 and not blocked(goal) then return goal end
+		route.index=route.index%#route.points+1
+	end
 end
 function fieldPositionPolicy:CoverageGoal(options,blocked)
 	local a=options.area
@@ -8727,11 +8772,15 @@ do
 
 	local randomWholeFieldPosition=randomFieldPosition
 	randomFieldPosition=function(options,...)
-		if not options.area then return randomWholeFieldPosition(options,...) end
-		return fieldPositionPolicy:CoverageGoal(options,function(goal)
-			return (options.range and options.origin and (goal-options.origin).Magnitude>=options.range)
+		options.idleloop=cfg.autofarm.idlefieldloop and not options.loot
+		if not options.area and not options.idleloop then return randomWholeFieldPosition(options,...) end
+		local function blocked(goal)
+			return not fieldPositionPolicy:Allowed(goal,options)
+				or (options.range and options.origin and (goal-options.origin).Magnitude>=options.range)
 				or (options.avoid and isPathClear(goal,options.avoid,true,options.rbc))
-		end)
+		end
+		if options.idleloop then return fieldPositionPolicy:IdleLoopGoal(options,blocked) end
+		return fieldPositionPolicy:CoverageGoal(options,blocked)
 	end
 
 	handlers["Pineapple Patch"] = function(waypoint)
@@ -53754,7 +53803,7 @@ end
 					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
 					if options.range and options.origin and (options.origin - goal).Magnitude >= options.range then return false end
-					if options.area then
+					if options.area or options.idleloop then
 						if options.avoid and isPathClear(goal,options.avoid,true,options.rbc) then return false end
 						return true
 					end
@@ -65996,7 +66045,7 @@ end
 				end
 
 				options.area=nil
-				if (autofarm.farmposenabled and fieldPositionPolicy:IsQuadrant(autofarm.farmposition)) or not autofarm.patternenabled or not (not autofarm.patternblacklist or not autofarm.patternblacklist[currentFieldName]) then
+				if autofarm.idlefieldloop or (autofarm.farmposenabled and fieldPositionPolicy:IsQuadrant(autofarm.farmposition)) or not autofarm.patternenabled or not (not autofarm.patternblacklist or not autofarm.patternblacklist[currentFieldName]) then
 					if not autofarm.farmposenabled then
 						farmStep(options)
 					else
@@ -67336,6 +67385,7 @@ which bees and get all 3 targets if
 				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
+				farmFolder.AddSwitch("Idle Field Loop", function()smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
 				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
 				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
