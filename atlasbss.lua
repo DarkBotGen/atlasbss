@@ -44672,6 +44672,19 @@ Content-Disposition: form-data; name="payload_json"
 		end
 	end
 
+	-- The dashboard API accepts a dense list, while the rolling graph uses string bucket keys.
+	discord.Honey12hList = function(history)
+		local values={}
+		for bucket=0,180 do
+			local value=history[tostring(bucket)]
+			if value==nil then value=history[bucket] end
+			if type(value)=="number" and value==value and math.abs(value)<math.huge then
+				values[#values+1]=value
+			end
+		end
+		return values
+	end
+
 	discord.SendGraph = function(v121, isTest)
 		if not (not state.disconnect and not ((not cfg.webhook.graph or cfg.webhook.graphurl == "") and (not cfg.webhook.dashboard or cfg.webhook.key == ""))) then
 			return
@@ -44808,6 +44821,7 @@ Content-Disposition: form-data; name="payload_json"
 		if not (not cfg.webhook.dashboard or cfg.webhook.key == "") then
 			local ok, result = pcall(function()
 				local copy = deepCopy(payload)
+				copy.honey_12h=discord.Honey12hList(graph.honey_12h)
 				copy.roblox_account_id = tostring(localPlayer.UserId)
 				copy.hidebranding = nil
 
