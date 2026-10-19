@@ -197,10 +197,15 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 		part.CastShadow=false;part.Transparency=1
 		part.Size=Vector3.new(width,10,depth);part.CFrame=CFrame.new(x,y,z);part.Parent=folder
 	end
-	wall("Left",center.X-size.X/2-1,center.Z,2,size.Z+4)
-	wall("Right",center.X+size.X/2+1,center.Z,2,size.Z+4)
-	wall("Upper",center.X,center.Z-size.Z/2-1,size.X+4,2)
-	wall("Lower",center.X,center.Z+size.Z/2+1,size.X+4,2)
+	-- Leave three studs between the zone edge and each wall's inner face,
+	-- so the character can reach the entire outer flower row.
+	local clearance,thickness=3,2
+	local offset=clearance+thickness/2
+	local span=2*(clearance+thickness)
+	wall("Left",center.X-size.X/2-offset,center.Z,thickness,size.Z+span)
+	wall("Right",center.X+size.X/2+offset,center.Z,thickness,size.Z+span)
+	wall("Upper",center.X,center.Z-size.Z/2-offset,size.X+span,thickness)
+	wall("Lower",center.X,center.Z+size.Z/2+offset,size.X+span,thickness)
 	folder.Parent=workspace
 end
 
@@ -212,8 +217,8 @@ local folder=assert(fieldPositionPolicy.guards)
 assert(#folder:GetChildren()==4)
 for _,p in ipairs(folder:GetChildren())do
  assert(p.CanCollide and not p.CanTouch and not p.CanQuery and p.Transparency==1 and p.Anchored)
- assert(p.CFrame.X-p.Size.X/2>=150 or p.CFrame.X+p.Size.X/2<=50
-  or p.CFrame.Z-p.Size.Z/2>=240 or p.CFrame.Z+p.Size.Z/2<=160,"wall overlaps flowers")
+ assert(p.CFrame.X-p.Size.X/2>=153 or p.CFrame.X+p.Size.X/2<=47
+  or p.CFrame.Z-p.Size.Z/2>=243 or p.CFrame.Z+p.Size.Z/2<=157,"wall overlaps flowers")
 end
 for i=1,100 do fieldPositionPolicy:UpdateGuards(true);assert(fieldPositionPolicy.guards==folder)end
 fieldPositionPolicy:UpdateGuards(false);assert(not fieldPositionPolicy.guards and not folder.Parent)

@@ -1903,10 +1903,15 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 		part.CastShadow=false;part.Transparency=1
 		part.Size=Vector3.new(width,10,depth);part.CFrame=CFrame.new(x,y,z);part.Parent=folder
 	end
-	wall("Left",center.X-size.X/2-1,center.Z,2,size.Z+4)
-	wall("Right",center.X+size.X/2+1,center.Z,2,size.Z+4)
-	wall("Upper",center.X,center.Z-size.Z/2-1,size.X+4,2)
-	wall("Lower",center.X,center.Z+size.Z/2+1,size.X+4,2)
+	-- Leave three studs between the zone edge and each wall's inner face,
+	-- so the character can reach the entire outer flower row.
+	local clearance,thickness=3,2
+	local offset=clearance+thickness/2
+	local span=2*(clearance+thickness)
+	wall("Left",center.X-size.X/2-offset,center.Z,thickness,size.Z+span)
+	wall("Right",center.X+size.X/2+offset,center.Z,thickness,size.Z+span)
+	wall("Upper",center.X,center.Z-size.Z/2-offset,size.X+span,thickness)
+	wall("Lower",center.X,center.Z+size.Z/2+offset,size.X+span,thickness)
 	folder.Parent=workspace
 end
 function fieldPositionPolicy:StopPreview()
