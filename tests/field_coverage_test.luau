@@ -232,6 +232,17 @@ end
 function fieldPositionPolicy:QuadrantSize(field)
 	return Vector3.new(math.max(1,field.Size.X-1),0,math.max(1,field.Size.Z-1))
 end
+-- A brief edge overshoot must recover by walking, not by travelling to field center.
+function fieldPositionPolicy:EdgeRecovery(field,point)
+	if not field or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
+	local top=field.Position.Y+field.Size.Y/2
+	if math.abs(point.Y-top)>12 then return end
+	local _,a=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),point.Y)
+	if point.X<a.minX-3 or point.X>a.maxX+3 or point.Z<a.minZ-3 or point.Z>a.maxZ+3 then return end
+	local insetX=math.min(2,(a.maxX-a.minX)/4)
+	local insetZ=math.min(2,(a.maxZ-a.minZ)/4)
+	return Vector3.new(math.clamp(point.X,a.minX+insetX,a.maxX-insetX),point.Y,math.clamp(point.Z,a.minZ+insetZ,a.maxZ-insetZ))
+end
 function fieldPositionPolicy:CoverageGoal(options,blocked)
 	local a=options.area
 	local key=string.format("%s:%s:%s:%s",a.minX,a.maxX,a.minZ,a.maxZ)
@@ -253,7 +264,21 @@ function fieldPositionPolicy:CoverageGoal(options,blocked)
 		route.index=(route.index+1)%count
 	end
 end
-
+function fieldPositionPolicy:Region(name,center,size,y)
+	local x,z=size.X,size.Z
+	local longX=x>z
+	if not self:IsQuadrant(name) then
+		local side=name=="Left" and -1 or name=="Right" and 1 or 0
+		return Vector3.new(center.X+(longX and side*x/2 or 0),y,center.Z+(not longX and side*z/2 or 0))
+	end
+	local side=string.find(name,"Left",1,true) and -1 or 1
+	local depth=string.find(name,"Upper",1,true) and -1 or 1
+	local sx,sz=longX and side or depth,longX and depth or side
+	local minX,maxX=center.X+(sx<0 and -x/2 or 0),center.X+(sx<0 and 0 or x/2)
+	local minZ,maxZ=center.Z+(sz<0 and -z/2 or 0),center.Z+(sz<0 and 0 or z/2)
+	local area={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
+	return Vector3.new((minX+maxX)/2,y,(minZ+maxZ)/2),area
+end
 assert(fieldPositionPolicy:QuadrantSize({Size=Vector3.new(100,2,80)}).X==99)
 local options={area={minX=0,maxX=49.5,minZ=0,maxZ=39.5}}
 root.Position=Vector3.new(-10,3,-10)
@@ -278,3 +303,14 @@ options.area={minX=100,maxX=110,minZ=100,maxZ=110}
 local goal=fieldPositionPolicy:CoverageGoal(options,clear)
 assert(goal.X>=100 and goal.Z>=100)
 print("PASS: full sweep, corners, interruption resume, hazards, field changes")
+
+cfg.autofarm.farmposenabled=true
+cfg.autofarm.farmposition="Upper Left"
+local field={Position=Vector3.new(0,0,0),Size=Vector3.new(100,2,80)}
+local goal=fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50.5,4,-40.5))
+assert(goal and goal.X>-49.5 and goal.Z>-39.5,"edge overshoot must walk inward")
+assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-100,4,-100)),"remote travel must remain enabled")
+assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50,40,-40)),"falling must retain recovery")
+cfg.autofarm.farmposenabled=false
+assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50,4,-40)))
+print("PASS: edge walk recovery, distant travel, height and toggle guards")
