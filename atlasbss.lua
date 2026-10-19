@@ -191,6 +191,7 @@ local cfg = {
 		ignorehoneytokens = false,
 		farmposenabled = false,
 		farmposition = false,
+		strictquadrant = false,
 		showfieldarea = false,
 		fieldedgeguards = true,
 		prioritytokens = false,
@@ -1754,6 +1755,7 @@ local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchC
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
 -- Shared geometry for quadrant targeting and its local testing overlay.
+local fieldPositionPolicy
 local meteorMovement={}
 function meteorMovement:Release()
 	local h=self.humanoid
@@ -1799,7 +1801,7 @@ function meteorMovement:PickLink(meteor,deadline)
 	for object in pairs(tracked.tokenlink) do
 		if (type(object)=="table" and object.ExpiresAt and object.ExpiresAt<=now) or (type(object)~="table" and not object.Parent) then continue end
 		local pos=object.Position
-		if getFieldAt(pos)~=currentField or math.abs(pos.Y-root.Y)>8 then continue end
+		if not fieldPositionPolicy:StrictAllowed(pos) or getFieldAt(pos)~=currentField or math.abs(pos.Y-root.Y)>8 then continue end
 		local distance=(pos-root).Magnitude
 		if distance<=3 then self.linkVisits[object]=now+0.5;continue end
 		if (self.linkVisits[object] or 0)>now then continue end
@@ -1813,7 +1815,7 @@ function meteorMovement:PickLink(meteor,deadline)
 	end
 	return best
 end
-local fieldPositionPolicy={}
+fieldPositionPolicy={}
 function fieldPositionPolicy:IsQuadrant(name)
 	return name=="Upper Left" or name=="Upper Right" or name=="Lower Left" or name=="Lower Right"
 end
@@ -1918,7 +1920,20 @@ function fieldPositionPolicy:Region(name,center,size,y)
 	local area={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
 	return Vector3.new((minX+maxX)/2,y,(minZ+maxZ)/2),area
 end
+function fieldPositionPolicy:StrictArea()
+	if not cfg.autofarm.enabled or not cfg.autofarm.strictquadrant or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
+	local zones=workspace:FindFirstChild("FlowerZones")
+	local field=zones and zones:FindFirstChild(cfg.autofarm.field1)
+	if not field then return end
+	local _,area=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),field.Position.Y)
+	return area
+end
+function fieldPositionPolicy:StrictAllowed(goal)
+	local a=self:StrictArea()
+	return not a or (goal and goal.X>=a.minX and goal.X<=a.maxX and goal.Z>=a.minZ and goal.Z<=a.maxZ) or false
+end
 function fieldPositionPolicy:Allowed(goal,opts)
+	if not self:StrictAllowed(goal) then return false end
 	local area=opts and opts.area
 	return not area or (goal.X>=area.minX and goal.X<=area.maxX and goal.Z>=area.minZ and goal.Z<=area.maxZ)
 end
@@ -2554,6 +2569,7 @@ function comboController:Finish(reason)
 end
 
 function comboController:Begin(job, h, root)
+	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
@@ -2647,6 +2663,7 @@ function comboController:Tick()
 		end
 	end
 	if not job then job=self:YieldLanding(root) end
+	if job and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
 	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
@@ -7766,6 +7783,7 @@ do
 				tracked.meteors[object]=nil
 				continue
 			end
+			if not fieldPositionPolicy:StrictAllowed(object.Position) then continue end
 			local field=getFieldAt(object.Position)
 			if not field or not availableFields[field.Name] or (not anyField and field~=currentField) then continue end
 			local seen=type(meta)=="table" and meta.seen or now
@@ -47116,6 +47134,7 @@ function gatheringPriorities:Rebuild()
 end
 
 function gatheringPriorities:Allowed(position, opts, rootPosition)
+	if not fieldPositionPolicy:StrictAllowed(position) then return false end
 	if opts.area and not fieldPositionPolicy:Allowed(position,opts) then return false end
 	if opts.checkheight and math.abs(position.Y - rootPosition.Y) >= 6 then return false end
 	if opts.range and opts.origin then
@@ -47471,6 +47490,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 end
 
 		pickTarget = function(opts)
+			opts.area=fieldPositionPolicy:StrictArea() or opts.area
 			if showerController.active then return "Safeshower" end
 			local comboKind, comboObject = gatheringPriorities:Candidate("Combo Coconuts", opts, getRootPart().Position)
 			if comboKind then return comboKind, comboObject end
@@ -53053,6 +53073,7 @@ end
 
 			while true do
 				local options=gatheringPriorities.activeOptions
+				if not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
@@ -53609,6 +53630,7 @@ end
 		end
 
 		local function collectTargetImpl(options)
+			options.area=fieldPositionPolicy:StrictArea() or options.area
 			local targetKind, targetObject = pickTarget(options)
 			if options.area then
 				local goal=fieldPositionPolicy:TargetPosition(targetObject)
@@ -66330,7 +66352,10 @@ local function contactPoint(s,r,now)
  local direction=from-center
  if direction.Magnitude<0.001 then return center end
  -- Hold near the boundary on the side closest to the next known light.
- return center+direction.Unit*SAFE_RADIUS
+ local point=center+direction.Unit*SAFE_RADIUS
+ local area=fieldPositionPolicy:StrictArea()
+ if area then point=Vector2.new(math.clamp(point.X,area.minX,area.maxX),math.clamp(point.Y,area.minZ,area.maxZ)) end
+ return point
 end
 connect(workspace.DescendantAdded,function(o)
  local candidate=o.Name=="WarningDisk" or o.Name=="Star Shower Guide"
@@ -66469,10 +66494,15 @@ local function updateChase(dt)
    end
   end
  end
+ for _,r in ipairs(s.records) do
+  if not fieldPositionPolicy:StrictAllowed(r.position) then r.ended=true end
+ end
+ if s.target and s.target.ended then advanceOnDisappearance(s,now) end
  -- Calculate first departure continuously from the character's current position.
  if s.waitingDeparture then
   if now-g.time>11 then finish("Shower window ended");return end
-  local first=s.records[1]
+  local first
+  for _,r in ipairs(s.records) do if not r.ended then first=r;break end end
   if not first then bridge.lastStatus="Waiting for first light; manual input available";return end
   if first.ended then finish("First light expired before departure");return end
   if first.object and first.object.Parent then first.position=first.object.Position end
@@ -66489,7 +66519,7 @@ local function updateChase(dt)
   s.firstRealTravel=true
   lockInput(s)
   stopMovementImmediately(s)
-  s.target,s.point,s.leg,s.locked=first,point,1,false
+  s.target,s.point,s.leg,s.locked=first,point,first.order,false
   log(string.format("Timed first departure; travel %.3fs, lead %.0fms; input locked for all ten lights",travel,lead*1000))
  end
  -- Leave twice the latest reported ping before estimated disappearance.
@@ -67305,6 +67335,8 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Farm Near Position", nil, "autofarm", "farmposenabled")
 				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
+				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
+				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
 				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
 				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
 

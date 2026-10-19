@@ -157,6 +157,8 @@ local function makePart(name,position)
  o.Parent=particles;return o
 end
 
+local fieldPositionPolicy={StrictAllowed=function()return true end,RemoveGuards=function()end}
+local meteorMovement={Release=function()end}
 local localPlayer=player
 player.ClassName="Player"
 function player:IsA(class)return class=="Player"end
@@ -724,6 +726,8 @@ function comboController:TravelBlocked()
 end
 
 function comboController:WithTaskTravel(callback,...)
+	fieldPositionPolicy:RemoveGuards()
+	meteorMovement:Release()
 	local running=coroutine.running()
 	if self.taskTravel and self.taskTravel.thread==running then return callback(...) end
 	while self:TravelBlocked() do
@@ -764,6 +768,7 @@ function comboController:IsMovementJob(id)
 end
 
 function comboController:ApplyDensity(session)
+	meteorMovement:Release()
 	pcall(function()
 		local root=session.root
 		local physical=root.CurrentPhysicalProperties
@@ -801,6 +806,8 @@ function comboController:Finish(reason)
 end
 
 function comboController:Begin(job, h, root)
+	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
+	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
 	if showerController.active or self.closed or self:TravelBlocked() then return end
@@ -893,6 +900,7 @@ function comboController:Tick()
 		end
 	end
 	if not job then job=self:YieldLanding(root) end
+	if job and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
 	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
@@ -1186,6 +1194,7 @@ local collectObject
 
 			while true do
 				local options=gatheringPriorities.activeOptions
+				if not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
