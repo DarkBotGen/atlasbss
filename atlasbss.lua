@@ -190,6 +190,7 @@ local cfg = {
 		ignorehoneytokens = false,
 		farmposenabled = false,
 		farmposition = false,
+		showfieldarea = false,
 		prioritytokens = false,
 		dupedtokens = false,
 		farmbadges = false,
@@ -1750,6 +1751,168 @@ local mobileToggleButton, controls, currentField, position, currentFieldName, ve
 local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
+-- Shared geometry for quadrant targeting and its local testing overlay.
+local fieldPositionPolicy={}
+function fieldPositionPolicy:IsQuadrant(name)
+	return name=="Upper Left" or name=="Upper Right" or name=="Lower Left" or name=="Lower Right"
+end
+function fieldPositionPolicy:UsableSize(field)
+			local fieldName=field.Name
+			local x = field.Size.X
+			local z = field.Size.Z
+
+			if fieldName == "Bamboo Field" then
+				x -= 6
+				z -= 8
+			elseif fieldName == "Clover Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Coconut Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Dandelion Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Mountain Top Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Mushroom Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Pine Tree Forest" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Pineapple Patch" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Pumpkin Patch" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Rose Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Spider Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName == "Strawberry Field" then
+				x -= 5
+				z -= 5
+			elseif fieldName ~= "Stump Field" then
+				if fieldName == "Sunflower Field" then
+					x -= 5
+					z -= 5
+				end
+			else
+				x -= 20
+				z -= 20
+			end
+
+	return Vector3.new(x-5,0,z-5)
+end
+function fieldPositionPolicy:Region(name,center,size,y)
+	local x,z=size.X,size.Z
+	local longX=x>z
+	if not self:IsQuadrant(name) then
+		local side=name=="Left" and -1 or name=="Right" and 1 or 0
+		return Vector3.new(center.X+(longX and side*x/2 or 0),y,center.Z+(not longX and side*z/2 or 0))
+	end
+	local side=string.find(name,"Left",1,true) and -1 or 1
+	local depth=string.find(name,"Upper",1,true) and -1 or 1
+	local sx,sz=longX and side or depth,longX and depth or side
+	local minX,maxX=center.X+(sx<0 and -x/2 or 0),center.X+(sx<0 and 0 or x/2)
+	local minZ,maxZ=center.Z+(sz<0 and -z/2 or 0),center.Z+(sz<0 and 0 or z/2)
+	local area={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
+	return Vector3.new((minX+maxX)/2,y,(minZ+maxZ)/2),area
+end
+function fieldPositionPolicy:Allowed(goal,opts)
+	local area=opts and opts.area
+	return not area or (goal.X>=area.minX and goal.X<=area.maxX and goal.Z>=area.minZ and goal.Z<=area.maxZ)
+end
+function fieldPositionPolicy:TargetPosition(object)
+	if typeof(object)=="Vector3" then return object end
+	if type(object)=="table" and typeof(object.Position)=="Vector3" then return object.Position end
+	if typeof(object)=="Instance" then
+		if object:IsA("BasePart") then return object.Position end
+		local part=object:FindFirstChild("Plane") or object:FindFirstChild("Stem") or object:FindFirstChild("BalloonRoot")
+		if part and part:IsA("BasePart") then return part.Position end
+	end
+end
+function fieldPositionPolicy:TrackedAllowed(key,value,opts)
+	if not opts.area then return true end
+	local goal=self:TargetPosition(key) or self:TargetPosition(value)
+	return not goal or self:Allowed(goal,opts)
+end
+function fieldPositionPolicy:StopPreview()
+	connections:Cancel("fieldAreaPreview")
+	if self.preview then self.preview:Destroy();self.preview=nil end
+	self.parts=nil
+end
+function fieldPositionPolicy:DrawPreview()
+	if not cfg.autofarm.showfieldarea then self:StopPreview();return end
+	local zones=workspace:FindFirstChild("FlowerZones")
+	local selected=zones and zones:FindFirstChild(cfg.autofarm.field1)
+	local field=(cfg.autofarm.enabled and currentField) or selected or currentField
+	if not field or not self:IsQuadrant(cfg.autofarm.farmposition) then
+		if self.preview then self.preview:Destroy();self.preview=nil;self.parts=nil end
+		return
+	end
+	local center=field.Position
+	local size=self:UsableSize(field)
+	if not size then return end
+	local y=field.Position.Y+field.Size.Y/2+0.15
+	local _,area=self:Region(cfg.autofarm.farmposition,center,size,y)
+	if not self.preview or not self.preview.Parent then
+		self.preview=Instance.new("Folder");self.preview.Name="AtlasFieldAreaPreview";self.preview.Parent=workspace;self.parts={}
+	end
+	local function part(index,x,z,width,depth,color,transparency)
+		local object=self.parts[index]
+		if not object or not object.Parent then
+			object=Instance.new("Part");object.Name="AtlasArea"..index;object.Anchored=true
+			object.CanCollide=false;object.CanTouch=false;object.CanQuery=false;object.CastShadow=false
+			object.Parent=self.preview;self.parts[index]=object
+		end
+		object.Size=Vector3.new(math.max(.1,width),.12,math.max(.1,depth))
+		object.CFrame=CFrame.new(x,y+((index>=2 and index<=5) and .03 or 0),z);object.Color=color;object.Material=Enum.Material.Neon;object.Transparency=transparency
+		return object
+	end
+	local selected=Color3.fromRGB(65,230,130)
+	local grid=Color3.fromRGB(245,245,245)
+	local width,depth=area.maxX-area.minX,area.maxZ-area.minZ
+	part(1,(area.minX+area.maxX)/2,(area.minZ+area.maxZ)/2,width,depth,selected,.82)
+	part(2,area.minX,(area.minZ+area.maxZ)/2,.4,depth,selected,.05)
+	part(3,area.maxX,(area.minZ+area.maxZ)/2,.4,depth,selected,.05)
+	part(4,(area.minX+area.maxX)/2,area.minZ,width,.4,selected,.05)
+	part(5,(area.minX+area.maxX)/2,area.maxZ,width,.4,selected,.05)
+	part(6,center.X,center.Z,size.X,.18,grid,.2)
+	part(7,center.X,center.Z,.18,size.Z,grid,.2)
+	part(8,center.X-size.X/2,center.Z,.18,size.Z,grid,.2)
+	part(9,center.X+size.X/2,center.Z,.18,size.Z,grid,.2)
+	part(10,center.X,center.Z-size.Z/2,size.X,.18,grid,.2)
+	part(11,center.X,center.Z+size.Z/2,size.X,.18,grid,.2)
+	for index,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
+		local anchorPoint=self:Region(name,center,size,y)
+		local anchor=part(11+index,anchorPoint.X,anchorPoint.Z,.1,.1,grid,1)
+		local label=anchor:FindFirstChild("QuadrantLabel")
+		if not label then
+			label=Instance.new("BillboardGui");label.Name="QuadrantLabel";label.Size=UDim2.fromOffset(160,28)
+			label.StudsOffset=Vector3.new(0,4,0);label.AlwaysOnTop=true;label.MaxDistance=250;label.Parent=anchor
+			local text=Instance.new("TextLabel");text.Name="Name";text.Size=UDim2.fromScale(1,1);text.BackgroundTransparency=1
+			text.TextScaled=true;text.Font=Enum.Font.GothamSemibold;text.TextStrokeTransparency=.25;text.Parent=label
+		end
+		label.Enabled=true
+		local text=label:FindFirstChild("Name");text.Text=name;text.TextColor3=name==cfg.autofarm.farmposition and selected or grid
+	end
+end
+function fieldPositionPolicy:PreviewChanged()
+	self:DrawPreview()
+	if not cfg.autofarm.showfieldarea then return end
+	if connections:Get("fieldAreaPreview") then return end
+	local elapsed=0
+	connections:Add("fieldAreaPreview",RunService.Heartbeat:Connect(function(dt)
+		elapsed+=dt;if elapsed<.2 then return end;elapsed=0;self:DrawPreview()
+	end))
+end
+
 -- Atlas integration for the supplied Safeshower engine.
 local showerController = {
 	active=false, paused={},
@@ -2682,7 +2845,7 @@ end
 function bloomController:Select(opts)
 	opts = opts or {}
 	local function eligible(stem)
-		if not stem or not stem.Parent or not tracked.blooms[stem.Parent] then return false end
+		if not stem or not stem.Parent or not tracked.blooms[stem.Parent] or (opts.area and not fieldPositionPolicy:Allowed(stem.Position,opts)) then return false end
 		local field = getFieldAt(stem.Position)
 		if not (opts.ignorefield and field or not opts.ignorefield and field == currentField) then return false end
 		return not opts.avoid or isPathClear(stem.Position, opts.avoid)
@@ -6169,56 +6332,7 @@ do
 			currentField = workspace.FlowerZones[fieldName]
 			position = currentField.Position
 			currentFieldName = fieldName
-			local x = currentField.Size.X
-			local z = currentField.Size.Z
-
-			if fieldName == "Bamboo Field" then
-				x -= 6
-				z -= 8
-			elseif fieldName == "Clover Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Coconut Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Dandelion Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Mountain Top Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Mushroom Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Pine Tree Forest" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Pineapple Patch" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Pumpkin Patch" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Rose Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Spider Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName == "Strawberry Field" then
-				x -= 5
-				z -= 5
-			elseif fieldName ~= "Stump Field" then
-				if fieldName == "Sunflower Field" then
-					x -= 5
-					z -= 5
-				end
-			else
-				x -= 20
-				z -= 20
-			end
-
-			vector = Vector3.new(x - 5, nil, z - 5)
+			vector=fieldPositionPolicy:UsableSize(currentField)
 		end
 	end
 
@@ -8445,6 +8559,17 @@ do
 			else
 				state.stopface = nil
 			end
+		end
+	end
+
+	local randomWholeFieldPosition=randomFieldPosition
+	randomFieldPosition=function(options,...)
+		if not options.area then return randomWholeFieldPosition(options,...) end
+		local area=options.area
+		for _=1,40 do
+			local goal=Vector3.new(area.minX+math.random()*(area.maxX-area.minX),getRootPart().Position.Y,area.minZ+math.random()*(area.maxZ-area.minZ))
+			if (not options.range or not options.origin or (goal-options.origin).Magnitude<options.range)
+				and (not options.avoid or not isPathClear(goal,options.avoid,true,options.rbc)) then return goal end
 		end
 	end
 
@@ -46644,6 +46769,7 @@ function petalCollector:Eligible(petal, opts)
 	end
 	if self.passed[petal] or touchedMarks[petal] or (self.retryAt[petal] or 0) > os.clock() then return false end
 	local goal = petal.Position
+	if opts.area and not fieldPositionPolicy:Allowed(goal,opts) then return false end
 	if petal.Name == true then
 		if not opts.ignorefield and petal.ZoneName ~= currentFieldName then return false end
 	elseif not opts.ignorefield and getFieldAt(goal) ~= currentField then return false end
@@ -46847,6 +46973,7 @@ function gatheringPriorities:Rebuild()
 end
 
 function gatheringPriorities:Allowed(position, opts, rootPosition)
+	if opts.area and not fieldPositionPolicy:Allowed(position,opts) then return false end
 	if opts.checkheight and math.abs(position.Y - rootPosition.Y) >= 6 then return false end
 	if opts.range and opts.origin then
 		local offset = position - opts.origin
@@ -47110,6 +47237,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 
 					if not state.precise then
 						for k in pairs(tracked.precise) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
@@ -47140,6 +47268,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 						end
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-preciseMark.Position).Magnitude>=opts.range then continue end
 
@@ -47258,6 +47387,7 @@ end
 			if not (not flameOverride and not opts.loot) then
 				if not opts.combo then
 					for k in pairs(tracked.tokenlink) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 							if not opts.ignorefield or getFieldAt(k.Position) then
 								if opts.ignorefield then
@@ -47284,6 +47414,7 @@ end
 					end
 
 					for k in pairs(tracked.tokens) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						tokenIsCached = k.Name == true
 						icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 						if not bearCombat:IconEligible(icon) then continue end
@@ -47324,6 +47455,7 @@ end
 
 							if scale < 0.25 then
 								for k in pairs(tracked.clouds) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 										cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -47341,6 +47473,7 @@ end
 
 						if autofarm.farmfuzzbombs then
 							for k in pairs(tracked.fuzzbombs) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 									fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -47357,6 +47490,7 @@ end
 
 						if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 							for k, bubble in pairs(tracked.bubbles) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 								if type(k) == "number" then
 									k = bubble
 								end
@@ -47395,6 +47529,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -47436,6 +47571,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -47479,6 +47615,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -47523,6 +47660,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -47566,6 +47704,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -47607,6 +47746,7 @@ end
 
 						if autofarm.farmtriangulate then
 							for k in pairs(tracked.triangulate) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									return "Triangulate"
 								end
@@ -47620,6 +47760,7 @@ end
 
 					if not opts.loot and autofarm.farmleaves then
 						for k in pairs(tracked.leaves) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								leafDistance = distanceTo(k.Position, true)
 
@@ -47645,6 +47786,7 @@ end
 
 					if not (os.clock() - time > 30 or comboamount2.amount < comboamount) then
 						for k in pairs(tracked.tokenlink) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 								if not opts.ignorefield or getFieldAt(k.Position) then
 									if opts.ignorefield then
@@ -47671,6 +47813,7 @@ end
 						end
 
 						for k in pairs(tracked.tokens) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							tokenIsCached = k.Name == true
 							icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 							if not bearCombat:IconEligible(icon) then continue end
@@ -47711,6 +47854,7 @@ end
 
 								if scale < 0.25 then
 									for k in pairs(tracked.clouds) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 											cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -47728,6 +47872,7 @@ end
 
 							if autofarm.farmfuzzbombs then
 								for k in pairs(tracked.fuzzbombs) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 										fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -47744,6 +47889,7 @@ end
 
 							if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 								for k, bubble in pairs(tracked.bubbles) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 									if type(k) == "number" then
 										k = bubble
 									end
@@ -47782,6 +47928,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -47823,6 +47970,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -47866,6 +48014,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -47910,6 +48059,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -47953,6 +48103,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -47994,6 +48145,7 @@ end
 
 							if autofarm.farmtriangulate then
 								for k in pairs(tracked.triangulate) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 										return "Triangulate"
 									end
@@ -48007,6 +48159,7 @@ end
 
 						if not opts.loot and autofarm.farmleaves then
 							for k in pairs(tracked.leaves) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									leafDistance = distanceTo(k.Position, true)
 
@@ -48026,6 +48179,7 @@ end
 				end
 
 				for k in pairs(tracked.combococonuts) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 				if comboController:Managed() then break end
 					local comboDistance
 
@@ -48056,6 +48210,7 @@ end
 
 				if not bestTarget then
 					for k in pairs(tracked.tokenlink) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 							if not opts.ignorefield or getFieldAt(k.Position) then
 								if opts.ignorefield then
@@ -48082,6 +48237,7 @@ end
 					end
 
 					for k in pairs(tracked.tokens) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						tokenIsCached = k.Name == true
 						icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 						if not bearCombat:IconEligible(icon) then continue end
@@ -48122,6 +48278,7 @@ end
 
 							if scale < 0.25 then
 								for k in pairs(tracked.clouds) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 										cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -48139,6 +48296,7 @@ end
 
 						if autofarm.farmfuzzbombs then
 							for k in pairs(tracked.fuzzbombs) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 									fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -48155,6 +48313,7 @@ end
 
 						if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 							for k, bubble in pairs(tracked.bubbles) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 								if type(k) == "number" then
 									k = bubble
 								end
@@ -48193,6 +48352,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -48234,6 +48394,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -48277,6 +48438,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -48321,6 +48483,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -48364,6 +48527,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -48405,6 +48569,7 @@ end
 
 						if autofarm.farmtriangulate then
 							for k in pairs(tracked.triangulate) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									return "Triangulate"
 								end
@@ -48418,6 +48583,7 @@ end
 
 					if not opts.loot and autofarm.farmleaves then
 						for k in pairs(tracked.leaves) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								leafDistance = distanceTo(k.Position, true)
 
@@ -48471,6 +48637,7 @@ end
 
 					if not state.precise then
 						for k in pairs(tracked.precise) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							preciseCount += 1
 							name = k.BrickColor.Name
 
@@ -48499,6 +48666,7 @@ end
 						end
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							preciseCount += 1
 
 							if not preciseMark.Touched and not touchedMarks[preciseMark] then
@@ -48560,6 +48728,7 @@ end
 
 				if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 					for k, smileyEntry in pairs(tracked.dupedsmiley) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,smileyEntry,opts) then continue end
 						if not dupedTokenPolicy:Allowed(type(k) == "number" and smileyEntry or k) then continue end
 						if type(k) == "number" then
 							k = smileyEntry
@@ -48576,6 +48745,7 @@ end
 
 					if bearCombat:Ready() then
 						for k, bearEntry in pairs(tracked.dupedbear) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bearEntry,opts) then continue end
 							if not dupedTokenPolicy:Allowed(type(k) == "number" and bearEntry or k) then continue end
 							if type(k) == "number" then
 								k = bearEntry
@@ -48598,6 +48768,7 @@ end
 
 				if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 					for k, dupedtoken in pairs(tracked.dupedtokens) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,dupedtoken,opts) then continue end
 						if not dupedTokenPolicy:Allowed(type(k) == "number" and dupedtoken or k) then continue end
 						if type(k) == "number" then
 							k = dupedtoken
@@ -48634,6 +48805,7 @@ end
 
 				if not (not autofarm.farmpuppyball or not (not buffs.ReindeerFetch or buffs.ReindeerFetch.Text.Text ~= "x10" or buffs.ReindeerFetch.Percent.Size.Y.Scale < 0.5)) then
 					for k in pairs(tracked.puppyball) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not touchedMarks[k] and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 							return "Puppy Ball", k
 						end
@@ -48643,6 +48815,7 @@ end
 				if not opts.nowait and autofarm.farmcoconuts or not (not cfg.convert.coconut or not (cfg.convert.coconutAt <= localPlayer.CoreStats.Pollen.Value / localPlayer.CoreStats.Capacity.Value * 100)) then
 					if not cfg.detected.fastcoconuttween then
 						for k, coconut in pairs(tracked.coconuts) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,coconut,opts) then continue end
 							coconutWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
 							start6 = k.Name == true and k.Start or coconut
 							coconutArrival = os.time() + coconutWalkTime
@@ -48657,6 +48830,7 @@ end
 						end
 					else
 						for k in pairs(tracked.coconuts) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							start7 = k.Name == true and k.Start or k.Transparency
 
 							if not bestTarget or start7 < bestTarget.t then
@@ -48684,6 +48858,7 @@ end
 
 				if not opts.blooms or not (not opts.origin and not opts.range and (not autofarm.autoscorchingstar or not buffs["Scorching Star Aura"])) then
 					for k in pairs(tracked.tokenlink) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 							if not opts.ignorefield or getFieldAt(k.Position) then
 								if opts.ignorefield then
@@ -48710,6 +48885,7 @@ end
 					end
 
 					for k in pairs(tracked.tokens) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						tokenIsCached = k.Name == true
 						icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 						if not bearCombat:IconEligible(icon) then continue end
@@ -48750,6 +48926,7 @@ end
 
 							if scale < 0.25 then
 								for k in pairs(tracked.clouds) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 										cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -48767,6 +48944,7 @@ end
 
 						if autofarm.farmfuzzbombs then
 							for k in pairs(tracked.fuzzbombs) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 									fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -48783,6 +48961,7 @@ end
 
 						if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 							for k, bubble in pairs(tracked.bubbles) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 								if type(k) == "number" then
 									k = bubble
 								end
@@ -48821,6 +49000,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -48862,6 +49042,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -48905,6 +49086,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -48949,6 +49131,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -48992,6 +49175,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -49033,6 +49217,7 @@ end
 
 						if autofarm.farmtriangulate then
 							for k in pairs(tracked.triangulate) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									return "Triangulate"
 								end
@@ -49046,6 +49231,7 @@ end
 
 					if not opts.loot and autofarm.farmleaves then
 						for k in pairs(tracked.leaves) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								leafDistance = distanceTo(k.Position, true)
 
@@ -49067,6 +49253,7 @@ end
 
 				if not bestBloom then
 					for k in pairs(tracked.tokenlink) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 							if not opts.ignorefield or getFieldAt(k.Position) then
 								if opts.ignorefield then
@@ -49093,6 +49280,7 @@ end
 					end
 
 					for k in pairs(tracked.tokens) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						tokenIsCached = k.Name == true
 						icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 						if not bearCombat:IconEligible(icon) then continue end
@@ -49133,6 +49321,7 @@ end
 
 							if scale < 0.25 then
 								for k in pairs(tracked.clouds) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 										cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -49150,6 +49339,7 @@ end
 
 						if autofarm.farmfuzzbombs then
 							for k in pairs(tracked.fuzzbombs) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 									fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -49166,6 +49356,7 @@ end
 
 						if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 							for k, bubble in pairs(tracked.bubbles) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 								if type(k) == "number" then
 									k = bubble
 								end
@@ -49204,6 +49395,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -49245,6 +49437,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -49288,6 +49481,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -49332,6 +49526,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -49375,6 +49570,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -49416,6 +49612,7 @@ end
 
 						if autofarm.farmtriangulate then
 							for k in pairs(tracked.triangulate) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									return "Triangulate"
 								end
@@ -49429,6 +49626,7 @@ end
 
 					if not opts.loot and autofarm.farmleaves then
 						for k in pairs(tracked.leaves) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								leafDistance = distanceTo(k.Position, true)
 
@@ -49450,6 +49648,7 @@ end
 				opts.range = 25
 
 				for k in pairs(tracked.tokenlink) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 						if not opts.ignorefield or getFieldAt(k.Position) then
 							if opts.ignorefield then
@@ -49476,6 +49675,7 @@ end
 				end
 
 				for k in pairs(tracked.tokens) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					tokenIsCached = k.Name == true
 					icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 					if not bearCombat:IconEligible(icon) then continue end
@@ -49516,6 +49716,7 @@ end
 
 						if scale < 0.25 then
 							for k in pairs(tracked.clouds) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 									cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -49533,6 +49734,7 @@ end
 
 					if autofarm.farmfuzzbombs then
 						for k in pairs(tracked.fuzzbombs) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 								fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -49549,6 +49751,7 @@ end
 
 					if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 						for k, bubble in pairs(tracked.bubbles) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 							if type(k) == "number" then
 								k = bubble
 							end
@@ -49587,6 +49790,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -49628,6 +49832,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -49671,6 +49876,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -49715,6 +49921,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -49758,6 +49965,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -49799,6 +50007,7 @@ end
 
 					if autofarm.farmtriangulate then
 						for k in pairs(tracked.triangulate) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								return "Triangulate"
 							end
@@ -49812,6 +50021,7 @@ end
 
 				if not opts.loot and autofarm.farmleaves then
 					for k in pairs(tracked.leaves) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 							leafDistance = distanceTo(k.Position, true)
 
@@ -49854,6 +50064,7 @@ end
 
 							if not state.precise then
 								for k in pairs(tracked.precise) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									preciseCount += 1
 									name = k.BrickColor.Name
 
@@ -49882,6 +50093,7 @@ end
 								end
 							else
 								for k, preciseMark in pairs(tracked.precise2) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 									preciseCount += 1
 
 									if not preciseMark.Touched and not touchedMarks[preciseMark] then
@@ -49943,6 +50155,7 @@ end
 
 						if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 							for k, smileyEntry in pairs(tracked.dupedsmiley) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,smileyEntry,opts) then continue end
 								if not dupedTokenPolicy:Allowed(type(k) == "number" and smileyEntry or k) then continue end
 								if type(k) == "number" then
 									k = smileyEntry
@@ -49959,6 +50172,7 @@ end
 
 							if bearCombat:Ready() then
 								for k, bearEntry in pairs(tracked.dupedbear) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bearEntry,opts) then continue end
 									if not dupedTokenPolicy:Allowed(type(k) == "number" and bearEntry or k) then continue end
 									if type(k) == "number" then
 										k = bearEntry
@@ -49981,6 +50195,7 @@ end
 
 						if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 							for k, dupedtoken in pairs(tracked.dupedtokens) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,dupedtoken,opts) then continue end
 								if not dupedTokenPolicy:Allowed(type(k) == "number" and dupedtoken or k) then continue end
 								if type(k) == "number" then
 									k = dupedtoken
@@ -50017,6 +50232,7 @@ end
 
 						if not (not autofarm.farmpuppyball or not (not buffs.ReindeerFetch or buffs.ReindeerFetch.Text.Text ~= "x10" or buffs.ReindeerFetch.Percent.Size.Y.Scale < 0.5)) then
 							for k in pairs(tracked.puppyball) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not touchedMarks[k] and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									return "Puppy Ball", k
 								end
@@ -50026,6 +50242,7 @@ end
 						if not opts.nowait and autofarm.farmcoconuts or not (not cfg.convert.coconut or not (cfg.convert.coconutAt <= localPlayer.CoreStats.Pollen.Value / localPlayer.CoreStats.Capacity.Value * 100)) then
 							if not cfg.detected.fastcoconuttween then
 								for k, coconut in pairs(tracked.coconuts) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,coconut,opts) then continue end
 									coconutWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
 									start6 = k.Name == true and k.Start or coconut
 									coconutArrival = os.time() + coconutWalkTime
@@ -50040,6 +50257,7 @@ end
 								end
 							else
 								for k in pairs(tracked.coconuts) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									start7 = k.Name == true and k.Start or k.Transparency
 
 									if not bestTarget or start7 < bestTarget.t then
@@ -50067,6 +50285,7 @@ end
 
 						if not opts.blooms or not (not opts.origin and not opts.range and (not autofarm.autoscorchingstar or not buffs["Scorching Star Aura"])) then
 							for k in pairs(tracked.tokenlink) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 									if not opts.ignorefield or getFieldAt(k.Position) then
 										if opts.ignorefield then
@@ -50093,6 +50312,7 @@ end
 							end
 
 							for k in pairs(tracked.tokens) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								tokenIsCached = k.Name == true
 								icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 								if not bearCombat:IconEligible(icon) then continue end
@@ -50133,6 +50353,7 @@ end
 
 									if scale < 0.25 then
 										for k in pairs(tracked.clouds) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 											if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 												cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -50150,6 +50371,7 @@ end
 
 								if autofarm.farmfuzzbombs then
 									for k in pairs(tracked.fuzzbombs) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 											fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -50166,6 +50388,7 @@ end
 
 								if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 									for k, bubble in pairs(tracked.bubbles) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 										if type(k) == "number" then
 											k = bubble
 										end
@@ -50204,6 +50427,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -50245,6 +50469,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -50288,6 +50513,7 @@ end
 												bestCluster = nil
 
 												for k, flame in pairs(tracked.flames) do
+													if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 													flameIsObject = type(flame) ~= "number"
 
 													if flameIsObject then
@@ -50332,6 +50558,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -50375,6 +50602,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -50416,6 +50644,7 @@ end
 
 								if autofarm.farmtriangulate then
 									for k in pairs(tracked.triangulate) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 											return "Triangulate"
 										end
@@ -50429,6 +50658,7 @@ end
 
 							if not opts.loot and autofarm.farmleaves then
 								for k in pairs(tracked.leaves) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 										leafDistance = distanceTo(k.Position, true)
 
@@ -50450,6 +50680,7 @@ end
 
 						if not bestBloom then
 							for k in pairs(tracked.tokenlink) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 									if not opts.ignorefield or getFieldAt(k.Position) then
 										if opts.ignorefield then
@@ -50476,6 +50707,7 @@ end
 							end
 
 							for k in pairs(tracked.tokens) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								tokenIsCached = k.Name == true
 								icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 								if not bearCombat:IconEligible(icon) then continue end
@@ -50516,6 +50748,7 @@ end
 
 									if scale < 0.25 then
 										for k in pairs(tracked.clouds) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 											if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 												cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -50533,6 +50766,7 @@ end
 
 								if autofarm.farmfuzzbombs then
 									for k in pairs(tracked.fuzzbombs) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 											fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -50549,6 +50783,7 @@ end
 
 								if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 									for k, bubble in pairs(tracked.bubbles) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 										if type(k) == "number" then
 											k = bubble
 										end
@@ -50587,6 +50822,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -50628,6 +50864,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -50671,6 +50908,7 @@ end
 												bestCluster = nil
 
 												for k, flame in pairs(tracked.flames) do
+													if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 													flameIsObject = type(flame) ~= "number"
 
 													if flameIsObject then
@@ -50715,6 +50953,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -50758,6 +50997,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -50799,6 +51039,7 @@ end
 
 								if autofarm.farmtriangulate then
 									for k in pairs(tracked.triangulate) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 											return "Triangulate"
 										end
@@ -50812,6 +51053,7 @@ end
 
 							if not opts.loot and autofarm.farmleaves then
 								for k in pairs(tracked.leaves) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 										leafDistance = distanceTo(k.Position, true)
 
@@ -50833,6 +51075,7 @@ end
 						opts.range = 25
 
 						for k in pairs(tracked.tokenlink) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 								if not opts.ignorefield or getFieldAt(k.Position) then
 									if opts.ignorefield then
@@ -50859,6 +51102,7 @@ end
 						end
 
 						for k in pairs(tracked.tokens) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							tokenIsCached = k.Name == true
 							icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 							if not bearCombat:IconEligible(icon) then continue end
@@ -50899,6 +51143,7 @@ end
 
 								if scale < 0.25 then
 									for k in pairs(tracked.clouds) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 										if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 											cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -50916,6 +51161,7 @@ end
 
 							if autofarm.farmfuzzbombs then
 								for k in pairs(tracked.fuzzbombs) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 										fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -50932,6 +51178,7 @@ end
 
 							if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 								for k, bubble in pairs(tracked.bubbles) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 									if type(k) == "number" then
 										k = bubble
 									end
@@ -50970,6 +51217,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -51011,6 +51259,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -51054,6 +51303,7 @@ end
 											bestCluster = nil
 
 											for k, flame in pairs(tracked.flames) do
+												if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 												flameIsObject = type(flame) ~= "number"
 
 												if flameIsObject then
@@ -51098,6 +51348,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -51141,6 +51392,7 @@ end
 										bestCluster = nil
 
 										for k, flame in pairs(tracked.flames) do
+											if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 											flameIsObject = type(flame) ~= "number"
 
 											if flameIsObject then
@@ -51182,6 +51434,7 @@ end
 
 							if autofarm.farmtriangulate then
 								for k in pairs(tracked.triangulate) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 									if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 										return "Triangulate"
 									end
@@ -51195,6 +51448,7 @@ end
 
 						if not opts.loot and autofarm.farmleaves then
 							for k in pairs(tracked.leaves) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 									leafDistance = distanceTo(k.Position, true)
 
@@ -51215,6 +51469,7 @@ end
 			end
 
 			for k in pairs(tracked.combococonuts) do
+				if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 				if comboController:Managed() then break end
 				if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 					local distance = distanceTo(k.Position, true)
@@ -51255,6 +51510,7 @@ end
 
 				if not state.precise then
 					for k in pairs(tracked.precise) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						preciseCount += 1
 						name = k.BrickColor.Name
 
@@ -51283,6 +51539,7 @@ end
 					end
 				else
 					for k, preciseMark in pairs(tracked.precise2) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 						preciseCount += 1
 
 						if not preciseMark.Touched and not touchedMarks[preciseMark] then
@@ -51344,6 +51601,7 @@ end
 
 			if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 				for k, smileyEntry in pairs(tracked.dupedsmiley) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,smileyEntry,opts) then continue end
 					if not dupedTokenPolicy:Allowed(type(k) == "number" and smileyEntry or k) then continue end
 					if type(k) == "number" then
 						k = smileyEntry
@@ -51358,6 +51616,7 @@ end
 
 				if bearCombat:Ready() then
 					for k, bearEntry in pairs(tracked.dupedbear) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bearEntry,opts) then continue end
 						if not dupedTokenPolicy:Allowed(type(k) == "number" and bearEntry or k) then continue end
 						if type(k) == "number" then
 							k = bearEntry
@@ -51378,6 +51637,7 @@ end
 
 			if not (not autofarm.farmdupedtokens and not opts.dupedtokensquest) then
 				for k, dupedtoken in pairs(tracked.dupedtokens) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,dupedtoken,opts) then continue end
 					if not dupedTokenPolicy:Allowed(type(k) == "number" and dupedtoken or k) then continue end
 					if type(k) == "number" then
 						k = dupedtoken
@@ -51409,6 +51669,7 @@ end
 
 			if not (not autofarm.farmpuppyball or not (not buffs.ReindeerFetch or buffs.ReindeerFetch.Text.Text ~= "x10" or buffs.ReindeerFetch.Percent.Size.Y.Scale < 0.5)) then
 				for k in pairs(tracked.puppyball) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					if not touchedMarks[k] and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 						return "Puppy Ball", k
 					end
@@ -51418,6 +51679,7 @@ end
 			if not opts.nowait and autofarm.farmcoconuts or not (not cfg.convert.coconut or not (cfg.convert.coconutAt <= localPlayer.CoreStats.Pollen.Value / localPlayer.CoreStats.Capacity.Value * 100)) then
 				if not cfg.detected.fastcoconuttween then
 					for k, coconut in pairs(tracked.coconuts) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,coconut,opts) then continue end
 						coconutWalkTime = distanceTo(k.Position, true) / getHumanoid().WalkSpeed
 						start6 = k.Name == true and k.Start or coconut
 						coconutArrival = os.time() + coconutWalkTime
@@ -51432,6 +51694,7 @@ end
 					end
 				else
 					for k in pairs(tracked.coconuts) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						start7 = k.Name == true and k.Start or k.Transparency
 
 						if not bestTarget or start7 < bestTarget.t then
@@ -51459,6 +51722,7 @@ end
 
 			if not opts.blooms or not (not opts.origin and not opts.range and (not autofarm.autoscorchingstar or not buffs["Scorching Star Aura"])) then
 				for k in pairs(tracked.tokenlink) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 						if not opts.ignorefield or getFieldAt(k.Position) then
 							if opts.ignorefield then
@@ -51485,6 +51749,7 @@ end
 				end
 
 				for k in pairs(tracked.tokens) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					tokenIsCached = k.Name == true
 					icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 					if not bearCombat:IconEligible(icon) then continue end
@@ -51525,6 +51790,7 @@ end
 
 						if scale < 0.25 then
 							for k in pairs(tracked.clouds) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 									cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -51542,6 +51808,7 @@ end
 
 					if autofarm.farmfuzzbombs then
 						for k in pairs(tracked.fuzzbombs) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 								fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -51558,6 +51825,7 @@ end
 
 					if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 						for k, bubble in pairs(tracked.bubbles) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 							if type(k) == "number" then
 								k = bubble
 							end
@@ -51596,6 +51864,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -51637,6 +51906,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -51680,6 +51950,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -51724,6 +51995,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -51767,6 +52039,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -51808,6 +52081,7 @@ end
 
 					if autofarm.farmtriangulate then
 						for k in pairs(tracked.triangulate) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								return "Triangulate"
 							end
@@ -51821,6 +52095,7 @@ end
 
 				if not opts.loot and autofarm.farmleaves then
 					for k in pairs(tracked.leaves) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 							leafDistance = distanceTo(k.Position, true)
 
@@ -51842,6 +52117,7 @@ end
 
 			if not bestBloom then
 				for k in pairs(tracked.tokenlink) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 						if not opts.ignorefield or getFieldAt(k.Position) then
 							if opts.ignorefield then
@@ -51868,6 +52144,7 @@ end
 				end
 
 				for k in pairs(tracked.tokens) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					tokenIsCached = k.Name == true
 					icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 					if not bearCombat:IconEligible(icon) then continue end
@@ -51908,6 +52185,7 @@ end
 
 						if scale < 0.25 then
 							for k in pairs(tracked.clouds) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 								if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 									cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -51925,6 +52203,7 @@ end
 
 					if autofarm.farmfuzzbombs then
 						for k in pairs(tracked.fuzzbombs) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 								fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -51941,6 +52220,7 @@ end
 
 					if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 						for k, bubble in pairs(tracked.bubbles) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 							if type(k) == "number" then
 								k = bubble
 							end
@@ -51979,6 +52259,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -52020,6 +52301,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -52063,6 +52345,7 @@ end
 									bestCluster = nil
 
 									for k, flame in pairs(tracked.flames) do
+										if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 										flameIsObject = type(flame) ~= "number"
 
 										if flameIsObject then
@@ -52107,6 +52390,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -52150,6 +52434,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -52191,6 +52476,7 @@ end
 
 					if autofarm.farmtriangulate then
 						for k in pairs(tracked.triangulate) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 								return "Triangulate"
 							end
@@ -52204,6 +52490,7 @@ end
 
 				if not opts.loot and autofarm.farmleaves then
 					for k in pairs(tracked.leaves) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 							leafDistance = distanceTo(k.Position, true)
 
@@ -52225,6 +52512,7 @@ end
 			opts.range = 25
 
 			for k in pairs(tracked.tokenlink) do
+				if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 				if not opts.checkheight or math.abs(k.Position.Y - getRootPart().Position.Y) < 6 then
 					if not opts.ignorefield or getFieldAt(k.Position) then
 						if opts.ignorefield then
@@ -52251,6 +52539,7 @@ end
 			end
 
 			for k in pairs(tracked.tokens) do
+				if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 				tokenIsCached = k.Name == true
 				icon = tokenIsCached and k.Icon or k.FrontDecal.Texture
 				if not bearCombat:IconEligible(icon) then continue end
@@ -52289,6 +52578,7 @@ end
 				if autofarm.farmclouds then
 					if (buffs.Cloud and buffs.Cloud.Size.Y.Scale or 0) < 0.25 then
 						for k in pairs(tracked.clouds) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))) then
 								cloudDistance = distanceTo(k.Plane.Position, true)
 
@@ -52306,6 +52596,7 @@ end
 
 				if autofarm.farmfuzzbombs then
 					for k in pairs(tracked.fuzzbombs) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if not (not k:FindFirstChild("Plane") or not ((not opts.range or (opts.origin - k.Plane.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Plane.Position)) and not (not opts.ignorefield and getFieldAt(k.Plane.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Plane.Position, opts.avoid))))) then
 							fuzzDistance = distanceTo(k.Plane.Position, true)
 
@@ -52322,6 +52613,7 @@ end
 
 				if not (not autofarm.farmbubbles and (not autofarm.autopopstar or not buffs["Pop Star Aura"] and not buffs["Tidal Surge"])) then
 					for k, bubble in pairs(tracked.bubbles) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,bubble,opts) then continue end
 						if type(k) == "number" then
 							k = bubble
 						end
@@ -52359,6 +52651,7 @@ end
 							bestCluster = nil
 
 							for k, flame in pairs(tracked.flames) do
+								if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 								flameIsObject = type(flame) ~= "number"
 
 								if flameIsObject then
@@ -52402,6 +52695,7 @@ end
 								bestCluster = nil
 
 								for k, flame in pairs(tracked.flames) do
+									if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 									flameIsObject = type(flame) ~= "number"
 
 									if flameIsObject then
@@ -52445,6 +52739,7 @@ end
 					bestCluster = nil
 
 					for k, flame in pairs(tracked.flames) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 						flameIsObject = type(flame) ~= "number"
 
 						if flameIsObject then
@@ -52486,6 +52781,7 @@ end
 						bestCluster = nil
 
 						for k, flame in pairs(tracked.flames) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 							flameIsObject = type(flame) ~= "number"
 
 							if flameIsObject then
@@ -52526,6 +52822,7 @@ end
 						bestCluster = nil
 
 						for k, flame in pairs(tracked.flames) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,flame,opts) then continue end
 							flameIsObject = type(flame) ~= "number"
 
 							if flameIsObject then
@@ -52566,6 +52863,7 @@ end
 
 				if autofarm.farmtriangulate then
 					for k in pairs(tracked.triangulate) do
+						if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 						if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 							return "Triangulate"
 						end
@@ -52579,6 +52877,7 @@ end
 
 			if not opts.loot and autofarm.farmleaves then
 				for k in pairs(tracked.leaves) do
+					if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 					if (not opts.range or (opts.origin - k.Position).magnitude < opts.range) and not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or not (not opts.avoid or not isPathClear(k.Position, opts.avoid))) then
 						leafDistance = distanceTo(k.Position, true)
 
@@ -52610,6 +52909,8 @@ end
 			end
 
 			while true do
+				local options=gatheringPriorities.activeOptions
+				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
 				elseif gatheringPriorities:ShouldPreempt() then return true end
@@ -52671,7 +52972,7 @@ end
 			return true
 		end
 
-		local function buildAvoidGrid(v128)
+		local function buildAvoidGrid(v128,area)
 			local nodePositions = {}
 			local nodeEdges = {}
 			local nextNodeId = 1
@@ -52849,6 +53150,11 @@ end
 				end
 			end
 
+			if area then
+				local outside={}
+				for id,point in pairs(nodePositions)do if not fieldPositionPolicy:Allowed(point,{area=area}) then outside[#outside+1]=id end end
+				for _,id in ipairs(outside)do removeNode(id) end
+			end
 			return nodePositions, nodeEdges
 		end
 
@@ -52866,7 +53172,7 @@ end
 			end
 
 			state.break1 = nil
-			local nodes, links = buildAvoidGrid(avoid)
+			local nodes, links = buildAvoidGrid(avoid,options.area)
 			local position2 = preciseMark.Position
 			local path = findPath(getRootPart().Position, position2, false, nodes, links)
 			local now = os.clock()
@@ -52933,6 +53239,7 @@ end
 					touchedMarks[mark] = os.clock() + 3
 
 					for k in pairs(tracked.precise) do
+						if options.area and not fieldPositionPolicy:TrackedAllowed(k,nil,options) then continue end
 						totalCount += 1
 
 						if not (k.BrickColor.Name == "Flint" or not (not touchedMarks[k] and not ((not options.ignorefield or getFieldAt(k.Position)) and not (not options.ignorefield and getFieldAt(k.Position) == currentField) or not (not options.avoid or not isPathClear(k.Position, options.avoid))))) then
@@ -52971,7 +53278,7 @@ end
 			end
 
 			state.break1 = nil
-			local nodes, links = buildAvoidGrid(avoid)
+			local nodes, links = buildAvoidGrid(avoid,options.area)
 			local position2 = mark.Position
 			local path = findPath(getRootPart().Position, position2, false, nodes, links)
 			local now = os.clock()
@@ -53038,6 +53345,7 @@ end
 					touchedMarks[mark] = os.clock() + 3
 
 					for _, candidate in pairs(tracked.precise2) do
+						if options.area and not fieldPositionPolicy:TrackedAllowed(_,candidate,options) then continue end
 						totalCount += 1
 
 						if not candidate.Touched and not touchedMarks[candidate] and not ((not options.ignorefield or getFieldAt(candidate.Position)) and not (not options.ignorefield and getFieldAt(candidate.Position) == currentField) or not (not options.avoid or not isPathClear(candidate.Position, options.avoid))) then
@@ -53062,7 +53370,7 @@ end
 			end
 		end
 
-		local function fieldCorners()
+		local function fieldCorners(options)
 			local x = vector.X
 			local z = vector.Z
 			local v133 = position.Z - z / 2
@@ -53073,6 +53381,11 @@ end
 			local vector4 = Vector3.new(position.X - x / 2, getRootPart().Position.Y, v135)
 			local v136 = position.Z - z / 2
 			local vector5 = Vector3.new(position.X + x / 2, getRootPart().Position.Y, v136)
+			if options and options.area then
+				local area,y=options.area,getRootPart().Position.Y
+				vector2=Vector3.new(area.minX,y,area.minZ);vector3=Vector3.new(area.maxX,y,area.maxZ)
+				vector4=Vector3.new(area.minX,y,area.maxZ);vector5=Vector3.new(area.maxX,y,area.minZ)
+			end
 			local target3 = distanceTo(vector2) > distanceTo(vector3) and vector2 or vector3
 			local target2 = distanceTo(vector4) > distanceTo(target3) and vector4 or target3
 			local target = distanceTo(vector5) > distanceTo(target2) and vector5 or target2
@@ -53154,6 +53467,10 @@ end
 
 		local function collectTargetImpl(options)
 			local targetKind, targetObject = pickTarget(options)
+			if options.area then
+				local goal=fieldPositionPolicy:TargetPosition(targetObject)
+				if goal and not fieldPositionPolicy:Allowed(goal,options) then return end
+			end
 			gatheringPriorities:Record(targetKind, targetObject)
 			gatheringPriorities.activeOptions = options
 			gatheringPriorities.nextPreemptCheck = nil
@@ -53239,7 +53556,7 @@ end
 			end
 
 			if targetKind == "Triangulate" then
-				return fieldCorners()
+				return fieldCorners(options)
 			end
 
 			if not targetKind then
@@ -53269,6 +53586,7 @@ end
 			end
 			if not options.ignoreflower then
 				smoothMovement:Roam(function() return randomFieldPosition(options) end, function(goal)
+					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
 					if options.range and options.origin and (options.origin - goal).Magnitude >= options.range then return false end
 					if options.avoid and not isPathClear(goal, options.avoid) then return false end
@@ -65506,55 +65824,14 @@ end
 					input:handleShiftLock(true)
 				end
 
-				if not autofarm.patternenabled or not (not autofarm.patternblacklist or not autofarm.patternblacklist[currentFieldName]) then
+				options.area=nil
+				if (autofarm.farmposenabled and fieldPositionPolicy:IsQuadrant(autofarm.farmposition)) or not autofarm.patternenabled or not (not autofarm.patternblacklist or not autofarm.patternblacklist[currentFieldName]) then
 					if not autofarm.farmposenabled then
 						farmStep(options)
 					else
-						local farmposition = autofarm.farmposition
-						local x = vector.X
-						local z = vector.Z
-						local v136 = x > z
-						local origin = farmposition == "Left" and v136
-
-						if origin then
-							local z2 = position.Z
-							origin = Vector3.new(position.X - x / 2, getRootPart().Position.Y, z2)
-						end
-
-						if not origin then
-							origin = farmposition == "Left" and not v136
-
-							if origin then
-								local v137 = position.Z - z / 2
-								origin = Vector3.new(position.X, getRootPart().Position.Y, v137)
-							end
-						end
-
-						if not origin then
-							origin = farmposition == "Right" and v136
-
-							if origin then
-								local z2 = position.Z
-								origin = Vector3.new(position.X + x / 2, getRootPart().Position.Y, z2)
-							end
-						end
-
-						if not origin then
-							origin = farmposition == "Right" and not v136
-
-							if origin then
-								local v137 = position.Z + z / 2
-								origin = Vector3.new(position.X, getRootPart().Position.Y, v137)
-							end
-						end
-
-						if not origin then
-							local z2 = position.Z
-							origin = Vector3.new(position.X, getRootPart().Position.Y, z2)
-						end
-
-						options.origin = origin
-						options.range = 40
+						local origin,area=fieldPositionPolicy:Region(autofarm.farmposition,position,vector,getRootPart().Position.Y)
+						options.origin,options.area=origin,area
+						options.range=not area and 40 or nil
 						farmStep(options)
 					end
 				else
@@ -66193,6 +66470,7 @@ end
 ScreenGui.Destroying:Connect(function()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
+	fieldPositionPolicy:StopPreview()
 	showerController:Shutdown()
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
@@ -66872,7 +67150,9 @@ which bees and get all 3 targets if
 
 				farmFolder.AddSwitch("Ignore Honey Tokens", nil, "autofarm", "ignorehoneytokens")
 				farmFolder.AddSwitch("Farm Near Position", nil, "autofarm", "farmposenabled")
-				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center" }, nil, nil, "autofarm", "farmposition")
+				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
+				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
+				farmFolder.AddLabel("Quadrants use the existing Left/Right orientation. Preview works while farming is off. Combos, showers and tasks keep their overrides.")
 
 				local buffIconIds = {
 					["Blue Boost"] = "1442863423",

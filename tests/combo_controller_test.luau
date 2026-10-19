@@ -1185,6 +1185,8 @@ local collectObject
 			end
 
 			while true do
+				local options=gatheringPriorities.activeOptions
+				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
 				elseif gatheringPriorities:ShouldPreempt() then return true end

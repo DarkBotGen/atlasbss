@@ -1,0 +1,11 @@
+# Field quadrants and preview
+
+In Farming, choose Upper Left, Upper Right, Lower Left or Lower Right under Field Position. Enable Farm Near Position to apply it. Show Farming Area displays a local testing overlay, even when farming is off: white grid lines split the usable field into four labelled quarters, and green shading/borders show the selected quarter.
+
+The preview and farming use the same field-edge insets and rectangle geometry. Left/Right keep the script's existing long-axis orientation; Upper/Lower split the other axis. These directions stay fixed to the field rather than changing when the camera turns. Existing Left, Right and Center behavior is retained; the rectangular preview is for the four new quadrant choices.
+
+Normal gathering targets, Precision upkeep, blooms, petals and roaming use the chosen bounds. Mark avoidance navigation is clipped to the quarter, and triangulation uses that quarter's corners. Quadrants take precedence over the normal walking pattern while Farm Near Position is enabled. Travel into a quarter can cross its boundary, and combo catching, showers, conversion and other travel/task overrides retain their existing control; the overlay represents the ordinary farming area rather than a physical wall.
+
+Both settings save through normal configuration. The overlay uses 15 anchored, non-colliding/non-touching/non-queryable local parts with four labels and one managed 5 Hz update listener. Parts are reused during updates and destroyed on disable/unload. It does not change field collision or server state.
+
+Geometry, original side orientation, target eligibility, 1,000 roaming samples, clipped graph links, preview geometry, field changes while stopped/running, repeated updates and enable/disable cleanup are tested with the source-derived Luau fixture. Appearance and full farming movement still need live Roblox verification.

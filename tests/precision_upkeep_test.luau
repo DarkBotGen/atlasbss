@@ -184,6 +184,30 @@ local function buff(stacks,left)buffs.Precision={Text={Text=stacks},Percent={Siz
 local normal={Position=vector(20,3,0),BrickColor={Name="Red flip/flop"}}
 local purple={Position=vector(5,3,0),BrickColor={Name="Alder"}}
 tracked.precise[normal]=true;tracked.precise[purple]=true
+local function typeof(v)
+ if type(v)=="table" and v.ClassName then return "Instance"end
+ if type(v)=="table" and v.X and v.Y and v.Z then return "Vector3"end
+ return type(v)
+end
+local fieldPositionPolicy={}
+function fieldPositionPolicy:Allowed(goal,opts)
+	local area=opts and opts.area
+	return not area or (goal.X>=area.minX and goal.X<=area.maxX and goal.Z>=area.minZ and goal.Z<=area.maxZ)
+end
+function fieldPositionPolicy:TargetPosition(object)
+	if typeof(object)=="Vector3" then return object end
+	if type(object)=="table" and typeof(object.Position)=="Vector3" then return object.Position end
+	if typeof(object)=="Instance" then
+		if object:IsA("BasePart") then return object.Position end
+		local part=object:FindFirstChild("Plane") or object:FindFirstChild("Stem") or object:FindFirstChild("BalloonRoot")
+		if part and part:IsA("BasePart") then return part.Position end
+	end
+end
+function fieldPositionPolicy:TrackedAllowed(key,value,opts)
+	if not opts.area then return true end
+	local goal=self:TargetPosition(key) or self:TargetPosition(value)
+	return not goal or self:Allowed(goal,opts)
+end
 function gatheringPriorities:PrecisionReady()
 	local precision=buffs.Precision
 	if not precision then return false end
@@ -233,6 +257,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 
 					if not state.precise then
 						for k in pairs(tracked.precise) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
@@ -263,6 +288,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 						end
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
+							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-preciseMark.Position).Magnitude>=opts.range then continue end
 
@@ -354,6 +380,8 @@ assert(kind=="Precise" and target==normal,"missing buff did not prioritize norma
 buff("x9",1)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
 assert(kind=="Precise" and target==normal,"Precision below 10x pursued closer purple mark")
+kind,target=gatheringPriorities:PrecisionUpkeep({area={minX=0,maxX=10,minZ=-1,maxZ=1}})
+assert(kind=="Precise" and target==purple,"precision upkeep escaped selected quadrant")
 buff("x10",.9)
 buffs["Scorching Star Aura"]={};tracked.precisemark={{},{},{}}
 kind,target=gatheringPriorities:PrecisionUpkeep({})
