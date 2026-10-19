@@ -291,11 +291,13 @@ print("PASS: Stump green contour mirrored in all four quadrants, connected sides
 local function getHumanoid()return h end
 local localPlayer=player
 function fieldPositionPolicy:ReleaseIdle()
-	if self.idleDrive then
+	local drive=self.idleDrive
+	if drive then
 		RunService:UnbindFromRenderStep("AtlasIdleLoopMovement")
 		local char=localPlayer.Character
 		local h=char and char:FindFirstChildOfClass("Humanoid")
 		if h then h:Move(Vector3.zero,false) end
+		if drive.controls and drive.restoreControls then pcall(function()drive.controls:Enable()end) end
 	end
 	self.idleDrive=nil
 	local mass=self.idleMass
@@ -304,6 +306,28 @@ function fieldPositionPolicy:ReleaseIdle()
 		if mass.root.CustomPhysicalProperties==mass.assigned then mass.root.CustomPhysicalProperties=mass.original end
 		if mass.root.Massless==false then mass.root.Massless=mass.massless end
 	end
+end
+function fieldPositionPolicy:StartIdle(makeGoal,allowed)
+	local drive=self.idleDrive
+	if drive and (drive.field~=currentField or drive.character~=localPlayer.Character) then self:ReleaseIdle();drive=nil end
+	if not drive then
+		drive={field=currentField,character=localPlayer.Character}
+		-- Default controls can overwrite Humanoid:Move with zero every frame.
+		-- Own them for the idle session, just as shower/combo movement does.
+		pcall(function()
+			local module=localPlayer.PlayerScripts:FindFirstChild("PlayerModule")
+			if module then
+				drive.controls=require(module):GetControls()
+				drive.restoreControls=drive.controls.controlsEnabled~=false
+				drive.controls:Disable()
+			end
+		end)
+		self.idleDrive=drive
+		smoothMovement.roam=nil
+		RunService:BindToRenderStep("AtlasIdleLoopMovement",Enum.RenderPriority.Character.Value+1,function()self:DriveIdle()end)
+	end
+	drive.makeGoal,drive.allowed=makeGoal,allowed
+	self:DriveIdle()
 end
 function fieldPositionPolicy:DriveIdle()
 	local drive=self.idleDrive
@@ -329,3 +353,20 @@ fieldPositionPolicy.idleMass={root=root,original=original,massless=true,assigned
 fieldPositionPolicy:ReleaseIdle()
 assert(not fieldPositionPolicy.idleDrive and root.CustomPhysicalProperties==original and root.Massless)
 print("PASS: continuous directional commands and cleanup/restoration of previous density")
+
+controls.controlsEnabled=true
+fieldPositionPolicy:StartIdle(function()return Vector3.new(20,3,0)end,function()return true end)
+assert(not controls.controlsEnabled,"idle must disable default zero-input movement")
+local session=fieldPositionPolicy.idleDrive
+for i=1,120 do
+ if controls.controlsEnabled then h:Move(Vector3.zero,false)end
+ RunService.bound.AtlasIdleLoopMovement()
+ assert(h.direction.X>0.99,"direction must stay continuous across frames")
+ fieldPositionPolicy:StartIdle(function()return Vector3.new(20,3,0)end,function()return true end)
+ assert(fieldPositionPolicy.idleDrive==session,"routine farming ticks must reuse the control session")
+end
+fieldPositionPolicy:ReleaseIdle();assert(controls.controlsEnabled and not RunService.bound.AtlasIdleLoopMovement)
+controls.controlsEnabled=false
+fieldPositionPolicy:StartIdle(function()return Vector3.new(20,3,0)end,function()return true end)
+fieldPositionPolicy:ReleaseIdle();assert(not controls.controlsEnabled,"respect previously disabled controls")
+print("PASS: exclusive idle controls, 120 continuous frames, session reuse, cleanup and previous control state")

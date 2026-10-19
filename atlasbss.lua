@@ -1888,11 +1888,13 @@ function fieldPositionPolicy:InsideGuardedField(field,point)
 end
 -- Rounded perimeter route, scaled to the active field or selected quadrant.
 function fieldPositionPolicy:ReleaseIdle()
-	if self.idleDrive then
+	local drive=self.idleDrive
+	if drive then
 		RunService:UnbindFromRenderStep("AtlasIdleLoopMovement")
 		local char=localPlayer.Character
 		local h=char and char:FindFirstChildOfClass("Humanoid")
 		if h then h:Move(Vector3.zero,false) end
+		if drive.controls and drive.restoreControls then pcall(function()drive.controls:Enable()end) end
 	end
 	self.idleDrive=nil
 	local mass=self.idleMass
@@ -1901,6 +1903,28 @@ function fieldPositionPolicy:ReleaseIdle()
 		if mass.root.CustomPhysicalProperties==mass.assigned then mass.root.CustomPhysicalProperties=mass.original end
 		if mass.root.Massless==false then mass.root.Massless=mass.massless end
 	end
+end
+function fieldPositionPolicy:StartIdle(makeGoal,allowed)
+	local drive=self.idleDrive
+	if drive and (drive.field~=currentField or drive.character~=localPlayer.Character) then self:ReleaseIdle();drive=nil end
+	if not drive then
+		drive={field=currentField,character=localPlayer.Character}
+		-- Default controls can overwrite Humanoid:Move with zero every frame.
+		-- Own them for the idle session, just as shower/combo movement does.
+		pcall(function()
+			local module=localPlayer.PlayerScripts:FindFirstChild("PlayerModule")
+			if module then
+				drive.controls=require(module):GetControls()
+				drive.restoreControls=drive.controls.controlsEnabled~=false
+				drive.controls:Disable()
+			end
+		end)
+		self.idleDrive=drive
+		smoothMovement.roam=nil
+		RunService:BindToRenderStep("AtlasIdleLoopMovement",Enum.RenderPriority.Character.Value+1,function()self:DriveIdle()end)
+	end
+	drive.makeGoal,drive.allowed=makeGoal,allowed
+	self:DriveIdle()
 end
 function fieldPositionPolicy:DriveIdle()
 	local drive=self.idleDrive
@@ -53850,13 +53874,7 @@ end
 						(not cfg.autofarm.farmballoons2 and not cfg.autofarm.farmmarks) or questTasks:check(goal)
 				end
 				if cfg.autofarm.idlefieldloop and not options.loot then
-					local starting=not fieldPositionPolicy.idleDrive
-					fieldPositionPolicy.idleDrive={makeGoal=makeGoal,allowed=allowed,field=currentField}
-					if starting then
-						smoothMovement.roam=nil
-						RunService:BindToRenderStep("AtlasIdleLoopMovement",Enum.RenderPriority.Character.Value+1,function()fieldPositionPolicy:DriveIdle()end)
-					end
-					fieldPositionPolicy:DriveIdle()
+					fieldPositionPolicy:StartIdle(makeGoal,allowed)
 				else
 					fieldPositionPolicy:ReleaseIdle()
 					smoothMovement:Roam(makeGoal,allowed)
