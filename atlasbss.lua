@@ -1979,12 +1979,20 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 	local shift=math.min(1.25,inset*0.625)
 	ox,oz=ox+sx*shift,oz+sz*shift
 	local rx,rz=(area.maxX-area.minX-2*inset)*0.9,(area.maxZ-area.minZ-2*inset)*0.9
-	local points={Vector3.new(ox+sx*rx*0.48,0,oz),Vector3.new(ox+sx*rx,0,oz)}
-	for i=1,16 do
-		local angle=i*math.pi/32
-		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
+	-- Two parallel long sides follow the new reference; soften the four
+	-- ends so the continuous driver does not make square direction changes.
+	local corners={Vector3.new(ox+sx*rx*0.48,0,oz),Vector3.new(ox+sx*rx,0,oz),Vector3.new(ox,0,oz+sz*rz),Vector3.new(ox,0,oz+sz*rz*0.48)}
+	local points={}
+	for i,corner in ipairs(corners) do
+		local previous=corners[(i-2)%#corners+1]
+		local following=corners[i%#corners+1]
+		local entry=corner+(previous-corner)*0.12
+		local exit=corner+(following-corner)*0.12
+		for j=0,4 do
+			local t=j/4
+			points[#points+1]=entry*((1-t)^2)+corner*(2*t*(1-t))+exit*(t*t)
+		end
 	end
-	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*0.48)
 	self.stumpShape={key=key,points=points}
 	return points
 end
