@@ -1809,6 +1809,31 @@ function fieldPositionPolicy:UsableSize(field)
 
 	return Vector3.new(x-5,0,z-5)
 end
+-- Quadrants include outer flower rows; legacy position margins remain unchanged.
+function fieldPositionPolicy:QuadrantSize(field)
+	return Vector3.new(math.max(1,field.Size.X-1),0,math.max(1,field.Size.Z-1))
+end
+function fieldPositionPolicy:CoverageGoal(options,blocked)
+	local a=options.area
+	local key=string.format("%s:%s:%s:%s",a.minX,a.maxX,a.minZ,a.maxZ)
+	local route=self.coverage
+	if not route or route.key~=key then
+		route={key=key,index=0,nx=math.max(1,math.ceil((a.maxX-a.minX)/3)),nz=math.max(1,math.ceil((a.maxZ-a.minZ)/3))}
+		self.coverage=route
+	end
+	local root=getRootPart().Position
+	local count=(route.nx+1)*(route.nz+1)
+	for _=1,count do
+		local row=math.floor(route.index/(route.nx+1))
+		local col=route.index%(route.nx+1)
+		if row%2==1 then col=route.nx-col end
+		local goal=Vector3.new(a.minX+(a.maxX-a.minX)*col/route.nx,root.Y,a.minZ+(a.maxZ-a.minZ)*row/route.nz)
+		local dx,dz=goal.X-root.X,goal.Z-root.Z
+		if dx*dx+dz*dz>4 and not blocked(goal) then return goal end
+		-- Only advance on arrival or a current hazard, never just on target selection.
+		route.index=(route.index+1)%count
+	end
+end
 function fieldPositionPolicy:Region(name,center,size,y)
 	local x,z=size.X,size.Z
 	local longX=x>z
@@ -1857,7 +1882,7 @@ function fieldPositionPolicy:DrawPreview()
 		return
 	end
 	local center=field.Position
-	local size=self:UsableSize(field)
+	local size=self:QuadrantSize(field)
 	if not size then return end
 	local y=field.Position.Y+field.Size.Y/2+0.15
 	local _,area=self:Region(cfg.autofarm.farmposition,center,size,y)
@@ -8565,12 +8590,10 @@ do
 	local randomWholeFieldPosition=randomFieldPosition
 	randomFieldPosition=function(options,...)
 		if not options.area then return randomWholeFieldPosition(options,...) end
-		local area=options.area
-		for _=1,40 do
-			local goal=Vector3.new(area.minX+math.random()*(area.maxX-area.minX),getRootPart().Position.Y,area.minZ+math.random()*(area.maxZ-area.minZ))
-			if (not options.range or not options.origin or (goal-options.origin).Magnitude<options.range)
-				and (not options.avoid or not isPathClear(goal,options.avoid,true,options.rbc)) then return goal end
-		end
+		return fieldPositionPolicy:CoverageGoal(options,function(goal)
+			return (options.range and options.origin and (goal-options.origin).Magnitude>=options.range)
+				or (options.avoid and isPathClear(goal,options.avoid,true,options.rbc))
+		end)
 	end
 
 	handlers["Pineapple Patch"] = function(waypoint)
@@ -53589,6 +53612,10 @@ end
 					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
 					if options.range and options.origin and (options.origin - goal).Magnitude >= options.range then return false end
+					if options.area then
+						if options.avoid and isPathClear(goal,options.avoid,true,options.rbc) then return false end
+						return true
+					end
 					if options.avoid and not isPathClear(goal, options.avoid) then return false end
 					return options.loot or options.skipoverlap or
 						(not cfg.autofarm.farmballoons2 and not cfg.autofarm.farmmarks) or questTasks:check(goal)
@@ -65829,7 +65856,7 @@ end
 					if not autofarm.farmposenabled then
 						farmStep(options)
 					else
-						local origin,area=fieldPositionPolicy:Region(autofarm.farmposition,position,vector,getRootPart().Position.Y)
+						local origin,area=fieldPositionPolicy:Region(autofarm.farmposition,position,fieldPositionPolicy:IsQuadrant(autofarm.farmposition) and fieldPositionPolicy:QuadrantSize(currentField) or vector,getRootPart().Position.Y)
 						options.origin,options.area=origin,area
 						options.range=not area and 40 or nil
 						farmStep(options)
