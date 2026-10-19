@@ -192,18 +192,41 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local hx,hz=(maxX-minX)/2,(maxZ-minZ)/2
 	local inset=math.min(2,hx/4,hz/4)
 	hx,hz=hx-inset,hz-inset
-	local key=string.format("%s:%s:%s:%s",minX,maxX,minZ,maxZ)
+	local stump=currentField and currentField.Name=="Stump Field"
+	local key=string.format("%s:%s:%s:%s:%s:%s",minX,maxX,minZ,maxZ,tostring(stump),tostring(stump and options.area~=nil))
 	local root=getRootPart().Position
 	local route=self.idleLoop
 	if not route or route.key~=key then
 		route={key=key,index=1,points={}}
-		local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
+		if stump and options.area then
+			-- Green reference: two inner sides and a quarter-ellipse across the
+			-- outer corner. Mirror from the field center for all four quadrants.
+			local sx=cx>=currentField.Position.X and 1 or -1
+			local sz=cz>=currentField.Position.Z and 1 or -1
+			local ox=sx>0 and minX+inset or maxX-inset
+			local oz=sz>0 and minZ+inset or maxZ-inset
+			local rx,rz=hx*2,hz*2
+			local function add(x,z)route.points[#route.points+1]=Vector3.new(x,0,z)end
+			local nx,nz=math.max(1,math.ceil(rx/6)),math.max(1,math.ceil(rz/6))
+			for i=0,nx-1 do add(ox+sx*rx*i/nx,oz) end
+			local arcs=math.clamp(math.ceil(math.pi*(rx+rz)/4/5),8,48)
+			for i=0,arcs do
+				local angle=i*math.pi/2/arcs
+				add(ox+sx*rx*math.cos(angle),oz+sz*rz*math.sin(angle))
+			end
+			for i=1,nz-1 do add(ox,oz+sz*rz*(1-i/nz)) end
+		else
+			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
+			for i=1,count do
+				local angle=(i-1)*2*math.pi/count
+				local x,z=math.cos(angle),math.sin(angle)
+				-- The whole Stump Field uses an ellipse rather than square corners.
+				if not stump then x=math.sign(x)*math.sqrt(math.abs(x));z=math.sign(z)*math.sqrt(math.abs(z)) end
+				route.points[i]=Vector3.new(cx+hx*x,0,cz+hz*z)
+			end
+		end
 		local nearest
-		for i=1,count do
-			local angle=(i-1)*2*math.pi/count
-			local x,z=math.cos(angle),math.sin(angle)
-			local point=Vector3.new(cx+hx*math.sign(x)*math.sqrt(math.abs(x)),0,cz+hz*math.sign(z)*math.sqrt(math.abs(z)))
-			route.points[i]=point
+		for i,point in ipairs(route.points) do
 			local d=(point.X-root.X)^2+(point.Z-root.Z)^2
 			if not nearest or d<nearest then nearest=d;route.index=i end
 		end
@@ -245,3 +268,22 @@ for i=1,100 do
  root.Position=goal
 end
 print("PASS: rounded loops, field scaling, quadrant bounds, full laps, interruption resume, hazards and range")
+
+currentField={Name="Stump Field",Position=Vector3.new(0,0,0),Size=Vector3.new(100,2,80)}
+for _,sx in ipairs({-1,1})do for _,sz in ipairs({-1,1})do
+ local area={minX=sx<0 and -50 or 0,maxX=sx<0 and 0 or 50,minZ=sz<0 and -40 or 0,maxZ=sz<0 and 0 or 40}
+ root.Position=Vector3.new(sx*10,3,sz*10)
+ fieldPositionPolicy:IdleLoopGoal({area=area},clear)
+ local points=fieldPositionPolicy.idleLoop.points
+ local curved=0
+ for i,p in ipairs(points)do
+  assert(p.X>=area.minX and p.X<=area.maxX and p.Z>=area.minZ and p.Z<=area.maxZ)
+  local x=(sx*p.X-2)/46;local z=(sz*p.Z-2)/36
+  assert(x*x+z*z<=1.00001,"Stump route must cut the outer corner")
+  if x>0.1 and z>0.1 then curved+=1;assert(math.abs(x*x+z*z-1)<0.00001)end
+  local nextPoint=points[i%#points+1]
+  assert((p-nextPoint).Magnitude<=6.1,"route must remain connected")
+ end
+ assert(curved>=3,"missing broad outer arc")
+end end
+print("PASS: Stump green contour mirrored in all four quadrants, connected sides and curved outer edge")
