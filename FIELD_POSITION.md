@@ -43,3 +43,5 @@ Stump middle crossing: the restored curved footprint is unchanged. Idle movement
 Inner-edge adjustment: increased only the Stump inner diagonal cut from 38% to 58% of the radii, bringing that edge closer to the marked red line. Outer curve, original placement and middle-crossing routing are retained. Preview and barriers use the same adjusted polygon.
 
 Stump reference correction: replaced the short inner cut with a long straight side parallel to the middle crossing, spanning 84% of its length. Short inset end caps connect it to the unchanged outer curve. Route, preview, target clipping and temporary barriers share the revised polygon.
+
+Balanced-width correction: the straight inner edge is now placed at the same perpendicular distance from the middle crossing as the curve's furthest point. This is computed from the quarter-ellipse (normalized inner cut = 2 - sqrt(2)), rather than a guessed percentage. Geometry tests verify equal opposite extents in all four quadrants.
