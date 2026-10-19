@@ -46608,7 +46608,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				local ok = nil
 
 				for i2 = 1, 4 do
-					ok = ok or pcall(walkTo, spot, true)
+					ok = ok or pcall(walkTo, spot, true, 0.75)
 				end
 
 				if not ok then
@@ -46623,6 +46623,9 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 					task.wait(0.1)
 				end
 
+				-- Recheck after settling; never build from walkTo's old five-stud tolerance.
+				if distanceTo(spot,true)>0.75 then walkTo(spot,true,0.75) end
+				if distanceTo(spot,true)>0.75 or getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
 				gameApi:Event("PlayerActivesCommand", { Name = "Sprinkler Builder" })
 
 				if #positions > 1 and i < #positions then
@@ -46632,47 +46635,14 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 		end
 
 		farmState.Handle = function(farm)
-			local EquippedSprinkler = gameApi:Cache("EquippedSprinkler")
-
-			if EquippedSprinkler == "The Supreme Saturator" or EquippedSprinkler == "Basic Sprinkler" then
-				farm:Place({
-					cfg.autofarm.sprinklerpos == "Top" and position + Vector3.new(0, 0, -vector.Z / 4) or cfg.autofarm.sprinklerpos == "Bottom" and position + Vector3.new(0, 0, vector.Z / 4) or position,
-				}, EquippedSprinkler)
-			elseif EquippedSprinkler == "Silver Soakers" then
-				local place = farm.Place
-				local spots = {}
-				local spotA = position + Vector3.new(-12, 0, -12)
-				local spotB = position + Vector3.new(12, 0, 12)
-				spots[1] = spotA
-				spots[2] = spotB
-				place(farm, spots, EquippedSprinkler)
-			elseif EquippedSprinkler ~= "Golden Gushers" then
-				if EquippedSprinkler == "Diamond Drenchers" then
-					local place = farm.Place
-					local spots = {}
-					local spotA = position + Vector3.new(-16, 0, 0)
-					local spotB = position + Vector3.new(16, 0, 0)
-					local spotC = position + Vector3.new(0, 0, 16)
-					local spotD = position + Vector3.new(0, 0, -16)
-					spots[1] = spotA
-					spots[2] = spotB
-					spots[3] = spotC
-					spots[4] = spotD
-					place(farm, spots, EquippedSprinkler)
-				end
-			else
-				local place = farm.Place
-				local spots = {}
-				local spotA = position + Vector3.new(12, 0, -12)
-				local spotB = position + Vector3.new(-16, 0, -12)
-				local spotC = position + Vector3.new(0, 0, 12)
-				spots[1] = spotA
-				spots[2] = spotB
-				spots[3] = spotC
-				place(farm, spots, EquippedSprinkler)
-			end
-
-			farm.field = currentFieldName
+			return comboController:WithTaskTravel(function()
+				local field=currentField
+				if not field then return end
+				local equipped=gameApi:Cache("EquippedSprinkler")
+				-- Use the zone center itself, never a roaming origin or quadrant offset.
+				farm:Place({field.Position},equipped)
+				farm.field=field.Name
+			end)
 		end
 
 		questTasks.check = function(quest, queryPosition)
@@ -66109,7 +66079,7 @@ function showerController:Start()
  local bridge=self
  bridge.allowed=function()
   return not bridge.shuttingDown and cfg and state and not state.stop
-   and not comboController.comboPriority and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
+   and not comboController.comboPriority and not comboController:TravelBlocked() and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
    and currentField ~= nil and getHumanoid().Health > 0 and getFieldAt(getRootPart().Position) == currentField
  end
  bridge.realPMS=function(h)
@@ -67574,7 +67544,7 @@ which bees and get all 3 targets if
 			end
 
 			patternFolder.AddDropdown("Pattern Start", { "Top Left", "Top Right", "Center", "Bottom Left", "Bottom Right" }, nil, nil, "autofarm", "patternstart")
-			patternFolder.AddDropdown("Sprinkler Position", { "Top", "Center", "Bottom" }, nil, nil, "autofarm", "sprinklerpos")
+			patternFolder.AddLabel("Auto Sprinkler always places at the full field center.")
 			patternFolder.AddDropdown("Allowed Fields", availableFields, true, nil, "autofarm", "patternblacklist", { Field = true, Multiple = true, Blacklist = true })
 
 			patternFolder.AddTextBox("Import Pattern", function(importedText)
