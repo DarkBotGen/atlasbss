@@ -1814,16 +1814,13 @@ end
 function fieldPositionPolicy:QuadrantSize(field)
 	return Vector3.new(math.max(1,field.Size.X-1),0,math.max(1,field.Size.Z-1))
 end
--- A brief edge overshoot must recover by walking, not by travelling to field center.
-function fieldPositionPolicy:EdgeRecovery(field,point)
-	if not field or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
-	local top=field.Position.Y+field.Size.Y/2
-	if math.abs(point.Y-top)>12 then return end
-	local _,a=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),point.Y)
-	if point.X<a.minX-3 or point.X>a.maxX+3 or point.Z<a.minZ-3 or point.Z>a.maxZ+3 then return end
-	local insetX=math.min(2,(a.maxX-a.minX)/4)
-	local insetZ=math.min(2,(a.maxZ-a.minZ)/4)
-	return Vector3.new(math.clamp(point.X,a.minX+insetX,a.maxX-insetX),point.Y,math.clamp(point.Z,a.minZ+insetZ,a.maxZ-insetZ))
+-- The guard's outer strip is valid gathering space, even if the zone ray misses.
+function fieldPositionPolicy:InsideGuardedField(field,point)
+	if not cfg.autofarm.fieldedgeguards or self.guardField~=field or not self.guards or not self.guards.Parent then return false end
+	local center,size=field.Position,field.Size
+	return math.abs(point.X-center.X)<=size.X/2+3
+		and math.abs(point.Z-center.Z)<=size.Z/2+3
+		and math.abs(point.Y-(center.Y+size.Y/2))<=12
 end
 function fieldPositionPolicy:CoverageGoal(options,blocked)
 	local a=options.area
@@ -8607,17 +8604,7 @@ do
 
 	goToField = function()
 		if getFieldAt(getRootPart().Position) ~= currentField then
-			local recovery=fieldPositionPolicy:EdgeRecovery(currentField,getRootPart().Position)
-			if recovery then
-				smoothMovement.roam=nil
-				local deadline=os.clock()+1.5
-				repeat
-					smoothMovement:MoveTo(recovery)
-					task.wait(0.05)
-				until getFieldAt(getRootPart().Position)==currentField or os.clock()>=deadline or getHumanoid().Health<=0
-				if getFieldAt(getRootPart().Position)~=currentField then error("return",0) end
-				return
-			end
+			if fieldPositionPolicy:InsideGuardedField(currentField,getRootPart().Position) then return end
 			if not state.fasttween then
 				state.stopface = true
 			else

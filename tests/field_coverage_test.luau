@@ -232,16 +232,13 @@ end
 function fieldPositionPolicy:QuadrantSize(field)
 	return Vector3.new(math.max(1,field.Size.X-1),0,math.max(1,field.Size.Z-1))
 end
--- A brief edge overshoot must recover by walking, not by travelling to field center.
-function fieldPositionPolicy:EdgeRecovery(field,point)
-	if not field or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
-	local top=field.Position.Y+field.Size.Y/2
-	if math.abs(point.Y-top)>12 then return end
-	local _,a=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),point.Y)
-	if point.X<a.minX-3 or point.X>a.maxX+3 or point.Z<a.minZ-3 or point.Z>a.maxZ+3 then return end
-	local insetX=math.min(2,(a.maxX-a.minX)/4)
-	local insetZ=math.min(2,(a.maxZ-a.minZ)/4)
-	return Vector3.new(math.clamp(point.X,a.minX+insetX,a.maxX-insetX),point.Y,math.clamp(point.Z,a.minZ+insetZ,a.maxZ-insetZ))
+-- The guard's outer strip is valid gathering space, even if the zone ray misses.
+function fieldPositionPolicy:InsideGuardedField(field,point)
+	if not cfg.autofarm.fieldedgeguards or self.guardField~=field or not self.guards or not self.guards.Parent then return false end
+	local center,size=field.Position,field.Size
+	return math.abs(point.X-center.X)<=size.X/2+3
+		and math.abs(point.Z-center.Z)<=size.Z/2+3
+		and math.abs(point.Y-(center.Y+size.Y/2))<=12
 end
 function fieldPositionPolicy:CoverageGoal(options,blocked)
 	local a=options.area
@@ -304,13 +301,13 @@ local goal=fieldPositionPolicy:CoverageGoal(options,clear)
 assert(goal.X>=100 and goal.Z>=100)
 print("PASS: full sweep, corners, interruption resume, hazards, field changes")
 
-cfg.autofarm.farmposenabled=true
-cfg.autofarm.farmposition="Upper Left"
+cfg.autofarm.fieldedgeguards=true
 local field={Position=Vector3.new(0,0,0),Size=Vector3.new(100,2,80)}
-local goal=fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50.5,4,-40.5))
-assert(goal and goal.X>-49.5 and goal.Z>-39.5,"edge overshoot must walk inward")
-assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-100,4,-100)),"remote travel must remain enabled")
-assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50,40,-40)),"falling must retain recovery")
-cfg.autofarm.farmposenabled=false
-assert(not fieldPositionPolicy:EdgeRecovery(field,Vector3.new(-50,4,-40)))
-print("PASS: edge walk recovery, distant travel, height and toggle guards")
+fieldPositionPolicy.guardField=field
+fieldPositionPolicy.guards={Parent=workspace}
+assert(fieldPositionPolicy:InsideGuardedField(field,Vector3.new(-52.9,4,-42.9)))
+assert(not fieldPositionPolicy:InsideGuardedField(field,Vector3.new(-60,4,-50)))
+assert(not fieldPositionPolicy:InsideGuardedField(field,Vector3.new(-50,40,-40)))
+fieldPositionPolicy.guards=nil
+assert(not fieldPositionPolicy:InsideGuardedField(field,Vector3.new(-51,4,-41)))
+print("PASS: guarded strip accepted without recovery; remote, airborne and unguarded positions excluded")
