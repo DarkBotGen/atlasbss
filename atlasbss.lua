@@ -1995,10 +1995,12 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		end
 		self.idleLoop=route
 	end
+	-- Turn before reaching the exact corner, with a small speed-based lead.
+	local lead=math.clamp(getHumanoid().WalkSpeed*0.04,2,4)
 	for _=1,#route.points do
 		local p=route.points[route.index]
 		local goal=Vector3.new(p.X,root.Y,p.Z)
-		if (p.X-root.X)^2+(p.Z-root.Z)^2>4 and not blocked(goal) then return goal end
+		if (p.X-root.X)^2+(p.Z-root.Z)^2>lead*lead and not blocked(goal) then return goal end
 		route.index=route.index%#route.points+1
 	end
 end
@@ -2071,7 +2073,7 @@ function fieldPositionPolicy:TrackedAllowed(key,value,opts)
 end
 -- Four reusable local walls outside the flower footprint, only during gathering.
 function fieldPositionPolicy:RemoveGuards()
-	if self.guards then self.guards:Destroy();self.guards=nil;self.guardField=nil end
+	if self.guards then self.guards:Destroy();self.guards=nil;self.guardField=nil;self.guardKey=nil end
 end
 function fieldPositionPolicy:UpdateGuards(allowed)
 	local field=currentField
@@ -2082,10 +2084,24 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 	local center,size=field.Position,field.Size
 	if math.abs(root.Position.X-center.X)>size.X/2+3 or math.abs(root.Position.Z-center.Z)>size.Z/2+3
 		or math.abs(root.Position.Y-(center.Y+size.Y/2))>12 then self:RemoveGuards();return end
-	if self.guardField==field and self.guards and self.guards.Parent then return end
+	local quadrant=cfg.autofarm.idlefieldloop and cfg.autofarm.farmposenabled and self:IsQuadrant(cfg.autofarm.farmposition) and cfg.autofarm.farmposition or "field"
+	local key=field.Name..":"..quadrant
+	if self.guardField==field and self.guardKey==key and self.guards and self.guards.Parent then return end
 	self:RemoveGuards()
 	local folder=Instance.new("Folder");folder.Name="AtlasFieldEdgeGuards"
-	self.guards,self.guardField=folder,field
+	self.guards,self.guardField,self.guardKey=folder,field,key
+	local minX,maxX=center.X-size.X/2,center.X+size.X/2
+	local minZ,maxZ=center.Z-size.Z/2,center.Z+size.Z/2
+	if quadrant~="field" then
+		local _,area=self:Region(quadrant,center,self:QuadrantSize(field),center.Y)
+		-- Keep outer walls at the existing full-field clearance; add the inner
+		-- quadrant edges so every turn has an uninterrupted collision boundary.
+		minX=area.minX<center.X and minX or area.minX
+		maxX=area.maxX>center.X and maxX or area.maxX
+		minZ=area.minZ<center.Z and minZ or area.minZ
+		maxZ=area.maxZ>center.Z and maxZ or area.maxZ
+	end
+	local midX,midZ=(minX+maxX)/2,(minZ+maxZ)/2
 	local y=center.Y+size.Y/2+4
 	local function wall(name,x,z,width,depth)
 		local part=Instance.new("Part");part.Name=name
@@ -2098,10 +2114,10 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 	local clearance,thickness=3,2
 	local offset=clearance+thickness/2
 	local span=2*(clearance+thickness)
-	wall("Left",center.X-size.X/2-offset,center.Z,thickness,size.Z+span)
-	wall("Right",center.X+size.X/2+offset,center.Z,thickness,size.Z+span)
-	wall("Upper",center.X,center.Z-size.Z/2-offset,size.X+span,thickness)
-	wall("Lower",center.X,center.Z+size.Z/2+offset,size.X+span,thickness)
+	wall("Left",minX-offset,midZ,thickness,maxZ-minZ+span)
+	wall("Right",maxX+offset,midZ,thickness,maxZ-minZ+span)
+	wall("Upper",midX,minZ-offset,maxX-minX+span,thickness)
+	wall("Lower",midX,maxZ+offset,maxX-minX+span,thickness)
 	folder.Parent=workspace
 end
 function fieldPositionPolicy:StopPreview()

@@ -173,6 +173,7 @@ local field=Instance.new("Part",zones);field.Name="Pepper Patch";field.Position=
 cfg.autofarm.field1="Pepper Patch";cfg.autofarm.farmposition="Upper Left";cfg.autofarm.enabled=false;cfg.autofarm.showfieldarea=false
 
 local fieldPositionPolicy={UsableSize=function(_,f)return f.Size end}
+local function getHumanoid()return h end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
 	if not a then
@@ -232,10 +233,12 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		end
 		self.idleLoop=route
 	end
+	-- Turn before reaching the exact corner, with a small speed-based lead.
+	local lead=math.clamp(getHumanoid().WalkSpeed*0.04,2,4)
 	for _=1,#route.points do
 		local p=route.points[route.index]
 		local goal=Vector3.new(p.X,root.Y,p.Z)
-		if (p.X-root.X)^2+(p.Z-root.Z)^2>4 and not blocked(goal) then return goal end
+		if (p.X-root.X)^2+(p.Z-root.Z)^2>lead*lead and not blocked(goal) then return goal end
 		route.index=route.index%#route.points+1
 	end
 end

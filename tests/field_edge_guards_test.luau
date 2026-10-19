@@ -174,8 +174,32 @@ cfg.autofarm.field1="Pepper Patch";cfg.autofarm.farmposition="Upper Left";cfg.au
 
 local localPlayer=player
 local fieldPositionPolicy={}
+function fieldPositionPolicy:IsQuadrant(name)
+	return name=="Upper Left" or name=="Upper Right" or name=="Lower Left" or name=="Lower Right"
+end
+
+function fieldPositionPolicy:QuadrantSize(field)
+	return Vector3.new(math.max(1,field.Size.X-1),0,math.max(1,field.Size.Z-1))
+end
+
+function fieldPositionPolicy:Region(name,center,size,y)
+	local x,z=size.X,size.Z
+	local longX=x>z
+	if not self:IsQuadrant(name) then
+		local side=name=="Left" and -1 or name=="Right" and 1 or 0
+		return Vector3.new(center.X+(longX and side*x/2 or 0),y,center.Z+(not longX and side*z/2 or 0))
+	end
+	local side=string.find(name,"Left",1,true) and -1 or 1
+	local depth=string.find(name,"Upper",1,true) and -1 or 1
+	local sx,sz=longX and side or depth,longX and depth or side
+	local minX,maxX=center.X+(sx<0 and -x/2 or 0),center.X+(sx<0 and 0 or x/2)
+	local minZ,maxZ=center.Z+(sz<0 and -z/2 or 0),center.Z+(sz<0 and 0 or z/2)
+	local area={minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ}
+	return Vector3.new((minX+maxX)/2,y,(minZ+maxZ)/2),area
+end
+
 function fieldPositionPolicy:RemoveGuards()
-	if self.guards then self.guards:Destroy();self.guards=nil;self.guardField=nil end
+	if self.guards then self.guards:Destroy();self.guards=nil;self.guardField=nil;self.guardKey=nil end
 end
 function fieldPositionPolicy:UpdateGuards(allowed)
 	local field=currentField
@@ -186,10 +210,24 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 	local center,size=field.Position,field.Size
 	if math.abs(root.Position.X-center.X)>size.X/2+3 or math.abs(root.Position.Z-center.Z)>size.Z/2+3
 		or math.abs(root.Position.Y-(center.Y+size.Y/2))>12 then self:RemoveGuards();return end
-	if self.guardField==field and self.guards and self.guards.Parent then return end
+	local quadrant=cfg.autofarm.idlefieldloop and cfg.autofarm.farmposenabled and self:IsQuadrant(cfg.autofarm.farmposition) and cfg.autofarm.farmposition or "field"
+	local key=field.Name..":"..quadrant
+	if self.guardField==field and self.guardKey==key and self.guards and self.guards.Parent then return end
 	self:RemoveGuards()
 	local folder=Instance.new("Folder");folder.Name="AtlasFieldEdgeGuards"
-	self.guards,self.guardField=folder,field
+	self.guards,self.guardField,self.guardKey=folder,field,key
+	local minX,maxX=center.X-size.X/2,center.X+size.X/2
+	local minZ,maxZ=center.Z-size.Z/2,center.Z+size.Z/2
+	if quadrant~="field" then
+		local _,area=self:Region(quadrant,center,self:QuadrantSize(field),center.Y)
+		-- Keep outer walls at the existing full-field clearance; add the inner
+		-- quadrant edges so every turn has an uninterrupted collision boundary.
+		minX=area.minX<center.X and minX or area.minX
+		maxX=area.maxX>center.X and maxX or area.maxX
+		minZ=area.minZ<center.Z and minZ or area.minZ
+		maxZ=area.maxZ>center.Z and maxZ or area.maxZ
+	end
+	local midX,midZ=(minX+maxX)/2,(minZ+maxZ)/2
 	local y=center.Y+size.Y/2+4
 	local function wall(name,x,z,width,depth)
 		local part=Instance.new("Part");part.Name=name
@@ -202,10 +240,10 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 	local clearance,thickness=3,2
 	local offset=clearance+thickness/2
 	local span=2*(clearance+thickness)
-	wall("Left",center.X-size.X/2-offset,center.Z,thickness,size.Z+span)
-	wall("Right",center.X+size.X/2+offset,center.Z,thickness,size.Z+span)
-	wall("Upper",center.X,center.Z-size.Z/2-offset,size.X+span,thickness)
-	wall("Lower",center.X,center.Z+size.Z/2+offset,size.X+span,thickness)
+	wall("Left",minX-offset,midZ,thickness,maxZ-minZ+span)
+	wall("Right",maxX+offset,midZ,thickness,maxZ-minZ+span)
+	wall("Upper",midX,minZ-offset,maxX-minX+span,thickness)
+	wall("Lower",midX,maxZ+offset,maxX-minX+span,thickness)
 	folder.Parent=workspace
 end
 
@@ -229,3 +267,23 @@ fieldPositionPolicy:UpdateGuards(true);assert(not fieldPositionPolicy.guards)
 cfg.autofarm.fieldedgeguards=true;root.Position=Vector3.new(0,3,0)
 fieldPositionPolicy:UpdateGuards(true);assert(not fieldPositionPolicy.guards)
 print("PASS: four exterior walls, reuse, pause cleanup, death, toggle, remote position")
+
+root.Position=Vector3.new(100,24,200)
+cfg.autofarm.idlefieldloop=true;cfg.autofarm.farmposenabled=true
+for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
+ cfg.autofarm.farmposition=name
+ fieldPositionPolicy:UpdateGuards(true)
+ local folder=assert(fieldPositionPolicy.guards)
+ assert(#folder:GetChildren()==4)
+ local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
+ for _,p in ipairs(folder:GetChildren())do
+  assert(p.CanCollide and p.Transparency==1)
+  if p.Name=="Left" then assert(p.CFrame.X+p.Size.X/2<=area.minX-3)end
+  if p.Name=="Right" then assert(p.CFrame.X-p.Size.X/2>=area.maxX+3)end
+  if p.Name=="Upper" then assert(p.CFrame.Z+p.Size.Z/2<=area.minZ-3)end
+  if p.Name=="Lower" then assert(p.CFrame.Z-p.Size.Z/2>=area.maxZ+3)end
+ end
+ fieldPositionPolicy:UpdateGuards(true);assert(fieldPositionPolicy.guards==folder)
+ fieldPositionPolicy:UpdateGuards(false);assert(not fieldPositionPolicy.guards and not folder.Parent)
+end
+print("PASS: four connected quadrant edges, clearance, reuse, and normal activity cleanup")
