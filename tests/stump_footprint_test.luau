@@ -355,6 +355,39 @@ function fieldPositionPolicy:InsidePolygon(point,points)
 	end
 	return true
 end
+function fieldPositionPolicy:StumpCrossing(polygon)
+	local cached=self.stumpCrossing
+	if cached and cached.polygon==polygon then return cached.a,cached.b end
+	local a,b,best=1,2,-1
+	for i=1,#polygon-1 do
+		for j=i+1,#polygon do
+			local dx,dz=polygon[i].X-polygon[j].X,polygon[i].Z-polygon[j].Z
+			local distance=dx*dx+dz*dz
+			if distance>best then a,b,best=i,j,distance end
+		end
+	end
+	self.stumpCrossing={polygon=polygon,a=a,b=b}
+	return a,b
+end
+function fieldPositionPolicy:StumpRoute(polygon)
+	local a,b=self:StumpCrossing(polygon)
+	local points={}
+	local function edge(p,q)
+		local count=math.max(1,math.ceil((q-p).Magnitude/6))
+		for j=0,count-1 do points[#points+1]=p+(q-p)*(j/count) end
+	end
+	-- Cover each perimeter arc once, crossing the interior between arcs.
+	-- The crossing is the only repeated edge: the shortest connection between its ends.
+	for _,step in ipairs({1,-1}) do
+		local index=a
+		while index~=b do
+			local nextIndex=(index-1+step)%#polygon+1
+			edge(polygon[index],polygon[nextIndex]);index=nextIndex
+		end
+		edge(polygon[b],polygon[a])
+	end
+	return points
+end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
 	if not a then
@@ -382,11 +415,7 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		route={key=key,index=1,points={}}
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
-			for i,p in ipairs(polygon) do
-				local q=polygon[i%#polygon+1]
-				local count=math.max(1,math.ceil((q-p).Magnitude/6))
-				for j=0,count-1 do route.points[#route.points+1]=p+(q-p)*(j/count) end
-			end
+			route.points=self:StumpRoute(polygon)
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -615,6 +644,9 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon)
 		local start,finish=Vector3.new(a.X,y+.03,a.Z),Vector3.new(b.X,y+.03,b.Z)
 		part(Vector3.new(.3,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.05)
 	end
+	local a,b=self:StumpCrossing(polygon)
+	local start,finish=Vector3.new(polygon[a].X,y+.05,polygon[a].Z),Vector3.new(polygon[b].X,y+.05,polygon[b].Z)
+	part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	for i=#self.parts,index+1,-1 do self.parts[i]:Destroy();self.parts[i]=nil end
 end
 function fieldPositionPolicy:DrawPreview()
@@ -698,6 +730,24 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  cfg.autofarm.farmposition=name
  local points=assert(fieldPositionPolicy:StumpPolygon(field))
  assert(#points==19)
+ local ia,ib=fieldPositionPolicy:StumpCrossing(points)
+ local perimeter=0
+ for i,p in ipairs(points)do perimeter+=(points[i%#points+1]-p).Magnitude end
+ local route=fieldPositionPolicy:StumpRoute(points)
+ local length=0;local interior=0
+ for i,p in ipairs(route)do
+  length+=(route[i%#route+1]-p).Magnitude
+  assert(fieldPositionPolicy:InsidePolygon(p,points),"middle crossing must stay inside barriers")
+  local boundary=false
+  for j,q in ipairs(points)do
+   local r=points[j%#points+1]
+   if math.abs((r.X-q.X)*(p.Z-q.Z)-(r.Z-q.Z)*(p.X-q.X))<.001 then boundary=true end
+  end
+  if not boundary then interior+=1 end
+ end
+ assert(math.abs(length-perimeter-2*(points[ib]-points[ia]).Magnitude)<.001,"must cover perimeter once plus two direct crossings")
+ assert(interior>2,"route must walk through the interior")
+
  local centroid=Vector3.zero
  for _,p in ipairs(points)do centroid+=p end
  centroid/=#points
@@ -717,7 +767,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  assert(not fieldPositionPolicy:Allowed(outside,{area=area}),"empty outer corner must be excluded")
  fieldPositionPolicy:DrawPreview()
  local folder=assert(fieldPositionPolicy.preview)
- assert(fieldPositionPolicy.previewMode=="stump" and #folder:GetChildren()==32+#points)
+ assert(fieldPositionPolicy.previewMode=="stump" and #folder:GetChildren()==33+#points)
  for _,p in ipairs(folder:GetChildren())do
   assert(not p.CanCollide and not p.CanTouch and not p.CanQuery)
   if p.Transparency==0.82 then
@@ -726,7 +776,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
    end end
   end
  end
- for i=1,100 do fieldPositionPolicy:DrawPreview();assert(fieldPositionPolicy.preview==folder and #folder:GetChildren()==32+#points)end
+ for i=1,100 do fieldPositionPolicy:DrawPreview();assert(fieldPositionPolicy.preview==folder and #folder:GetChildren()==33+#points)end
  root.Position=Vector3.new(centroid.X,24,centroid.Z)
  fieldPositionPolicy.idleDrive={field=field}
  fieldPositionPolicy:UpdateGuards(true)

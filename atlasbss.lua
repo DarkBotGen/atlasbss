@@ -1997,6 +1997,39 @@ function fieldPositionPolicy:InsidePolygon(point,points)
 	end
 	return true
 end
+function fieldPositionPolicy:StumpCrossing(polygon)
+	local cached=self.stumpCrossing
+	if cached and cached.polygon==polygon then return cached.a,cached.b end
+	local a,b,best=1,2,-1
+	for i=1,#polygon-1 do
+		for j=i+1,#polygon do
+			local dx,dz=polygon[i].X-polygon[j].X,polygon[i].Z-polygon[j].Z
+			local distance=dx*dx+dz*dz
+			if distance>best then a,b,best=i,j,distance end
+		end
+	end
+	self.stumpCrossing={polygon=polygon,a=a,b=b}
+	return a,b
+end
+function fieldPositionPolicy:StumpRoute(polygon)
+	local a,b=self:StumpCrossing(polygon)
+	local points={}
+	local function edge(p,q)
+		local count=math.max(1,math.ceil((q-p).Magnitude/6))
+		for j=0,count-1 do points[#points+1]=p+(q-p)*(j/count) end
+	end
+	-- Cover each perimeter arc once, crossing the interior between arcs.
+	-- The crossing is the only repeated edge: the shortest connection between its ends.
+	for _,step in ipairs({1,-1}) do
+		local index=a
+		while index~=b do
+			local nextIndex=(index-1+step)%#polygon+1
+			edge(polygon[index],polygon[nextIndex]);index=nextIndex
+		end
+		edge(polygon[b],polygon[a])
+	end
+	return points
+end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
 	if not a then
@@ -2024,11 +2057,7 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		route={key=key,index=1,points={}}
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
-			for i,p in ipairs(polygon) do
-				local q=polygon[i%#polygon+1]
-				local count=math.max(1,math.ceil((q-p).Magnitude/6))
-				for j=0,count-1 do route.points[#route.points+1]=p+(q-p)*(j/count) end
-			end
+			route.points=self:StumpRoute(polygon)
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -2257,6 +2286,9 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon)
 		local start,finish=Vector3.new(a.X,y+.03,a.Z),Vector3.new(b.X,y+.03,b.Z)
 		part(Vector3.new(.3,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.05)
 	end
+	local a,b=self:StumpCrossing(polygon)
+	local start,finish=Vector3.new(polygon[a].X,y+.05,polygon[a].Z),Vector3.new(polygon[b].X,y+.05,polygon[b].Z)
+	part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	for i=#self.parts,index+1,-1 do self.parts[i]:Destroy();self.parts[i]=nil end
 end
 function fieldPositionPolicy:DrawPreview()
