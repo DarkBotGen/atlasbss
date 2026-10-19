@@ -193,6 +193,8 @@ local cfg = {
 		farmposition = false,
 		strictquadrant = false,
 		idlefieldloop = false,
+		idlepatternmass = true,
+		idlepattern140 = false,
 		stumpsmileyonly = false,
 		showfieldarea = false,
 		fieldedgeguards = true,
@@ -1894,6 +1896,7 @@ function fieldPositionPolicy:ReleaseIdle()
 		RunService:UnbindFromRenderStep("AtlasIdleLoopMovement")
 		local char=localPlayer.Character
 		local h=char and char:FindFirstChildOfClass("Humanoid")
+		if drive.speedHumanoid and drive.speedHumanoid.Parent and drive.speedHumanoid.WalkSpeed==drive.assignedSpeed then drive.speedHumanoid.WalkSpeed=drive.originalSpeed end
 		if h then h:Move(Vector3.zero,false) end
 		if drive.controls and drive.restoreControls then pcall(function()drive.controls:Enable()end) end
 	end
@@ -1927,13 +1930,30 @@ function fieldPositionPolicy:StartIdle(makeGoal,allowed)
 	drive.makeGoal,drive.allowed=makeGoal,allowed
 	self:DriveIdle()
 end
+function fieldPositionPolicy:ApplyIdlePhysics(drive,h,root)
+	if cfg.autofarm.idlepatternmass and not self.idleMass then
+		local base=root.CurrentPhysicalProperties
+		if base then
+			local assigned=PhysicalProperties.new(math.clamp(base.Density*10,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
+			self.idleMass={root=root,original=root.CustomPhysicalProperties,massless=root.Massless,assigned=assigned}
+			root.Massless=false;root.CustomPhysicalProperties=assigned
+		end
+	end
+	if cfg.autofarm.idlepattern140 then
+		if not drive.speedHumanoid then drive.speedHumanoid=h;drive.originalSpeed=h.WalkSpeed end
+		if drive.assignedSpeed and h.WalkSpeed~=drive.assignedSpeed then drive.originalSpeed=h.WalkSpeed end
+		h.WalkSpeed=140;drive.assignedSpeed=140
+	end
+end
 function fieldPositionPolicy:DriveIdle()
 	local drive=self.idleDrive
 	if not drive or state.stop or not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.activityStatus~=1 then return end
 	local goal=drive.makeGoal()
 	local h=getHumanoid()
 	if not goal or not drive.allowed(goal) then h:Move(Vector3.zero,false);return end
-	local delta=goal-getRootPart().Position
+	local root=getRootPart()
+	self:ApplyIdlePhysics(drive,h,root)
+	local delta=goal-root.Position
 	local direction=Vector3.new(delta.X,0,delta.Z)
 	h:Move(direction.Magnitude>0.05 and direction.Unit or Vector3.zero,false)
 end
@@ -2119,6 +2139,19 @@ function fieldPositionPolicy:UpdateGuards(allowed)
 		or math.abs(root.Position.Y-(center.Y+size.Y/2))>12 then self:RemoveGuards();return end
 	local quadrant=cfg.autofarm.idlefieldloop and cfg.autofarm.farmposenabled and self:IsQuadrant(cfg.autofarm.farmposition) and cfg.autofarm.farmposition or "field"
 	local key=field.Name..":"..quadrant
+	-- Do not close a collision perimeter around a player approaching from outside.
+	-- Re-arm only after reaching the actual footprint, not merely the same field.
+	if cfg.autofarm.idlefieldloop and not self.idleDrive then self:RemoveGuards();return end
+	if self.guardField~=field or self.guardKey~=key or not self.guards or not self.guards.Parent then
+		local polygon=quadrant~="field" and self:StumpPolygon(field)
+		local inside
+		if polygon then inside=self:InsidePolygon(root.Position,polygon)
+		elseif quadrant~="field" then
+			local _,area=self:Region(quadrant,center,self:QuadrantSize(field),root.Position.Y)
+			inside=root.Position.X>=area.minX and root.Position.X<=area.maxX and root.Position.Z>=area.minZ and root.Position.Z<=area.maxZ
+		else inside=math.abs(root.Position.X-center.X)<=size.X/2 and math.abs(root.Position.Z-center.Z)<=size.Z/2 end
+		if not inside then self:RemoveGuards();return end
+	end
 	if self.guardField==field and self.guardKey==key and self.guards and self.guards.Parent then return end
 	self:RemoveGuards()
 	local folder=Instance.new("Folder");folder.Name="AtlasFieldEdgeGuards"
@@ -67588,6 +67621,8 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
 				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly")
+				farmFolder.AddSwitch("Idle Pattern Density", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepatternmass")
+				farmFolder.AddSwitch("Idle Pattern 140 PMS", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepattern140")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
 				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
 				farmFolder.AddLabel("Preview works while farming is off. Stump visuals follow its trimmed idle footprint.")
