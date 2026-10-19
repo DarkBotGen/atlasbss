@@ -2786,7 +2786,6 @@ function comboController:WithTaskTravel(callback,...)
 end
 
 function comboController:Available()
-	if fieldPositionPolicy:SmileyOnly() then return false end
 	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
@@ -2847,7 +2846,7 @@ end
 
 function comboController:Begin(job, h, root)
 	fieldPositionPolicy:ReleaseIdle()
-	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
+	if not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
@@ -2941,7 +2940,7 @@ function comboController:Tick()
 		end
 	end
 	if not job then job=self:YieldLanding(root) end
-	if job and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
+	if job and not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
 	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
@@ -47414,7 +47413,7 @@ function gatheringPriorities:Allowed(position, opts, rootPosition)
 end
 
 function gatheringPriorities:Enabled(category, opts)
-	if fieldPositionPolicy:SmileyOnly() then return category=="Duped Smiley" end
+	if fieldPositionPolicy:SmileyOnly() then return category=="Duped Smiley" or category=="Combo Coconuts" end
 	if opts.mondotokens and category ~= "Tokens" and category ~= "Priority Tokens" and category ~= "Token Links" and category ~= "Duped Tokens" and category ~= "Duped Smiley" and category ~= "Duped Bear" then return false end
 	local farm = cfg.autofarm
 	if category == "Blooms" then return not opts.loot and opts.blooms and farm.farmblooms end
@@ -47535,6 +47534,7 @@ function gatheringPriorities:Pick(opts, stopBefore)
 end
 
 function gatheringPriorities:ShouldPreempt()
+	if fieldPositionPolicy:SmileyOnly() and self.activeCategory~="Combo Coconuts" and self.activeCategory~="Duped Smiley" then return true end
 	if showerController.active then return true end
 	if self.activeCategory == "Combo Coconuts" then return false end
 	if self.activeCategory ~= "Combo Coconuts" and self:Candidate("Combo Coconuts", self.activeOptions or {}, getRootPart().Position) then return true end
@@ -47760,6 +47760,8 @@ end
 		pickTarget = function(opts)
 			if fieldPositionPolicy:SmileyOnly() then
 				opts.area=fieldPositionPolicy:StrictArea() or opts.area
+				local kind,object=gatheringPriorities:Candidate("Combo Coconuts",opts,getRootPart().Position)
+				if kind then return kind,object end
 				return gatheringPriorities:Candidate("Duped Smiley",opts,getRootPart().Position)
 			end
 			opts.area=fieldPositionPolicy:StrictArea() or opts.area
@@ -53345,7 +53347,7 @@ end
 
 			while true do
 				local options=gatheringPriorities.activeOptions
-				if not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
+				if not (comboSession and fieldPositionPolicy:SmileyOnly()) and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
@@ -66321,8 +66323,22 @@ end
 					end
 
 					closePopups()
-					v127()
-					v134()
+					if cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and cfg.autofarm.field1=="Stump Field" then
+						-- Exclusive Stump mode: no toys, planters, combat, conversion or other collection jobs.
+						if comboController.active or comboController.comboPriority then return end
+						setField("Stump Field")
+						reportStatus(1,"Stump Field")
+						goToField()
+						local options={}
+						if cfg.autofarm.farmposenabled then
+							local origin,area=fieldPositionPolicy:Region(cfg.autofarm.farmposition,position,fieldPositionPolicy:IsQuadrant(cfg.autofarm.farmposition) and fieldPositionPolicy:QuadrantSize(currentField) or vector,getRootPart().Position.Y)
+							options.origin,options.area,options.range=origin,area,not area and 40 or nil
+						end
+						farmStep(options)
+					else
+						v127()
+						v134()
+					end
 				end)
 
 				if not n and O ~= "return" and not string.find(O, "invalid key to 'next'", 1, true) then
@@ -67620,7 +67636,7 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
-				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly")
+				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt Stump idle. Other tasks and conversion are skipped while enabled."})
 				farmFolder.AddSwitch("Idle Pattern Density", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepatternmass")
 				farmFolder.AddSwitch("Idle Pattern 140 PMS", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepattern140")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")

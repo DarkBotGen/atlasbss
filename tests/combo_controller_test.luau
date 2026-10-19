@@ -748,7 +748,6 @@ function comboController:WithTaskTravel(callback,...)
 end
 
 function comboController:Available()
-	if fieldPositionPolicy:SmileyOnly() then return false end
 	if self:TravelBlocked() then return false end
 	local focused=self.comboPriority or self.ownPriority or self:WantsTeamCombo()
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
@@ -809,7 +808,7 @@ end
 
 function comboController:Begin(job, h, root)
 	fieldPositionPolicy:ReleaseIdle()
-	if not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
+	if not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
@@ -903,7 +902,7 @@ function comboController:Tick()
 		end
 	end
 	if not job then job=self:YieldLanding(root) end
-	if job and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
+	if job and not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
 	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
@@ -1197,7 +1196,7 @@ local collectObject
 
 			while true do
 				local options=gatheringPriorities.activeOptions
-				if not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
+				if not (comboSession and fieldPositionPolicy:SmileyOnly()) and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end

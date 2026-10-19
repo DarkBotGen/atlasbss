@@ -744,7 +744,7 @@ print("PASS: four mirrored trimmed Stump shapes, contained preview fill, part re
 
 local gatheringPriorities={}
 function gatheringPriorities:Enabled(category, opts)
-	if fieldPositionPolicy:SmileyOnly() then return category=="Duped Smiley" end
+	if fieldPositionPolicy:SmileyOnly() then return category=="Duped Smiley" or category=="Combo Coconuts" end
 	if opts.mondotokens and category ~= "Tokens" and category ~= "Priority Tokens" and category ~= "Token Links" and category ~= "Duped Tokens" and category ~= "Duped Smiley" and category ~= "Duped Bear" then return false end
 	local farm = cfg.autofarm
 	if category == "Blooms" then return not opts.loot and opts.blooms and farm.farmblooms end
@@ -773,10 +773,11 @@ end
 
 field.Name="Stump Field";cfg.autofarm.stumpsmileyonly=true
 assert(gatheringPriorities:Enabled("Duped Smiley",{}))
-for _,category in ipairs({"Petals","Blooms","Tokens","Token Links","Precise Targets","Showers","Combo Coconuts"})do
+assert(gatheringPriorities:Enabled("Combo Coconuts",{}))
+for _,category in ipairs({"Petals","Blooms","Tokens","Token Links","Precise Targets","Showers"})do
  assert(not gatheringPriorities:Enabled(category,{}),"non-smiley category interrupted Stump idle")
 end
-print("PASS: only smileys eligible to interrupt optional Stump idle mode")
+print("PASS: only combos and smileys eligible to interrupt exclusive Stump idle mode")
 
 local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
 
