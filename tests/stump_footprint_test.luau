@@ -323,9 +323,9 @@ function fieldPositionPolicy:StumpAlignmentOffset(field)
 	local right=field and field.CFrame and field.CFrame.RightVector
 	right=right and Vector3.new(right.X,0,right.Z) or Vector3.new(1,0,0)
 	if right.Magnitude<0.01 then right=Vector3.new(1,0,0) end
-	-- The previewed footprint sits about four studs left of the flower field center.
+	-- The previewed footprint sits about eight studs right of the flower field center.
 	-- Keep this shared so routes, previews, and barriers stay aligned on every client.
-	self.stumpAlignment=right.Unit*4
+	self.stumpAlignment=-right.Unit*8
 	return self.stumpAlignment
 end
 function fieldPositionPolicy:StumpPolygon(field,area)
@@ -1050,7 +1050,7 @@ print("PASS: all four previews, red empty/green occupied labels, live updates, b
 
 field.Name="Stump Field";currentField=field
 local offset=fieldPositionPolicy:StumpAlignmentOffset()
-assert(math.abs(offset.Magnitude-4)<.00001 and offset.Y==0)
+assert(math.abs(offset.Magnitude-8)<.00001 and offset.Y==0)
 workspace.CurrentCamera.CFrame={RightVector=Vector3.new(-1,0,0)}
 assert(fieldPositionPolicy:StumpAlignmentOffset()==offset,"camera orbit must not change alignment")
 local minX,maxX,minZ,maxZ=math.huge,-math.huge,math.huge,-math.huge
@@ -1062,4 +1062,4 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
 end
 assert(math.abs((minX+maxX)/2-field.Position.X-offset.X)<.0001)
 assert(math.abs((minZ+maxZ)/2-field.Position.Z-offset.Z)<.0001)
-print("PASS: four-stud shared alignment, consistent four-quadrant center, camera-independent after capture")
+print("PASS: eight-stud reversed shared alignment, consistent four-quadrant center, camera-independent after capture")
