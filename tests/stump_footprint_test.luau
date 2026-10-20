@@ -394,12 +394,50 @@ function fieldPositionPolicy:StumpRoute(polygon)
 	end
 	return points
 end
-function fieldPositionPolicy:StumpCenterRoute(polygon)
+function fieldPositionPolicy:StumpSweep(polygon)
+	local cached=self.stumpSweeps and self.stumpSweeps[polygon]
+	if cached then return cached.points,cached.lanes,cached.spacing end
 	local ia,ib=self:StumpCrossing(polygon)
-	local a,b=polygon[ia],polygon[ib]
-	-- Bubble reach makes side strips redundant: travel end-to-end on the
-	-- middle only, reversing directly without waypoint or perimeter detours.
-	return {a,b},{{a=a,b=b,offset=0}},6
+	local origin=polygon[ia]
+	local along=(polygon[ib]-origin).Unit
+	local normal=Vector3.new(-along.Z,0,along.X)
+	local low,high=math.huge,-math.huge
+	local uv={}
+	for i,p in ipairs(polygon) do
+		local d=p-origin
+		local u,v=d:Dot(along),d:Dot(normal)
+		uv[i]={u=u,v=v};low=math.min(low,v);high=math.max(high,v)
+	end
+	local count=math.max(3,math.ceil((high-low)/6))
+	if count%2==0 then count+=1 end -- one lane lies on the balanced middle crossing
+	local spacing=(high-low)/count
+	local points,lanes={},{}
+	local function append(p)
+		local previous=points[#points]
+		if not previous then points[1]=p;return end
+		local steps=math.max(1,math.ceil((p-previous).Magnitude/6))
+		for j=1,steps do points[#points+1]=previous+(p-previous)*(j/steps) end
+	end
+	for i=1,count do
+		local v=low+(i-.5)*spacing
+		local left,right=math.huge,-math.huge
+		for j,a in ipairs(uv) do
+			local b=uv[j%#uv+1]
+			if math.abs(b.v-a.v)>0.000001 and v>=math.min(a.v,b.v) and v<=math.max(a.v,b.v) then
+				local u=a.u+(b.u-a.u)*(v-a.v)/(b.v-a.v)
+				left,right=math.min(left,u),math.max(right,u)
+			end
+		end
+		if right>left then
+			local a,b=origin+along*left+normal*v,origin+along*right+normal*v
+			lanes[#lanes+1]={a=a,b=b,offset=v}
+			if i%2==1 then append(a);append(b) else append(b);append(a) end
+		end
+	end
+	self.stumpSweeps=self.stumpSweeps or {};self.stumpSweepCount=self.stumpSweepCount or 0
+	if self.stumpSweepCount>=4 then self.stumpSweeps={};self.stumpSweepCount=0 end
+	self.stumpSweeps[polygon]={points=points,lanes=lanes,spacing=spacing};self.stumpSweepCount+=1
+	return points,lanes,spacing
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
@@ -429,7 +467,7 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
 			if cfg.autofarm.stumpcoverage then
-				route.points,route.lanes,route.spacing=self:StumpCenterRoute(polygon)
+				route.points,route.lanes,route.spacing=self:StumpSweep(polygon)
 				route.pingpong,route.direction=true,1
 			else route.points=self:StumpRoute(polygon) end
 		else
@@ -677,7 +715,7 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 		part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	end
 	if cfg.autofarm.stumpcoverage then
-		local _,lanes=self:StumpCenterRoute(polygon)
+		local _,lanes=self:StumpSweep(polygon)
 		for _,lane in ipairs(lanes) do line(lane.a,lane.b) end
 	else
 		local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
@@ -968,8 +1006,8 @@ h.WalkSpeed=30
 for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  cfg.autofarm.farmposition=name
  local polygon=fieldPositionPolicy:StumpPolygon(field)
- local points,lanes,spacing=fieldPositionPolicy:StumpCenterRoute(polygon)
- assert(#lanes==1 and #points==2 and spacing<=6)
+ local points,lanes,spacing=fieldPositionPolicy:StumpSweep(polygon)
+ assert(#lanes>=3 and #lanes%2==1 and spacing<=6)
  local center=0
  for i,lane in ipairs(lanes)do
   if math.abs(lane.offset)<.0001 then center+=1 end
@@ -978,7 +1016,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  assert(center==1,"one middle lane per sweep")
  for i,p in ipairs(points)do
   assert(fieldPositionPolicy:InsidePolygon(p,polygon))
-  if i>1 then assert((p-points[i-1]).Magnitude>0)end
+  if i>1 then assert((p-points[i-1]).Magnitude<=6.00001)end
  end
  local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
  fieldPositionPolicy.idleLoop=nil
@@ -996,7 +1034,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  assert(#fieldPositionPolicy.preview:GetChildren()==32+#polygon+#lanes)
  fieldPositionPolicy:StopPreview()
 end
-print("PASS: center line only, two endpoints, no side strips, endpoint reversal and single-line preview")
+print("PASS: restored evenly spaced passes, one center pass, contained connectors, endpoint reversal and lane preview")
 
 field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name
 cfg.autofarm.showfieldarea=true;cfg.autofarm.showallstump=true
