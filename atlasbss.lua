@@ -44903,12 +44903,27 @@ do
 								return
 							end
 
+							-- Never issue another roll without authoritative data for this cell.
+							local nextColumn = type(feedHoneycomb)=="table" and feedHoneycomb["x" .. cellX]
+							local nextBee = type(nextColumn)=="table" and nextColumn["y" .. cellY]
+							if type(nextBee)~="table" or not nextBee.Type then
+								finished = true
+								controls["Auto Mutations"].Set(false)
+								logger.warn("Mutation rolling stopped: server returned no bee data")
+								return
+							end
+
 							gameApi:CacheSet({ "Eggs", feedItem }, ConstructHiveCellFromEgg)
 							gameApi:CacheSet("Honeycomb", feedHoneycomb)
 							gameApi:CacheSet("DiscoveredBees", feedDiscovered)
 							gameApi:CacheSet({ "Totals", "EggUses" }, feedEggUses)
-							beeData = feedHoneycomb["x" .. cellX]["y" .. cellY]
-							task.wait(0.3)
+							beeData = nextBee
+							if feedItem == "RoyalJelly" then
+								-- One request at a time; the next iteration checks this returned bee.
+								RunService.Heartbeat:Wait()
+							else
+								task.wait(0.3)
+							end
 						end
 					end
 				end
