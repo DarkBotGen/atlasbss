@@ -318,6 +318,15 @@ end
 function fieldPositionPolicy:SmileyOnly()
 	return cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and currentField and currentField.Name=="Stump Field"
 end
+function fieldPositionPolicy:StumpAlignmentOffset(field)
+	if self.stumpAlignment then return self.stumpAlignment end
+	local right=field and field.CFrame and field.CFrame.RightVector
+	right=right and Vector3.new(right.X,0,right.Z) or Vector3.new(1,0,0)
+	if right.Magnitude<0.01 then right=Vector3.new(1,0,0) end
+	-- Use field-right so every account shares the same one-stud correction.
+	self.stumpAlignment=right.Unit
+	return self.stumpAlignment
+end
 function fieldPositionPolicy:StumpPolygon(field,area)
 	if not field or field.Name~="Stump Field" or not cfg.autofarm.idlefieldloop then return end
 	if not area then
@@ -342,6 +351,8 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
 	end
 	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*inner)
+	local alignment=self:StumpAlignmentOffset(field)
+	for i,p in ipairs(points) do points[i]=p+alignment end
 	self.stumpShape={key=key,points=points}
 	self.stumpShapes=self.stumpShapes or {};self.stumpShapeCount=self.stumpShapeCount or 0
 	if self.stumpShapeCount>=4 then self.stumpShapes={};self.stumpShapeCount=0 end
@@ -1035,3 +1046,19 @@ cfg.autofarm.showallstump=false;fieldPositionPolicy:DrawPreview()
 assert(not all.Parent and fieldPositionPolicy.previewMode=="stump" and not fieldPositionPolicy.allStumpViews)
 fieldPositionPolicy:StopPreview();assert(not fieldPositionPolicy.preview and not connections:Get("fieldAreaPreview"))
 print("PASS: all four previews, red empty/green occupied labels, live updates, bounded part reuse and cleanup")
+
+field.Name="Stump Field";currentField=field
+local offset=fieldPositionPolicy:StumpAlignmentOffset()
+assert(math.abs(offset.Magnitude-1)<.00001 and offset.Y==0)
+workspace.CurrentCamera.CFrame={RightVector=Vector3.new(-1,0,0)}
+assert(fieldPositionPolicy:StumpAlignmentOffset()==offset,"camera orbit must not change alignment")
+local minX,maxX,minZ,maxZ=math.huge,-math.huge,math.huge,-math.huge
+for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
+ local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
+ for _,p in ipairs(fieldPositionPolicy:StumpPolygon(field,area))do
+  minX=math.min(minX,p.X);maxX=math.max(maxX,p.X);minZ=math.min(minZ,p.Z);maxZ=math.max(maxZ,p.Z)
+ end
+end
+assert(math.abs((minX+maxX)/2-field.Position.X-offset.X)<.0001)
+assert(math.abs((minZ+maxZ)/2-field.Position.Z-offset.Z)<.0001)
+print("PASS: one-stud shared alignment, consistent four-quadrant center, camera-independent after capture")

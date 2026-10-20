@@ -1961,6 +1961,15 @@ end
 function fieldPositionPolicy:SmileyOnly()
 	return cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and currentField and currentField.Name=="Stump Field"
 end
+function fieldPositionPolicy:StumpAlignmentOffset(field)
+	if self.stumpAlignment then return self.stumpAlignment end
+	local right=field and field.CFrame and field.CFrame.RightVector
+	right=right and Vector3.new(right.X,0,right.Z) or Vector3.new(1,0,0)
+	if right.Magnitude<0.01 then right=Vector3.new(1,0,0) end
+	-- Use field-right so every account shares the same one-stud correction.
+	self.stumpAlignment=right.Unit
+	return self.stumpAlignment
+end
 function fieldPositionPolicy:StumpPolygon(field,area)
 	if not field or field.Name~="Stump Field" or not cfg.autofarm.idlefieldloop then return end
 	if not area then
@@ -1985,6 +1994,8 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 		points[#points+1]=Vector3.new(ox+sx*rx*math.cos(angle),0,oz+sz*rz*math.sin(angle))
 	end
 	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*inner)
+	local alignment=self:StumpAlignmentOffset(field)
+	for i,p in ipairs(points) do points[i]=p+alignment end
 	self.stumpShape={key=key,points=points}
 	self.stumpShapes=self.stumpShapes or {};self.stumpShapeCount=self.stumpShapeCount or 0
 	if self.stumpShapeCount>=4 then self.stumpShapes={};self.stumpShapeCount=0 end
