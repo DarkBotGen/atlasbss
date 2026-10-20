@@ -1959,7 +1959,7 @@ function fieldPositionPolicy:DriveIdle()
 	h:Move(direction.Magnitude>0.05 and direction.Unit or Vector3.zero,false)
 end
 function fieldPositionPolicy:SmileyOnly()
-	return cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and currentField and currentField.Name=="Stump Field"
+	return cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and currentField~=nil
 end
 function fieldPositionPolicy:StumpAlignmentOffset(field)
 	if self.stumpAlignment then return self.stumpAlignment end
@@ -2280,6 +2280,19 @@ function fieldPositionPolicy:StopPreview()
 	connections:Cancel("fieldAreaPreview")
 	if self.preview then self.preview:Destroy();self.preview=nil end
 	self.parts=nil;self.previewMode=nil;self.allStumpViews=nil
+	self.drawnPolygon,self.drawnY,self.drawnColor,self.drawnLabel=nil,nil,nil,nil
+	self.coverageField,self.coverageShapes=nil,nil
+end
+function fieldPositionPolicy:CoveragePolygon(field,area)
+	local stump=self:StumpPolygon(field,area)
+	if stump then return stump end
+	if self.coverageField~=field then self.coverageField=field;self.coverageShapes={} end
+	local key=string.format("%s:%s:%s:%s",area.minX,area.maxX,area.minZ,area.maxZ)
+	local cached=self.coverageShapes[key]
+	if cached then return cached end
+	local polygon={Vector3.new(area.minX,0,area.minZ),Vector3.new(area.maxX,0,area.minZ),Vector3.new(area.maxX,0,area.maxZ),Vector3.new(area.minX,0,area.maxZ)}
+	self.coverageShapes[key]=polygon
+	return polygon
 end
 function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 	view=view or self
@@ -2290,9 +2303,12 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 	view.previewMode="stump"
 	if not view.preview or not view.preview.Parent then
 		view.preview=Instance.new("Folder");view.preview.Name=view.name or "AtlasFieldAreaPreview";view.preview.Parent=view.parent or workspace;view.parts={}
+		view.drawnPolygon=nil
 	end
 	local y=field.Position.Y+field.Size.Y/2+0.15
 	local color=view.color or Color3.fromRGB(65,230,130)
+	if view.drawnPolygon==polygon and view.drawnY==y and view.drawnColor==color and view.drawnLabel==view.label then return end
+	view.drawnPolygon,view.drawnY,view.drawnColor,view.drawnLabel=polygon,y,color,view.label
 	local index=0
 	local function part(size,cf,transparency)
 		index+=1
@@ -2318,9 +2334,10 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 		return left,right
 	end
 	-- Conservative slices stay inside the polygon, including both trimmed corners.
-	for i=0,31 do
-		local z0=minZ+(maxZ-minZ)*i/32
-		local z1=minZ+(maxZ-minZ)*(i+1)/32
+	local slices=#polygon==4 and 1 or 32
+	for i=0,slices-1 do
+		local z0=minZ+(maxZ-minZ)*i/slices
+		local z1=minZ+(maxZ-minZ)*(i+1)/slices
 		local l0,r0=span(z0+0.00001);local l1,r1=span(z1-0.00001)
 		local left,right=math.max(l0,l1),math.min(r0,r1)
 		part(Vector3.new(math.max(.01,right-left),.12,z1-z0),CFrame.new((left+right)/2,y,(z0+z1)/2),right-left>=.02 and .82 or 1)
@@ -2334,7 +2351,9 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 		local start,finish=Vector3.new(a.X,y+.05,a.Z),Vector3.new(b.X,y+.05,b.Z)
 		part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	end
-	local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
+	if field.Name=="Stump Field" and cfg.autofarm.idlefieldloop then
+		local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
+	end
 	if view.label then
 		local center=Vector3.zero
 		for _,p in ipairs(polygon) do center+=p end
@@ -2349,10 +2368,10 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 	end
 	for i=#view.parts,index+1,-1 do view.parts[i]:Destroy();view.parts[i]=nil end
 end
-function fieldPositionPolicy:StumpOccupants(field,polygon)
+function fieldPositionPolicy:StumpOccupants(field,polygon,players)
 	local names={}
 	local top=field.Position.Y+field.Size.Y/2
-	for _,player in ipairs(getService("Players"):GetPlayers()) do
+	for _,player in ipairs(players or getService("Players"):GetPlayers()) do
 		local char=player.Character
 		local root=char and char:FindFirstChild("HumanoidRootPart")
 		local h=char and char:FindFirstChildOfClass("Humanoid")
@@ -2368,13 +2387,14 @@ function fieldPositionPolicy:DrawAllStump(field)
 	end
 	self.previewMode="stumpAll"
 	if not self.preview or not self.preview.Parent then
-		self.preview=Instance.new("Folder");self.preview.Name="AtlasAllStumpCoverage";self.preview.Parent=workspace
+		self.preview=Instance.new("Folder");self.preview.Name="AtlasAllFieldCoverage";self.preview.Parent=workspace
 		self.allStumpViews={}
 	end
+	local players=getService("Players"):GetPlayers()
 	for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"}) do
 		local _,area=self:Region(name,field.Position,self:QuadrantSize(field),field.Position.Y)
-		local polygon=self:StumpPolygon(field,area)
-		local occupants=self:StumpOccupants(field,polygon)
+		local polygon=self:CoveragePolygon(field,area)
+		local occupants=self:StumpOccupants(field,polygon,players)
 		local view=self.allStumpViews[name] or {name=name,parent=self.preview}
 		view.color=#occupants>0 and Color3.fromRGB(65,230,130) or Color3.fromRGB(240,65,65)
 		view.label=name.."\n"..(#occupants>0 and table.concat(occupants,", ") or "Unoccupied")
@@ -2387,7 +2407,7 @@ function fieldPositionPolicy:DrawPreview()
 	local zones=workspace:FindFirstChild("FlowerZones")
 	local selected=zones and zones:FindFirstChild(cfg.autofarm.field1)
 	local field=(cfg.autofarm.enabled and currentField) or selected or currentField
-	if field and field.Name=="Stump Field" and cfg.autofarm.idlefieldloop and cfg.autofarm.showallstump then self:DrawAllStump(field);return end
+	if field and cfg.autofarm.showallstump then self:DrawAllStump(field);return end
 	if self.previewMode=="stumpAll" then
 		if self.preview then self.preview:Destroy() end
 		self.preview,self.parts,self.previewMode,self.allStumpViews=nil,nil,nil,nil
@@ -2456,7 +2476,7 @@ function fieldPositionPolicy:PreviewChanged()
 	if connections:Get("fieldAreaPreview") then return end
 	local elapsed=0
 	connections:Add("fieldAreaPreview",RunService.Heartbeat:Connect(function(dt)
-		elapsed+=dt;if elapsed<.2 then return end;elapsed=0;self:DrawPreview()
+		elapsed+=dt;if elapsed<.5 then return end;elapsed=0;self:DrawPreview()
 	end))
 end
 
@@ -66446,16 +66466,16 @@ end
 				end
 
 				local n, O = pcall(function()
-					if cfg.rbc.enabled then
+					if cfg.rbc.enabled and not (cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly) then
 						rbcAmuletCheck()
 					end
 
 					closePopups()
-					if cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly and cfg.autofarm.field1=="Stump Field" then
-						-- Exclusive Stump mode: no toys, planters, combat, conversion or other collection jobs.
+					if cfg.autofarm.enabled and cfg.autofarm.idlefieldloop and cfg.autofarm.stumpsmileyonly then
+						-- Exclusive field idle: only combos and smileys may interrupt the loop.
 						if comboController.active or comboController.comboPriority then return end
-						setField("Stump Field")
-						reportStatus(1,"Stump Field")
+						setField(cfg.autofarm.field1)
+						reportStatus(1,cfg.autofarm.field1)
 						goToField()
 						local options={}
 						if cfg.autofarm.farmposenabled then
@@ -67762,16 +67782,16 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Farm Near Position", nil, "autofarm", "farmposenabled")
 				farmFolder.AddDropdown("Field Position", { "Left", "Right", "Center", "Upper Left", "Upper Right", "Lower Left", "Lower Right" }, nil, function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "farmposition")
 				farmFolder.AddSwitch("Show Farming Area", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showfieldarea")
-				farmFolder.AddSwitch("Show All Stump Coverage", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showallstump")
-				farmFolder.AddLabel("Stump coverage: green = player inside; red = empty. Labels show current occupants.")
+				farmFolder.AddSwitch("Show All Field Coverage", function()fieldPositionPolicy:PreviewChanged()end, "autofarm", "showallstump")
+				farmFolder.AddLabel("Field coverage: green = player inside; red = empty. Labels show current occupants.")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
-				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt Stump idle. Other tasks and conversion are skipped while enabled."})
+				farmFolder.AddSwitch("Field Idle: Smileys & Combos Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt idle farming in any field. Requires Idle Field Loop. Other tasks and conversion are skipped while enabled."})
 				farmFolder.AddLabel("Stump route: continuous infinity; each side and middle once per repetition.")
 				farmFolder.AddSwitch("Idle Pattern Density", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepatternmass")
 				farmFolder.AddSwitch("Idle Pattern 140 PMS", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepattern140")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")
-				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards")
+				farmFolder.AddSwitch("Prevent Field Edge Drift", function()fieldPositionPolicy:RemoveGuards()end, "autofarm", "fieldedgeguards", {Tooltip="Invisible collision borders prevent drifting out while gathering. They activate after entry and disappear during travel, combos and showers. Idle quadrants use their own borders; Stump follows its custom footprint."})
 				farmFolder.AddLabel("Preview works while farming is off. Stump visuals follow its trimmed idle footprint.")
 
 				local buffIconIds = {
