@@ -9,6 +9,7 @@ function gameApi:Event(name,...)
  if name=="PlayerSettingsEvent" then return end
  rolls+=1;assert(rolls<=#responses,"rolled past requested mutation")
  local bee=responses[rolls]
+ if bee=="rejected" then return 99,false end
  return 99,true,bee and {x1={y1=bee}} or {},{},0
 end
 local RunService={Heartbeat={Wait=function()return true end}}
@@ -24,6 +25,7 @@ local logger={warn=function()warnings+=1 end}
 local autoMutations
 	autoMutations = function()
 		local finished = nil
+		local rollDelay, rejectedRolls = 0, 0
 
 		while not finished do
 			if not RunService.Heartbeat:Wait() then
@@ -231,10 +233,19 @@ local autoMutations
 							local ConstructHiveCellFromEgg, feedSuccess, feedHoneycomb, feedDiscovered, feedEggUses = gameApi:Event("ConstructHiveCellFromEgg", cellX, cellY, feedItem, cfg.hive.feedtype == "Bitterberry" and cfg.hive.amount or 1, false)
 
 							if not feedSuccess then
-								logger.warn("Failed to feed bee")
+								-- A fast follow-up can be rejected while the server is cooling down.
+								-- Retry only an explicitly rejected roll, never an uncertain success.
+								if feedItem == "RoyalJelly" and rejectedRolls < 3 then
+									rejectedRolls += 1
+									rollDelay = math.min(1, math.max(.35, rollDelay + .15))
+									task.wait(rollDelay)
+									continue
+								end
+								logger.warn("Failed to feed bee after bounded retries")
 								finished = true
 								return
 							end
+							rejectedRolls = 0
 
 							-- Never issue another roll without authoritative data for this cell.
 							local nextColumn = type(feedHoneycomb)=="table" and feedHoneycomb["x" .. cellX]
@@ -253,7 +264,7 @@ local autoMutations
 							beeData = nextBee
 							if feedItem == "RoyalJelly" then
 								-- One request at a time; the next iteration checks this returned bee.
-								RunService.Heartbeat:Wait()
+								if rollDelay > 0 then task.wait(rollDelay) else RunService.Heartbeat:Wait() end
 							else
 								task.wait(0.3)
 							end
@@ -280,3 +291,10 @@ rolls=0;responses={{Type="PreciseBee",Radiation=true,Mutas={Movespeed=6}},{Type=
 autoMutations();assert(rolls==2 and waits==0 and warnings==0)
 rolls=0;responses={false};autoMutations();assert(rolls==1 and warnings==1)
 print("PASS: stops on selected +6 Movespeed bee, skips wrong bee types, no fixed jelly delay, stops on missing server data")
+
+rolls=0;waits=0;warnings=0
+responses={{Type="BuoyantBee",Radiation=true,Mutas={Movespeed=5}},"rejected",{Type="BuoyantBee",Radiation=true,Mutas={Movespeed=6}}}
+autoMutations();assert(rolls==3 and waits==2 and warnings==0,"transient rejection must back off then stop at selected bee")
+rolls=0;waits=0;warnings=0;responses={"rejected","rejected","rejected","rejected"}
+autoMutations();assert(rolls==4 and waits==3 and warnings==1,"persistent failures must stop after bounded retries")
+print("PASS: transient server rejection resumes with cooldown; persistent rejections stop after three retries")

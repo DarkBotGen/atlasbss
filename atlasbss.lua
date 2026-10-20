@@ -44691,6 +44691,7 @@ do
 
 	autoMutations = function()
 		local finished = nil
+		local rollDelay, rejectedRolls = 0, 0
 
 		while not finished do
 			if not RunService.Heartbeat:Wait() then
@@ -44898,10 +44899,19 @@ do
 							local ConstructHiveCellFromEgg, feedSuccess, feedHoneycomb, feedDiscovered, feedEggUses = gameApi:Event("ConstructHiveCellFromEgg", cellX, cellY, feedItem, cfg.hive.feedtype == "Bitterberry" and cfg.hive.amount or 1, false)
 
 							if not feedSuccess then
-								logger.warn("Failed to feed bee")
+								-- A fast follow-up can be rejected while the server is cooling down.
+								-- Retry only an explicitly rejected roll, never an uncertain success.
+								if feedItem == "RoyalJelly" and rejectedRolls < 3 then
+									rejectedRolls += 1
+									rollDelay = math.min(1, math.max(.35, rollDelay + .15))
+									task.wait(rollDelay)
+									continue
+								end
+								logger.warn("Failed to feed bee after bounded retries")
 								finished = true
 								return
 							end
+							rejectedRolls = 0
 
 							-- Never issue another roll without authoritative data for this cell.
 							local nextColumn = type(feedHoneycomb)=="table" and feedHoneycomb["x" .. cellX]
@@ -44920,7 +44930,7 @@ do
 							beeData = nextBee
 							if feedItem == "RoyalJelly" then
 								-- One request at a time; the next iteration checks this returned bee.
-								RunService.Heartbeat:Wait()
+								if rollDelay > 0 then task.wait(rollDelay) else RunService.Heartbeat:Wait() end
 							else
 								task.wait(0.3)
 							end
