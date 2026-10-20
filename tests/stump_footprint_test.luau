@@ -326,7 +326,7 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 		area=a
 	end
 	local key=string.format("%s:%s:%s:%s",area.minX,area.maxX,area.minZ,area.maxZ)
-	if self.stumpShape and self.stumpShape.key==key then return self.stumpShape.points end
+	if self.stumpShapes and self.stumpShapes[key] then return self.stumpShapes[key] end
 	local cx,cz=(area.minX+area.maxX)/2,(area.minZ+area.maxZ)/2
 	local sx,sz=cx>=field.Position.X and 1 or -1,cz>=field.Position.Z and 1 or -1
 	local inset=math.min(2,(area.maxX-area.minX)/8,(area.maxZ-area.minZ)/8)
@@ -343,6 +343,9 @@ function fieldPositionPolicy:StumpPolygon(field,area)
 	end
 	points[#points+1]=Vector3.new(ox,0,oz+sz*rz*inner)
 	self.stumpShape={key=key,points=points}
+	self.stumpShapes=self.stumpShapes or {};self.stumpShapeCount=self.stumpShapeCount or 0
+	if self.stumpShapeCount>=4 then self.stumpShapes={};self.stumpShapeCount=0 end
+	self.stumpShapes[key]=points;self.stumpShapeCount+=1
 	return points
 end
 function fieldPositionPolicy:InsidePolygon(point,points)
@@ -392,8 +395,8 @@ function fieldPositionPolicy:StumpRoute(polygon)
 	return points
 end
 function fieldPositionPolicy:StumpSweep(polygon)
-	local cached=self.stumpSweep
-	if cached and cached.polygon==polygon then return cached.points,cached.lanes,cached.spacing end
+	local cached=self.stumpSweeps and self.stumpSweeps[polygon]
+	if cached then return cached.points,cached.lanes,cached.spacing end
 	local ia,ib=self:StumpCrossing(polygon)
 	local origin=polygon[ia]
 	local along=(polygon[ib]-origin).Unit
@@ -431,7 +434,9 @@ function fieldPositionPolicy:StumpSweep(polygon)
 			if i%2==1 then append(a);append(b) else append(b);append(a) end
 		end
 	end
-	self.stumpSweep={polygon=polygon,points=points,lanes=lanes,spacing=spacing}
+	self.stumpSweeps=self.stumpSweeps or {};self.stumpSweepCount=self.stumpSweepCount or 0
+	if self.stumpSweepCount>=4 then self.stumpSweeps={};self.stumpSweepCount=0 end
+	self.stumpSweeps[polygon]={points=points,lanes=lanes,spacing=spacing};self.stumpSweepCount+=1
 	return points,lanes,spacing
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
@@ -654,28 +659,30 @@ end
 function fieldPositionPolicy:StopPreview()
 	connections:Cancel("fieldAreaPreview")
 	if self.preview then self.preview:Destroy();self.preview=nil end
-	self.parts=nil;self.previewMode=nil
+	self.parts=nil;self.previewMode=nil;self.allStumpViews=nil
 end
-function fieldPositionPolicy:DrawStumpPreview(field,polygon)
-	if self.previewMode~="stump" then
-		if self.preview then self.preview:Destroy() end
-		self.preview,self.parts=nil,nil
+function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
+	view=view or self
+	if view.previewMode~="stump" then
+		if view.preview then view.preview:Destroy() end
+		view.preview,view.parts=nil,nil
 	end
-	self.previewMode="stump"
-	if not self.preview or not self.preview.Parent then
-		self.preview=Instance.new("Folder");self.preview.Name="AtlasFieldAreaPreview";self.preview.Parent=workspace;self.parts={}
+	view.previewMode="stump"
+	if not view.preview or not view.preview.Parent then
+		view.preview=Instance.new("Folder");view.preview.Name=view.name or "AtlasFieldAreaPreview";view.preview.Parent=view.parent or workspace;view.parts={}
 	end
 	local y=field.Position.Y+field.Size.Y/2+0.15
-	local color=Color3.fromRGB(65,230,130)
+	local color=view.color or Color3.fromRGB(65,230,130)
 	local index=0
 	local function part(size,cf,transparency)
 		index+=1
-		local p=self.parts[index]
+		local p=view.parts[index]
 		if not p then
 			p=Instance.new("Part");p.Name="StumpArea"..index;p.Anchored=true;p.CanCollide=false;p.CanTouch=false;p.CanQuery=false;p.CastShadow=false
-			p.Parent=self.preview;self.parts[index]=p
+			p.Parent=view.preview;view.parts[index]=p
 		end
 		p.Size=size;p.CFrame=cf;p.Color=color;p.Material=Enum.Material.Neon;p.Transparency=transparency
+		return p
 	end
 	local minZ,maxZ=math.huge,-math.huge
 	for _,p in ipairs(polygon) do minZ=math.min(minZ,p.Z);maxZ=math.max(maxZ,p.Z) end
@@ -713,13 +720,63 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon)
 	else
 		local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
 	end
-	for i=#self.parts,index+1,-1 do self.parts[i]:Destroy();self.parts[i]=nil end
+	if view.label then
+		local center=Vector3.zero
+		for _,p in ipairs(polygon) do center+=p end
+		center/=#polygon
+		local anchor=part(Vector3.new(.1,.1,.1),CFrame.new(center.X,y,center.Z),1)
+		local gui=anchor:FindFirstChild("CoverageLabel")
+		if not gui then
+			gui=Instance.new("BillboardGui");gui.Name="CoverageLabel";gui.Size=UDim2.fromOffset(240,52);gui.StudsOffset=Vector3.new(0,5,0);gui.AlwaysOnTop=true;gui.MaxDistance=300;gui.Parent=anchor
+			local label=Instance.new("TextLabel");label.Name="Text";label.Size=UDim2.fromScale(1,1);label.BackgroundTransparency=1;label.TextScaled=true;label.Font=Enum.Font.GothamSemibold;label.TextStrokeTransparency=.3;label.Parent=gui
+		end
+		local label=gui:FindFirstChild("Text");label.Text=view.label;label.TextColor3=color
+	end
+	for i=#view.parts,index+1,-1 do view.parts[i]:Destroy();view.parts[i]=nil end
+end
+function fieldPositionPolicy:StumpOccupants(field,polygon)
+	local names={}
+	local top=field.Position.Y+field.Size.Y/2
+	for _,player in ipairs(getService("Players"):GetPlayers()) do
+		local char=player.Character
+		local root=char and char:FindFirstChild("HumanoidRootPart")
+		local h=char and char:FindFirstChildOfClass("Humanoid")
+		if root and h and h.Health>0 and math.abs(root.Position.Y-top)<=12 and self:InsidePolygon(root.Position,polygon) then names[#names+1]=player.Name end
+	end
+	table.sort(names)
+	return names
+end
+function fieldPositionPolicy:DrawAllStump(field)
+	if self.previewMode~="stumpAll" then
+		if self.preview then self.preview:Destroy() end
+		self.preview,self.parts,self.allStumpViews=nil,nil,{}
+	end
+	self.previewMode="stumpAll"
+	if not self.preview or not self.preview.Parent then
+		self.preview=Instance.new("Folder");self.preview.Name="AtlasAllStumpCoverage";self.preview.Parent=workspace
+		self.allStumpViews={}
+	end
+	for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"}) do
+		local _,area=self:Region(name,field.Position,self:QuadrantSize(field),field.Position.Y)
+		local polygon=self:StumpPolygon(field,area)
+		local occupants=self:StumpOccupants(field,polygon)
+		local view=self.allStumpViews[name] or {name=name,parent=self.preview}
+		view.color=#occupants>0 and Color3.fromRGB(65,230,130) or Color3.fromRGB(240,65,65)
+		view.label=name.."\n"..(#occupants>0 and table.concat(occupants,", ") or "Unoccupied")
+		self.allStumpViews[name]=view
+		self:DrawStumpPreview(field,polygon,view)
+	end
 end
 function fieldPositionPolicy:DrawPreview()
 	if not cfg.autofarm.showfieldarea then self:StopPreview();return end
 	local zones=workspace:FindFirstChild("FlowerZones")
 	local selected=zones and zones:FindFirstChild(cfg.autofarm.field1)
 	local field=(cfg.autofarm.enabled and currentField) or selected or currentField
+	if field and field.Name=="Stump Field" and cfg.autofarm.idlefieldloop and cfg.autofarm.showallstump then self:DrawAllStump(field);return end
+	if self.previewMode=="stumpAll" then
+		if self.preview then self.preview:Destroy() end
+		self.preview,self.parts,self.previewMode,self.allStumpViews=nil,nil,nil,nil
+	end
 	if not field or not self:IsQuadrant(cfg.autofarm.farmposition) then
 		if self.preview then self.preview:Destroy();self.preview=nil;self.parts=nil end
 		return
@@ -978,3 +1035,45 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  fieldPositionPolicy:StopPreview()
 end
 print("PASS: uniformly spaced coverage lanes, one center lane, contained connectors, endpoint reversal and lane preview")
+
+field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name
+cfg.autofarm.showfieldarea=true;cfg.autofarm.showallstump=true
+local function quadrantCenter(name)
+ local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
+ local polygon=fieldPositionPolicy:StumpPolygon(field,area)
+ local center=Vector3.zero;for _,p in ipairs(polygon)do center+=p end
+ center/=#polygon;return Vector3.new(center.X,24,center.Z)
+end
+root.Position=quadrantCenter("Upper Left")
+Players.list={player}
+fieldPositionPolicy:DrawPreview()
+local all=assert(fieldPositionPolicy.preview)
+assert(#all:GetChildren()==4 and fieldPositionPolicy.previewMode=="stumpAll")
+for name,view in pairs(fieldPositionPolicy.allStumpViews)do
+ local occupied=name=="Upper Left"
+ assert((view.color.G>view.color.R)==occupied,"occupancy colors must match physical presence")
+ assert(string.find(view.label,occupied and player.Name or "Unoccupied",1,true))
+ for _,p in ipairs(view.preview:GetChildren())do assert(not p.CanCollide and not p.CanTouch and not p.CanQuery)end
+end
+for _,name in ipairs({"Upper Right","Lower Left","Lower Right"})do
+ local alt={Name=name.."Alt"};alt.Character=Instance.new("Model",workspace)
+ local ah=Instance.new("Humanoid",alt.Character);ah.Health=100
+ local ar=Instance.new("Part",alt.Character);ar.Name="HumanoidRootPart";ar.Position=quadrantCenter(name)
+ Players.list[#Players.list+1]=alt
+end
+fieldPositionPolicy:DrawPreview()
+for _,view in pairs(fieldPositionPolicy.allStumpViews)do assert(view.color.G>view.color.R)end
+local count=0;for _,view in pairs(fieldPositionPolicy.allStumpViews)do count+=#view.parts end
+for i=1,100 do
+ fieldPositionPolicy:DrawPreview();assert(fieldPositionPolicy.preview==all)
+ local nextCount=0;for _,view in pairs(fieldPositionPolicy.allStumpViews)do nextCount+=#view.parts end
+ assert(nextCount==count,"all-quadrant preview must reuse parts")
+end
+Players.list={player};fieldPositionPolicy:DrawPreview()
+assert(fieldPositionPolicy.allStumpViews["Upper Right"].color.R>fieldPositionPolicy.allStumpViews["Upper Right"].color.G)
+fieldPositionPolicy:PreviewChanged();local ticker=assert(connections:Get("fieldAreaPreview"))
+fieldPositionPolicy:PreviewChanged();assert(connections:Get("fieldAreaPreview")==ticker)
+cfg.autofarm.showallstump=false;fieldPositionPolicy:DrawPreview()
+assert(not all.Parent and fieldPositionPolicy.previewMode=="stump" and not fieldPositionPolicy.allStumpViews)
+fieldPositionPolicy:StopPreview();assert(not fieldPositionPolicy.preview and not connections:Get("fieldAreaPreview"))
+print("PASS: all four previews, red empty/green occupied labels, live updates, bounded part reuse and cleanup")
