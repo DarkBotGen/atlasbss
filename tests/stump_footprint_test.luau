@@ -377,23 +377,31 @@ function fieldPositionPolicy:StumpCrossing(polygon)
 end
 function fieldPositionPolicy:StumpRoute(polygon)
 	local a,b=self:StumpCrossing(polygon)
-	local points={}
+	local points,sections={},{}
 	local function edge(p,q)
 		local count=math.max(1,math.ceil((q-p).Magnitude/6))
 		for j=0,count-1 do points[#points+1]=p+(q-p)*(j/count) end
 	end
-	-- Open repetition: first perimeter arc, one middle crossing, second arc.
-	-- Reverse this route next repetition instead of adding another crossing.
-	for _,step in ipairs({1,-1}) do
-		local index=a
-		while index~=b do
+	local function arc(from,to,step,name)
+		sections[#sections+1]={name=name,first=#points+1}
+		local index=from
+		while index~=to do
 			local nextIndex=(index-1+step)%#polygon+1
 			edge(polygon[index],polygon[nextIndex]);index=nextIndex
 		end
-		if step==1 then edge(polygon[b],polygon[a]) end
 	end
-	points[#points+1]=polygon[b]
-	return points
+	-- Two alternating infinity repetitions join into one continuous cycle.
+	-- Each repetition visits both sides and the middle once; adjacent
+	-- repetitions start on a different section instead of reversing the last.
+	for repetition=1,2 do
+		local from,to,step=a,b,1
+		if repetition==2 then from,to,step=b,a,-1 end
+		arc(from,to,step,"curved")
+		sections[#sections+1]={name="middle",first=#points+1}
+		edge(polygon[to],polygon[from])
+		arc(from,to,-step,"straight")
+	end
+	return points,sections
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
@@ -422,8 +430,8 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		route={key=key,index=1,points={}}
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
-			route.points=self:StumpRoute(polygon)
-			route.pingpong,route.direction,route.spacing=true,1,6
+			route.points,route.sections=self:StumpRoute(polygon)
+			route.infinity=true
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -448,12 +456,15 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 		local p=route.points[route.index]
 		local goal=Vector3.new(p.X,root.Y,p.Z)
 		local passed=false
-		if route.pingpong and route.previous then
+		if (route.pingpong or route.infinity) and route.previous then
 			local delta=p-route.previous
 			passed=(root.X-p.X)*delta.X+(root.Z-p.Z)*delta.Z>=0
 		end
 		if not passed and (p.X-root.X)^2+(p.Z-root.Z)^2>lead*lead and not blocked(goal) then return goal end
-		if route.pingpong then
+		if route.infinity then
+			route.previous=p
+			route.index=route.index%#route.points+1
+		elseif route.pingpong then
 			route.previous=p
 			if route.index==#route.points then route.direction=-1 elseif route.index==1 then route.direction=1 end
 			route.index+=route.direction
@@ -815,10 +826,10 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
 
  local perimeter=0
  for i,p in ipairs(points)do perimeter+=(points[i%#points+1]-p).Magnitude end
- local route=fieldPositionPolicy:StumpRoute(points)
+ local route,sections=fieldPositionPolicy:StumpRoute(points)
  local length=0;local interior=0
  for i,p in ipairs(route)do
-  if i<#route then length+=(route[i+1]-p).Magnitude end
+  length+=(route[i%#route+1]-p).Magnitude
   assert(fieldPositionPolicy:InsidePolygon(p,points),"middle crossing must stay inside barriers")
   local boundary=false
   for j,q in ipairs(points)do
@@ -827,8 +838,14 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
   end
   if not boundary then interior+=1 end
  end
- assert(math.abs(length-perimeter-(points[ib]-points[ia]).Magnitude)<.001,"must cover perimeter once plus exactly one middle crossing")
+ assert(math.abs(length-2*perimeter-2*(points[ib]-points[ia]).Magnitude)<.001,"two infinity repetitions must each cover both sides and middle once")
  assert(interior>2,"route must walk through the interior")
+ assert(#sections==6)
+ for i,section in ipairs(sections)do
+  assert(section.name==({"curved","middle","straight"})[(i-1)%3+1])
+  assert(section.name~=sections[i%#sections+1].name,"never immediately repeat the finished section")
+ end
+
 
  local centroid=Vector3.zero
  for _,p in ipairs(points)do centroid+=p end
@@ -961,20 +978,20 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
  fieldPositionPolicy.idleLoop=nil
  root.Position=Vector3.new(points[1].X,24,points[1].Z)
- local reversed=false
+ local wrapped=false
  for i=1,#points*3 do
   local goal=assert(fieldPositionPolicy:IdleLoopGoal({area=area},function()return false end))
-  assert(fieldPositionPolicy.idleLoop.pingpong and not fieldPositionPolicy.idleLoop.lanes)
-  if fieldPositionPolicy.idleLoop.direction==-1 then reversed=true end
+  assert(fieldPositionPolicy.idleLoop.infinity and not fieldPositionPolicy.idleLoop.lanes)
+  if fieldPositionPolicy.idleLoop.index>1 then wrapped=true end
   assert(fieldPositionPolicy:InsidePolygon(goal,polygon))
   root.Position=goal
  end
- assert(reversed)
+ assert(wrapped)
  fieldPositionPolicy:DrawPreview()
  assert(#fieldPositionPolicy.preview:GetChildren()==33+#polygon,"preview must have only one middle line, no strips")
  fieldPositionPolicy:StopPreview()
 end
-print("PASS: perimeter plus one crossing, reverse repetitions, no strips despite obsolete saved flag")
+print("PASS: continuous infinity, each side and middle once per repetition, no strip mode")
 
 
 field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name
