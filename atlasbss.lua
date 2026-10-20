@@ -196,7 +196,6 @@ local cfg = {
 		idlepatternmass = true,
 		idlepattern140 = false,
 		stumpsmileyonly = false,
-		stumpcoverage = true,
 		showallstump = true,
 		showfieldarea = false,
 		fieldedgeguards = true,
@@ -2026,62 +2025,18 @@ function fieldPositionPolicy:StumpRoute(polygon)
 		local count=math.max(1,math.ceil((q-p).Magnitude/6))
 		for j=0,count-1 do points[#points+1]=p+(q-p)*(j/count) end
 	end
-	-- Cover each perimeter arc once, crossing the interior between arcs.
-	-- The crossing is the only repeated edge: the shortest connection between its ends.
+	-- Open repetition: first perimeter arc, one middle crossing, second arc.
+	-- Reverse this route next repetition instead of adding another crossing.
 	for _,step in ipairs({1,-1}) do
 		local index=a
 		while index~=b do
 			local nextIndex=(index-1+step)%#polygon+1
 			edge(polygon[index],polygon[nextIndex]);index=nextIndex
 		end
-		edge(polygon[b],polygon[a])
+		if step==1 then edge(polygon[b],polygon[a]) end
 	end
+	points[#points+1]=polygon[b]
 	return points
-end
-function fieldPositionPolicy:StumpSweep(polygon)
-	local cached=self.stumpSweeps and self.stumpSweeps[polygon]
-	if cached then return cached.points,cached.lanes,cached.spacing end
-	local ia,ib=self:StumpCrossing(polygon)
-	local origin=polygon[ia]
-	local along=(polygon[ib]-origin).Unit
-	local normal=Vector3.new(-along.Z,0,along.X)
-	local low,high=math.huge,-math.huge
-	local uv={}
-	for i,p in ipairs(polygon) do
-		local d=p-origin
-		local u,v=d:Dot(along),d:Dot(normal)
-		uv[i]={u=u,v=v};low=math.min(low,v);high=math.max(high,v)
-	end
-	local count=math.max(3,math.ceil((high-low)/6))
-	if count%2==0 then count+=1 end -- one lane lies on the balanced middle crossing
-	local spacing=(high-low)/count
-	local points,lanes={},{}
-	local function append(p)
-		local previous=points[#points]
-		if not previous then points[1]=p;return end
-		local steps=math.max(1,math.ceil((p-previous).Magnitude/6))
-		for j=1,steps do points[#points+1]=previous+(p-previous)*(j/steps) end
-	end
-	for i=1,count do
-		local v=low+(i-.5)*spacing
-		local left,right=math.huge,-math.huge
-		for j,a in ipairs(uv) do
-			local b=uv[j%#uv+1]
-			if math.abs(b.v-a.v)>0.000001 and v>=math.min(a.v,b.v) and v<=math.max(a.v,b.v) then
-				local u=a.u+(b.u-a.u)*(v-a.v)/(b.v-a.v)
-				left,right=math.min(left,u),math.max(right,u)
-			end
-		end
-		if right>left then
-			local a,b=origin+along*left+normal*v,origin+along*right+normal*v
-			lanes[#lanes+1]={a=a,b=b,offset=v}
-			if i%2==1 then append(a);append(b) else append(b);append(a) end
-		end
-	end
-	self.stumpSweeps=self.stumpSweeps or {};self.stumpSweepCount=self.stumpSweepCount or 0
-	if self.stumpSweepCount>=4 then self.stumpSweeps={};self.stumpSweepCount=0 end
-	self.stumpSweeps[polygon]={points=points,lanes=lanes,spacing=spacing};self.stumpSweepCount+=1
-	return points,lanes,spacing
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
@@ -2103,17 +2058,15 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local inset=math.min(2,hx/4,hz/4)
 	hx,hz=hx-inset,hz-inset
 	local stump=currentField and currentField.Name=="Stump Field"
-	local key=string.format("%s:%s:%s:%s:%s:%s:%s",minX,maxX,minZ,maxZ,tostring(stump),tostring(stump and options.area~=nil),tostring(cfg.autofarm.stumpcoverage))
+	local key=string.format("%s:%s:%s:%s:%s:%s:%s",minX,maxX,minZ,maxZ,tostring(stump),tostring(stump and options.area~=nil),"perimeter-middle-once")
 	local root=getRootPart().Position
 	local route=self.idleLoop
 	if not route or route.key~=key then
 		route={key=key,index=1,points={}}
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
-			if cfg.autofarm.stumpcoverage then
-				route.points,route.lanes,route.spacing=self:StumpSweep(polygon)
-				route.pingpong,route.direction=true,1
-			else route.points=self:StumpRoute(polygon) end
+			route.points=self:StumpRoute(polygon)
+			route.pingpong,route.direction,route.spacing=true,1,6
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -2358,12 +2311,7 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 		local start,finish=Vector3.new(a.X,y+.05,a.Z),Vector3.new(b.X,y+.05,b.Z)
 		part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	end
-	if cfg.autofarm.stumpcoverage then
-		local _,lanes=self:StumpSweep(polygon)
-		for _,lane in ipairs(lanes) do line(lane.a,lane.b) end
-	else
-		local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
-	end
+	local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
 	if view.label then
 		local center=Vector3.zero
 		for _,p in ipairs(polygon) do center+=p end
@@ -67796,7 +67744,7 @@ which bees and get all 3 targets if
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
 				farmFolder.AddSwitch("Stump Idle: Smileys Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt Stump idle. Other tasks and conversion are skipped while enabled."})
-				farmFolder.AddSwitch("Stump Even Coverage", function()fieldPositionPolicy:ReleaseIdle();fieldPositionPolicy.idleLoop=nil end, "autofarm", "stumpcoverage", {Tooltip="Evenly spaced passes through the footprint, one center lane per sweep. Disable for the perimeter route."})
+				farmFolder.AddLabel("Stump route: outer perimeter + one middle crossing. No strips.")
 				farmFolder.AddSwitch("Idle Pattern Density", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepatternmass")
 				farmFolder.AddSwitch("Idle Pattern 140 PMS", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepattern140")
 				farmFolder.AddLabel("Strict collection bounds use the selected Farm Field and quadrant. Scheduled travel still runs.")

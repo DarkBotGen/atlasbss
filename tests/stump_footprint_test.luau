@@ -382,62 +382,18 @@ function fieldPositionPolicy:StumpRoute(polygon)
 		local count=math.max(1,math.ceil((q-p).Magnitude/6))
 		for j=0,count-1 do points[#points+1]=p+(q-p)*(j/count) end
 	end
-	-- Cover each perimeter arc once, crossing the interior between arcs.
-	-- The crossing is the only repeated edge: the shortest connection between its ends.
+	-- Open repetition: first perimeter arc, one middle crossing, second arc.
+	-- Reverse this route next repetition instead of adding another crossing.
 	for _,step in ipairs({1,-1}) do
 		local index=a
 		while index~=b do
 			local nextIndex=(index-1+step)%#polygon+1
 			edge(polygon[index],polygon[nextIndex]);index=nextIndex
 		end
-		edge(polygon[b],polygon[a])
+		if step==1 then edge(polygon[b],polygon[a]) end
 	end
+	points[#points+1]=polygon[b]
 	return points
-end
-function fieldPositionPolicy:StumpSweep(polygon)
-	local cached=self.stumpSweeps and self.stumpSweeps[polygon]
-	if cached then return cached.points,cached.lanes,cached.spacing end
-	local ia,ib=self:StumpCrossing(polygon)
-	local origin=polygon[ia]
-	local along=(polygon[ib]-origin).Unit
-	local normal=Vector3.new(-along.Z,0,along.X)
-	local low,high=math.huge,-math.huge
-	local uv={}
-	for i,p in ipairs(polygon) do
-		local d=p-origin
-		local u,v=d:Dot(along),d:Dot(normal)
-		uv[i]={u=u,v=v};low=math.min(low,v);high=math.max(high,v)
-	end
-	local count=math.max(3,math.ceil((high-low)/6))
-	if count%2==0 then count+=1 end -- one lane lies on the balanced middle crossing
-	local spacing=(high-low)/count
-	local points,lanes={},{}
-	local function append(p)
-		local previous=points[#points]
-		if not previous then points[1]=p;return end
-		local steps=math.max(1,math.ceil((p-previous).Magnitude/6))
-		for j=1,steps do points[#points+1]=previous+(p-previous)*(j/steps) end
-	end
-	for i=1,count do
-		local v=low+(i-.5)*spacing
-		local left,right=math.huge,-math.huge
-		for j,a in ipairs(uv) do
-			local b=uv[j%#uv+1]
-			if math.abs(b.v-a.v)>0.000001 and v>=math.min(a.v,b.v) and v<=math.max(a.v,b.v) then
-				local u=a.u+(b.u-a.u)*(v-a.v)/(b.v-a.v)
-				left,right=math.min(left,u),math.max(right,u)
-			end
-		end
-		if right>left then
-			local a,b=origin+along*left+normal*v,origin+along*right+normal*v
-			lanes[#lanes+1]={a=a,b=b,offset=v}
-			if i%2==1 then append(a);append(b) else append(b);append(a) end
-		end
-	end
-	self.stumpSweeps=self.stumpSweeps or {};self.stumpSweepCount=self.stumpSweepCount or 0
-	if self.stumpSweepCount>=4 then self.stumpSweeps={};self.stumpSweepCount=0 end
-	self.stumpSweeps[polygon]={points=points,lanes=lanes,spacing=spacing};self.stumpSweepCount+=1
-	return points,lanes,spacing
 end
 function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local a=options.area
@@ -459,17 +415,15 @@ function fieldPositionPolicy:IdleLoopGoal(options,blocked)
 	local inset=math.min(2,hx/4,hz/4)
 	hx,hz=hx-inset,hz-inset
 	local stump=currentField and currentField.Name=="Stump Field"
-	local key=string.format("%s:%s:%s:%s:%s:%s:%s",minX,maxX,minZ,maxZ,tostring(stump),tostring(stump and options.area~=nil),tostring(cfg.autofarm.stumpcoverage))
+	local key=string.format("%s:%s:%s:%s:%s:%s:%s",minX,maxX,minZ,maxZ,tostring(stump),tostring(stump and options.area~=nil),"perimeter-middle-once")
 	local root=getRootPart().Position
 	local route=self.idleLoop
 	if not route or route.key~=key then
 		route={key=key,index=1,points={}}
 		if stump and options.area then
 			local polygon=self:StumpPolygon(currentField,{minX=minX,maxX=maxX,minZ=minZ,maxZ=maxZ})
-			if cfg.autofarm.stumpcoverage then
-				route.points,route.lanes,route.spacing=self:StumpSweep(polygon)
-				route.pingpong,route.direction=true,1
-			else route.points=self:StumpRoute(polygon) end
+			route.points=self:StumpRoute(polygon)
+			route.pingpong,route.direction,route.spacing=true,1,6
 		else
 			local count=math.clamp(math.ceil(4*(hx+hz)/6),16,96)
 			for i=1,count do
@@ -714,12 +668,7 @@ function fieldPositionPolicy:DrawStumpPreview(field,polygon,view)
 		local start,finish=Vector3.new(a.X,y+.05,a.Z),Vector3.new(b.X,y+.05,b.Z)
 		part(Vector3.new(.22,.12,(finish-start).Magnitude),CFrame.lookAt((start+finish)/2,finish),.25)
 	end
-	if cfg.autofarm.stumpcoverage then
-		local _,lanes=self:StumpSweep(polygon)
-		for _,lane in ipairs(lanes) do line(lane.a,lane.b) end
-	else
-		local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
-	end
+	local a,b=self:StumpCrossing(polygon);line(polygon[a],polygon[b])
 	if view.label then
 		local center=Vector3.zero
 		for _,p in ipairs(polygon) do center+=p end
@@ -869,7 +818,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  local route=fieldPositionPolicy:StumpRoute(points)
  local length=0;local interior=0
  for i,p in ipairs(route)do
-  length+=(route[i%#route+1]-p).Magnitude
+  if i<#route then length+=(route[i+1]-p).Magnitude end
   assert(fieldPositionPolicy:InsidePolygon(p,points),"middle crossing must stay inside barriers")
   local boundary=false
   for j,q in ipairs(points)do
@@ -878,7 +827,7 @@ for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
   end
   if not boundary then interior+=1 end
  end
- assert(math.abs(length-perimeter-2*(points[ib]-points[ia]).Magnitude)<.001,"must cover perimeter once plus two direct crossings")
+ assert(math.abs(length-perimeter-(points[ib]-points[ia]).Magnitude)<.001,"must cover perimeter once plus exactly one middle crossing")
  assert(interior>2,"route must walk through the interior")
 
  local centroid=Vector3.zero
@@ -1001,40 +950,32 @@ assert(h.WalkSpeed==30 and root.CustomPhysicalProperties==nil and root.Massless)
 fieldPositionPolicy:ReleaseIdle()
 print("PASS: rectangular quadrant entry gating and independent disabled physics/speed toggles")
 
-field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name;cfg.autofarm.stumpcoverage=true
+
+field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name
+cfg.autofarm.stumpcoverage=true -- obsolete saved flag must not restore strip mode
 h.WalkSpeed=30
 for _,name in ipairs({"Upper Left","Upper Right","Lower Left","Lower Right"})do
  cfg.autofarm.farmposition=name
  local polygon=fieldPositionPolicy:StumpPolygon(field)
- local points,lanes,spacing=fieldPositionPolicy:StumpSweep(polygon)
- assert(#lanes>=3 and #lanes%2==1 and spacing<=6)
- local center=0
- for i,lane in ipairs(lanes)do
-  if math.abs(lane.offset)<.0001 then center+=1 end
-  if i>1 then assert(math.abs(lane.offset-lanes[i-1].offset-spacing)<.00001)end
- end
- assert(center==1,"one middle lane per sweep")
- for i,p in ipairs(points)do
-  assert(fieldPositionPolicy:InsidePolygon(p,polygon))
-  if i>1 then assert((p-points[i-1]).Magnitude<=6.00001)end
- end
+ local points=fieldPositionPolicy:StumpRoute(polygon)
  local _,area=fieldPositionPolicy:Region(name,field.Position,fieldPositionPolicy:QuadrantSize(field),24)
  fieldPositionPolicy.idleLoop=nil
  root.Position=Vector3.new(points[1].X,24,points[1].Z)
- local reversed=false;local lastIndex
+ local reversed=false
  for i=1,#points*3 do
   local goal=assert(fieldPositionPolicy:IdleLoopGoal({area=area},function()return false end))
-  assert(fieldPositionPolicy.idleLoop.pingpong)
+  assert(fieldPositionPolicy.idleLoop.pingpong and not fieldPositionPolicy.idleLoop.lanes)
   if fieldPositionPolicy.idleLoop.direction==-1 then reversed=true end
   assert(fieldPositionPolicy:InsidePolygon(goal,polygon))
   root.Position=goal
  end
- assert(reversed,"must reverse the sweep without a diagonal return trip")
+ assert(reversed)
  fieldPositionPolicy:DrawPreview()
- assert(#fieldPositionPolicy.preview:GetChildren()==32+#polygon+#lanes)
+ assert(#fieldPositionPolicy.preview:GetChildren()==33+#polygon,"preview must have only one middle line, no strips")
  fieldPositionPolicy:StopPreview()
 end
-print("PASS: restored evenly spaced passes, one center pass, contained connectors, endpoint reversal and lane preview")
+print("PASS: perimeter plus one crossing, reverse repetitions, no strips despite obsolete saved flag")
+
 
 field.Name="Stump Field";currentField=field;cfg.autofarm.field1=field.Name
 cfg.autofarm.showfieldarea=true;cfg.autofarm.showallstump=true
