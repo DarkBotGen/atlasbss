@@ -1966,9 +1966,9 @@ function fieldPositionPolicy:StumpAlignmentOffset(field)
 	local right=field and field.CFrame and field.CFrame.RightVector
 	right=right and Vector3.new(right.X,0,right.Z) or Vector3.new(1,0,0)
 	if right.Magnitude<0.01 then right=Vector3.new(1,0,0) end
-	-- The previewed footprint sits about eight studs right of the flower field center.
+	-- A small field-left correction balances the preview against the flower footprint.
 	-- Keep this shared so routes, previews, and barriers stay aligned on every client.
-	self.stumpAlignment=-right.Unit*8
+	self.stumpAlignment=-right.Unit*2
 	return self.stumpAlignment
 end
 function fieldPositionPolicy:StumpPolygon(field,area)
