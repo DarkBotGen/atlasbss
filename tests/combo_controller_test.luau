@@ -612,7 +612,46 @@ function comboController:OwnLanding()
 	return best
 end
 
+function comboController:MobileTeam()
+	local role=self:Role()
+	return cfg.coconutteam.enabled and cfg.coconutteam.followmain==true and (role=="main" or role=="alt")
+end
+function comboController:FollowingMain()
+	return self:MobileTeam() and self:Role()=="alt"
+end
+function comboController:MainField()
+	local now=os.clock()
+	if self.mainFieldSample and now-self.mainFieldSample<.25 then return self.mainField end
+	self.mainFieldSample=now
+	local main
+	for _,p in ipairs(getService("Players"):GetPlayers()) do
+		if string.lower(p.Name)==string.lower(cfg.coconutteam.main) then main=p;break end
+	end
+	local char=main and main.Character
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	local h=char and char:FindFirstChildOfClass("Humanoid")
+	if not root or not h or h.Health<=0 then
+		self.mainField,self.mainFieldCandidate=nil,nil
+		return
+	end
+	local field=self:FieldAt(root.Position)
+	if field and field.Position and field.Size and math.abs(root.Position.Y-(field.Position.Y+field.Size.Y/2))<=12 then
+		self.mainFieldSeen=now
+		if self.mainFieldCandidate~=field then
+			self.mainFieldCandidate,self.mainFieldSince=field,now
+		elseif now-self.mainFieldSince>=.75 then self.mainField=field end
+	else
+		self.mainFieldCandidate=nil
+		-- Brief hub visits do not send the followers back to their old farm field.
+		if now-(self.mainFieldSeen or 0)>4 then self.mainField=nil end
+	end
+	return self.mainField
+end
 function comboController:TeamField()
+	if cfg.coconutteam.enabled and cfg.coconutteam.followmain==true then
+		local field=self:MainField()
+		if field then return field.Name end
+	end
 	return cfg.coconutteam.field~="" and cfg.coconutteam.field or cfg.autofarm.field1
 end
 
@@ -808,7 +847,7 @@ end
 
 function comboController:Begin(job, h, root)
 	fieldPositionPolicy:ReleaseIdle()
-	if not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
+	if not self:MobileTeam() and not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then self:Finish("Outside strict quadrant");return end
 	meteorMovement:Release()
 	if self.session and self.session.key == job.key then return self.session end
 	self:Finish("Changing combo landing")
@@ -902,7 +941,7 @@ function comboController:Tick()
 		end
 	end
 	if not job then job=self:YieldLanding(root) end
-	if job and not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
+	if job and not self:MobileTeam() and not fieldPositionPolicy:SmileyOnly() and not fieldPositionPolicy:StrictAllowed(job.position) then job=nil;own=nil;private=nil end
 	if job and job.yielding then own=job end
 	self.privatePriority=private~=nil
 	self.ownPriority=own~=nil
@@ -1044,6 +1083,7 @@ function comboController:Sync()
 end
 
 function comboController:Configure()
+	self.mainField,self.mainFieldCandidate,self.mainFieldSample,self.mainFieldSeen=nil,nil,nil,nil
 	self.generation+=1
 	self:Finish("Settings changed")
 	table.clear(self.jobs)
@@ -1113,7 +1153,9 @@ function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Team")
 	folder.AddSwitch("Coordinate Coconut Team",function()self:Configure()end,"coconutteam","enabled")
 	folder.AddSwitch("Fast Combo Catching",function()self:Configure()end,"coconutteam","fast")
-	folder.AddLabel("Main combo: on-field alts in Team Field; outside catchers in Outside Catch Field.")
+	local followSelector=folder.AddSwitch("Follow Main Between Fields",function()self:Configure()end,"coconutteam","followmain",{Tooltip="Spawning alts follow the main into each settled field and farm there, including during RBC. Enable Auto Farm on the alts. Outside catchers retain their selected field."})
+	folder.AddLabel("Mobile team follows the main field; turn follow off to use the fixed Team Field.")
+	folder.AddLabel("Main combo: spawning alts in the main/team field; outside catchers in Outside Catch Field.")
 	folder.AddLabel("Main catches 0x, then helps every N shared drops in the same field. Spawners catch their own 0x locally.")
 	folder.AddLabel("Keep the help interval identical on every client; Copy Team Code includes it.")
 	folder.AddLabel("Alt combo: 0x owner; odd stacks main solo when reachable; helpers keep unreachable drops alive.")
@@ -1148,6 +1190,7 @@ function comboController:BuildMenu(tab)
 			cfg.coconutteam.mainassist=math.floor(code.mainassist)
 			if assistSelector then assistSelector.Set(cfg.coconutteam.mainassist) end
 		end
+		if type(code.followmain)=="boolean" then cfg.coconutteam.followmain=code.followmain;followSelector.Set(code.followmain) end
 		if type(code.field)=="string" and availableFields[code.field] then cfg.coconutteam.field=code.field;fieldSelector.SetValue(code.field) end
 		if type(code.outsidefield)=="string" and availableFields[code.outsidefield] then cfg.coconutteam.outsidefield=code.outsidefield;outsideSelector.SetValue(code.outsidefield) end
 		saveConfig();self:Configure();ui.Notify("Coconut Team","Connection and account settings saved")
@@ -1156,7 +1199,7 @@ function comboController:BuildMenu(tab)
 		local c=cfg.coconutteam
 		local copy=setclipboard or toclipboard
 		if not copy then ui.Notify("Coconut Team","Clipboard unavailable");return end
-		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3}))
+		copy(HttpService:JSONEncode({url=c.url,key=c.key,main=c.main,alt1=c.alt1,alt2=c.alt2,catcher1=c.catcher1,catcher2=c.catcher2,catcher3=c.catcher3,field=c.field,outsidefield=c.outsidefield,mainassist=c.mainassist or 3,followmain=c.followmain==true}))
 		ui.Notify("Coconut Team","Paste this code into each team account")
 	end)
 	folder.AddButton("Copy Combo Diagnostics",function()
@@ -1196,7 +1239,7 @@ local collectObject
 
 			while true do
 				local options=gatheringPriorities.activeOptions
-				if not (comboSession and fieldPositionPolicy:SmileyOnly()) and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
+				if not (comboSession and (comboController:MobileTeam() or fieldPositionPolicy:SmileyOnly())) and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
@@ -1731,6 +1774,36 @@ for _,event in ipairs(realEvents)do
  end
 end
 comboController:Finish("live replay complete")
+
+comboController:Finish("mobile team setup")
+cfg.coconutteam.enabled=true;cfg.coconutteam.followmain=true
+cfg.coconutteam.main="MobileMain";cfg.coconutteam.alt1="Tester";cfg.coconutteam.catcher1="OutsideOne"
+cfg.coconutteam.field="Pepper Patch";cfg.coconutteam.outsidefield="Mountain Top Field"
+player.Name="Tester"
+home.Position=vector(0,0,0);home.Size=vector(100,2,100)
+outside.Position=vector(40,0,0);outside.Size=vector(100,2,100)
+local mobileChar=Instance.new("Model",workspace)
+local mobileRoot=Instance.new("Part",mobileChar);mobileRoot.Name="HumanoidRootPart";mobileRoot.Position=vector(0,3,0)
+local mobileHumanoid=Instance.new("Humanoid",mobileChar)
+local mobileMain={Name="MobileMain",Character=mobileChar}
+Players.list={player,mobileMain}
+comboController.mainField=nil;comboController.mainFieldSample=nil;comboController.mainFieldCandidate=nil
+assert(comboController:FollowingMain() and comboController:MobileTeam())
+assert(not comboController:MainField(),"must wait for main to settle")
+now+=.8;assert(comboController:MainField()==home)
+mobileRoot.Position=vector(35,3,0)
+now+=.3;assert(comboController:MainField()==home,"transit must not immediately change team field")
+now+=.8;assert(comboController:TeamField()==outside.Name,"team must leave fixed Pepper field")
+comboController.records={{key="mobile-main",owner="MobileMain",field=outside.Name,position=vector(36,3,0),deadline=now+2,sharedDrops=1}}
+assert(comboController:OutsideMainLanding(),"spawning alt must catch main combo in new field")
+assert(comboController:Roster().field=="Pepper Patch","dynamic movement must not change shared coordinator roster")
+player.Name="OutsideOne";assert(not comboController:FollowingMain() and not comboController:MobileTeam(),"outside catchers must retain their own role")
+player.Name="Tester";cfg.coconutteam.followmain=false
+assert(not comboController:FollowingMain() and comboController:TeamField()=="Pepper Patch")
+cfg.coconutteam.followmain=true;Players.list={player};now+=1
+assert(not comboController:MainField(),"missing main must stop followers")
+mobileChar:Destroy();comboController.records={};cfg.coconutteam.followmain=false
+print("PASS: stable live main-field following, combo support outside Pepper, fixed outside catchers, unchanged coordinator roster and missing-main cleanup")
 showerController.shuttingDown=true
 comboController:Shutdown()
 assert(not comboController.active and next(comboController.records)==nil and next(comboController.byKey)==nil and next(comboController.chains)==nil and comboController.chainCount==0 and root.CustomPhysicalProperties==nil and root.Massless==false)

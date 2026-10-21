@@ -522,7 +522,9 @@ end
 function fieldPositionPolicy:StrictArea()
 	if not cfg.autofarm.enabled or not cfg.autofarm.strictquadrant or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
 	local zones=workspace:FindFirstChild("FlowerZones")
-	local field=zones and zones:FindFirstChild(cfg.autofarm.field1)
+	local team=smoothMovement.comboController
+	local name=team and team:FollowingMain() and team:TeamField() or cfg.autofarm.field1
+	local field=zones and zones:FindFirstChild(name)
 	if not field then return end
 	local _,area=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),field.Position.Y)
 	return area
