@@ -613,6 +613,7 @@ local cfg = {
 	rbc = {
 		enabled = false,
 		preset = "Blue",
+		beepriorities = {},
 		buydrives = false,
 		usedrives = false,
 		goldcogmowers = true,
@@ -1743,6 +1744,59 @@ end
 
 local ui = {}
 local uiParts = {}
+local rbcBeePriorities = {
+	names={"Basic","Bomber","Brave","Bumble","Cool","Hasty","Looker","Rad","Rascal","Stubborn","Bubble","Bucko","Commander","Demo","Exhausted","Fire","Frosty","Honey","Rage","Riley","Shocked","Baby","Carpenter","Demon","Diamond","Lion","Music","Ninja","Shy","Buoyant","Fuzzy","Precise","Spicy","Tadpole","Vector","Bear","Cobalt","Crimson","Digital","Festive","Gummy","Photon","Puppy","Tabby","Vicious","Windy"}
+}
+function rbcBeePriorities:Get(preset,bee)
+	local saved=cfg.rbc.beepriorities
+	local priorities=type(saved)=="table" and saved[preset]
+	local value=type(priorities)=="table" and priorities[bee]
+	if type(value)=="number" and value==value and value>=1 and value<=100 then return math.floor(value) end
+	return self.defaults and self.defaults[preset] and self.defaults[preset][bee] or 51
+end
+function rbcBeePriorities:Set(preset,bee,value)
+	if not self.defaults[preset] or not table.find(self.names,bee) then return end
+	cfg.rbc.beepriorities=type(cfg.rbc.beepriorities)=="table" and cfg.rbc.beepriorities or {}
+	cfg.rbc.beepriorities[preset]=type(cfg.rbc.beepriorities[preset])=="table" and cfg.rbc.beepriorities[preset] or {}
+	cfg.rbc.beepriorities[preset][bee]=math.clamp(math.floor(value),1,100)
+	saveConfig()
+end
+function rbcBeePriorities:BuildMenu(tab)
+	local folder=tab.AddFolder("Bee Pick Priorities",true)
+	folder.AddLabel("Lower number = picked first. Equal numbers use existing tie-breaks.")
+	folder.AddLabel("Edits affect the chosen preset only. 51 is the original unranked fallback.")
+	local preset=cfg.rbc.preset or "Blue"
+	local bee="Digital"
+	local value=self:Get(preset,bee)
+	local slider,labels
+	local function refresh()
+		value=self:Get(preset,bee)
+		if slider then slider.Set(value) end
+		if labels then
+			local ordered=table.clone(self.names)
+			table.sort(ordered,function(a,b)
+				local ra,rb=self:Get(preset,a),self:Get(preset,b)
+				return ra==rb and a<b or ra<rb
+			end)
+			for i,name in ipairs(ordered) do labels[i].Text=tostring(self:Get(preset,name))..". "..name.." Bee" end
+		end
+	end
+	local chooser=folder.AddDropdown("Edit Preset",{"Blue","Red","White"},nil,function(v)preset=v;refresh()end)
+	chooser.SetValue(preset)
+	local beeChooser=folder.AddDropdown("Bee",self.names,nil,function(v)bee=v;refresh()end)
+	beeChooser.SetValue(bee)
+	local editState={priority=value}
+	slider=folder.AddSlider("Pick Priority",function(v)value=v end,1,100,editState,"priority",{Left=true})
+	folder.AddButton("Save Bee Priority",function()self:Set(preset,bee,value);refresh()end)
+	folder.AddButton("Reset This Preset",function()
+		if type(cfg.rbc.beepriorities)=="table" then cfg.rbc.beepriorities[preset]=nil end
+		saveConfig();refresh()
+	end)
+	labels={}
+	for i=1,#self.names do labels[i]=folder.AddLabel("") end
+	refresh()
+end
+
 local gatheringPriorities = {}
 
 if _G.atlas then
@@ -63726,6 +63780,8 @@ end
 		end,
 	}
 
+	rbcBeePriorities.defaults={Blue=rbc.bluebees,Red=rbc.redbees,White=rbc.whitebees}
+
 	local rbcAmuletCheck
 
 	rbcAmuletCheck = function()
@@ -63950,7 +64006,7 @@ end
 							local beeLevel = tonumber(string.match(text, "%d+")) or 1
 							local isGifted = string.find(text, "★", 1, true) ~= nil
 							local beeName = string.gsub(string.gsub(string.gsub(text, "★ ", ""), " %(Lvl %d+%)", ""), " Bee", "")
-							local v138 = rbc[string.lower(cfg.rbc.preset) .. "bees"][beeName]
+							local v138 = rbcBeePriorities:Get(cfg.rbc.preset,beeName)
 							local hasBeequip = string.find(child.Text2.Text, "Beequip: None") == nil
 							local hasMutation = string.find(child.Text2.Text, "Mutation: None") == nil
 
@@ -69516,6 +69572,7 @@ which bees and get all 3 targets if
 				end, "rbc", "enabled")
 
 				rbcFolder.AddDropdown("Preset", { "Blue", "Red", "White" }, nil, nil, "rbc", "preset")
+				rbcBeePriorities:BuildMenu(controls.rbc)
 
 				if not cfg.rbc.buydrives then
 					cfg.rbc.buydrives = { Blue = true, Red = true, White = true, Glitched = true }
