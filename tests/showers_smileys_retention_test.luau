@@ -328,6 +328,7 @@ local showerController={active=false}
 			end
 		end
 	end)()))
+
 		local touchedMarks = {}
 		connections:Add("touchedMarkExpiry", RunService.Heartbeat:Connect((function()
 			local elapsed = 0

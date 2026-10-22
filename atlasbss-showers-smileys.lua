@@ -242,6 +242,9 @@ local cfg = {
 		polarbear = false,
 	},
 	antilag = {
+		aggressivevisuals = false,
+		visualeffects = false,
+		frogs = false,
 		tokens = false,
 		particles = false,
 		precise = false,
@@ -1243,29 +1246,40 @@ gameApi.CanBuy = function(api, item, costs, v29)
 	return true
 end
 
+local function copyConfig(value)
+	if type(value) ~= "table" then return value end
+	local result = {}
+	for key, item in pairs(value) do result[key] = copyConfig(item) end
+	return result
+end
+local configSchema = copyConfig(cfg)
 local mergeTable
-
-mergeTable = function(target, source)
+mergeTable = function(target, source, schema)
 	if type(source) ~= "table" then return end
-	for k, value in pairs(target) do
-		local incoming = source[k]
-		if type(value) == "table" and type(incoming) == "table" then
-			if next(incoming) ~= nil then mergeTable(value, incoming) end
-		elseif type(incoming) == type(value) then
-			target[k] = incoming
-		end
+	schema = schema or configSchema
+	for key, default in pairs(schema) do
+		local incoming = source[key]
+		if incoming == nil then continue end
+		-- Original Atlas uses false as the unset value for dropdowns and modals.
+		if default == false then
+			if type(incoming)=="boolean" or type(incoming)=="string" or type(incoming)=="number" or type(incoming)=="table" then
+				target[key] = copyConfig(incoming)
+			end
+		elseif type(default)=="table" and type(incoming)=="table" then
+			if type(target[key])~="table" then target[key]=copyConfig(default) end
+			mergeTable(target[key], incoming, default)
+		elseif type(incoming)==type(default) then target[key]=incoming end
 	end
 end
 
--- Preserve Atlas+ options that this original-based build does not expose.
-local function overlaySupportedConfig(saved, supported)
+-- Preserve unsupported Atlas+ settings, but replace selections so deselections persist.
+local function overlaySupportedConfig(saved, supported, schema)
+	schema = schema or configSchema
 	for key, value in pairs(supported) do
-		if type(value) == "table" then
-			if type(saved[key]) ~= "table" then saved[key] = {} end
-			overlaySupportedConfig(saved[key], value)
-		else
-			saved[key] = value
-		end
+		if type(value)=="table" and type(schema[key])=="table" then
+			if type(saved[key])~="table" then saved[key]={} end
+			overlaySupportedConfig(saved[key],value,schema[key])
+		else saved[key]=copyConfig(value) end
 	end
 	return saved
 end
@@ -1548,6 +1562,145 @@ connections:Add("registryCleanup", RunService.Heartbeat:Connect((function()
 		end
 	end
 end)()))
+
+local visualOptimizer = {
+	modes = {}, originals = {},
+	decorative = {Map=true,Decorations=true,FieldDecos=true,Amulets=true,["Shell Amulets"]=true,
+		["Stickbug Amulets"]=true,Campsite=true,Leaderboards=true,HiveDeco=true,
+		TheGames_WideBanners=true},
+	protected = {Collectibles=true,DupedTokens=true,Particles=true,Stations=true,
+		PoppablePlants=true,Monsters=true,MonsterSpawners=true,Toys=true,NPCs=true,
+		Honeycombs=true,FlowerZones=true,PlayerFlames=true,Clouds=true,Balloons=true},
+}
+
+function visualOptimizer:Remember(object, property, value)
+	local ok, previous = pcall(function() return object[property] end)
+	if not ok or previous == value then return end
+	local saved = self.originals[object]
+	if not saved then saved={};self.originals[object]=saved end
+	if saved[property] == nil then saved[property]=previous end
+	pcall(function() object[property]=value end)
+end
+
+function visualOptimizer:Restore()
+	for object, properties in pairs(self.originals) do
+		for property, value in pairs(properties) do pcall(function() object[property]=value end) end
+	end
+	table.clear(self.originals)
+end
+
+-- Explicit lifetime: weak Instance keys can disappear before restoration, and
+-- removed objects must not leave saved-property records behind.
+function visualOptimizer:Release(object)
+	local properties = self.originals[object]
+	if not properties then return end
+	self.originals[object] = nil
+	for property, value in pairs(properties) do pcall(function() object[property]=value end) end
+end
+
+function visualOptimizer:Apply(object)
+	if object.Name == "WarningDisk" or object.Name == "Star Shower Guide" then return end
+	if not object.Parent then return end
+	local cosmetic, protected, bees, flowers, balloons, otherPlayer, frog = false,false,false,false,false,false,false
+	local ancestor = object
+	while ancestor and ancestor ~= workspace do
+		if self.decorative[ancestor.Name] then cosmetic=true end
+		if self.protected[ancestor.Name] then protected=true end
+		if string.find(ancestor.Name,"Sign",1,true) then protected=true end
+		if ancestor.Name == "Bees" then bees=true end
+		if (ancestor.Name == "Frog" and ancestor:IsA("Model")) or (ancestor.Name == "Frogs" and (ancestor:IsA("Folder") or ancestor:IsA("Model"))) then frog=true end
+		if ancestor.Name == "Flowers" then flowers=true end
+		if ancestor.Name == "FieldBalloons" then balloons=true end
+		ancestor=ancestor.Parent
+	end
+	if self.modes.players then
+		local model=object:FindFirstAncestorOfClass("Model")
+		local player=model and getService("Players"):GetPlayerFromCharacter(model)
+		otherPlayer=player ~= nil and player ~= localPlayer
+	end
+	local aggressive=self.modes.aggressive
+	local effects=aggressive or self.modes.effects
+	local textures=aggressive or self.modes.textures
+	local hide=((self.modes.decorations or aggressive) and cosmetic) or (self.modes.bees and bees) or
+		(self.modes.flowers and flowers) or (self.modes.balloons and balloons) or otherPlayer or (self.modes.frogs and frog)
+	if object:IsA("BasePart") then
+		if textures or self.modes.main then
+			self:Remember(object,"CastShadow",false)
+			self:Remember(object,"Reflectance",0)
+			self:Remember(object,"Material",Enum.Material.SmoothPlastic)
+		end
+		if hide then self:Remember(object,"LocalTransparencyModifier",1) end
+		if textures and cosmetic and not protected and object:IsA("MeshPart") then self:Remember(object,"TextureID","") end
+	elseif object:IsA("Decal") or object:IsA("Texture") then
+		-- Token icons, NPC/shop signs, hive and field identifiers must remain readable by scripts.
+		if textures and cosmetic and not protected then self:Remember(object,"Texture","") end
+		if hide and (not protected or (self.modes.frogs and frog)) then self:Remember(object,"Transparency",1) end
+	elseif object:IsA("SpecialMesh") then
+		if textures and cosmetic and not protected then self:Remember(object,"TextureId","") end
+	elseif object:IsA("SurfaceAppearance") then
+		if textures and cosmetic and not protected then
+			for _, property in ipairs({"ColorMap","MetalnessMap","NormalMap","RoughnessMap"}) do self:Remember(object,property,"") end
+		end
+	elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam") then
+		if effects or hide then
+			self:Remember(object,"Enabled",false)
+			if object:IsA("ParticleEmitter") or object:IsA("Trail") then pcall(function()object:Clear()end) end
+		end
+	elseif object:IsA("Light") or object:IsA("PostEffect") then
+		if effects or self.modes.main or (self.modes.frogs and frog) then self:Remember(object,"Enabled",false) end
+	elseif object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
+		if hide and ((cosmetic and not protected) or (self.modes.frogs and frog)) then self:Remember(object,"Enabled",false) end
+	elseif object:IsA("Sound") then
+		if self.modes.frogs and frog then self:Remember(object,"Volume",0) end
+	end
+end
+
+function visualOptimizer:Set(mode, enabled)
+	enabled=enabled==true
+	if (self.modes[mode]==true)==enabled then return end
+	self.modes[mode]=enabled
+	threads:Cancel("visualOptimizerScan")
+	connections:Cancel("visualOptimizerWorkspace")
+	connections:Cancel("visualOptimizerLighting")
+	connections:Cancel("visualOptimizerWorkspaceRemoving")
+	connections:Cancel("visualOptimizerLightingRemoving")
+	self:Restore()
+	local active=false
+	for _, on in pairs(self.modes) do if on then active=true;break end end
+	if not active then return end
+	if self.modes.main or self.modes.aggressive then
+		self:Remember(Lighting,"GlobalShadows",false)
+		pcall(function()self:Remember(settings().Rendering,"QualityLevel",Enum.QualityLevel.Level01)end)
+		self:Remember(workspace.Terrain,"WaterWaveSize",0)
+		self:Remember(workspace.Terrain,"WaterWaveSpeed",0)
+		self:Remember(workspace.Terrain,"WaterReflectance",0)
+	end
+	connections:Add("visualOptimizerWorkspace",workspace.DescendantAdded:Connect(function(object) self:Apply(object) end))
+	connections:Add("visualOptimizerLighting",Lighting.DescendantAdded:Connect(function(object) self:Apply(object) end))
+	connections:Add("visualOptimizerWorkspaceRemoving",workspace.DescendantRemoving:Connect(function(object) self:Release(object) end))
+	connections:Add("visualOptimizerLightingRemoving",Lighting.DescendantRemoving:Connect(function(object) self:Release(object) end))
+	threads:Add("visualOptimizerScan",function()
+		for _, root in ipairs({workspace,Lighting}) do
+			local objects=root:GetDescendants()
+			for i = 1, #objects do
+				local object = objects[i]
+				if object:IsDescendantOf(root) then self:Apply(object) end
+				objects[i] = nil -- Release processed references before yielding.
+				if i%150==0 then task.wait() end
+			end
+		end
+	end)
+end
+
+function visualOptimizer:Shutdown()
+	threads:Cancel("visualOptimizerScan")
+	connections:Cancel("visualOptimizerWorkspace")
+	connections:Cancel("visualOptimizerLighting")
+	connections:Cancel("visualOptimizerWorkspaceRemoving")
+	connections:Cancel("visualOptimizerLightingRemoving")
+	self:Restore()
+	table.clear(self.modes)
+end
 
 local ui = {}
 local uiParts = {}
@@ -44983,13 +45136,13 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 		if not (not cfg.webhook.graph and not cfg.webhook.dashboard or not discord.hourstart) then
 			if not (not laststatus or discord.laststatus == laststatus) then
 				local hourstart = discord.hourstart
-				discord.graph.status_changes[tostring(os.time() - hourstart)] = laststatus
+				discord.graph.status_changes[tostring(math.clamp(os.time() - hourstart,0,3600))] = laststatus
 				discord.laststatus = laststatus
 			end
 
 			if not (not lastfield or discord.lastfield == lastfield) then
 				local hourstart = discord.hourstart
-				discord.graph.field[tostring(os.time() - hourstart)] = lastfield
+				discord.graph.field[tostring(math.clamp(os.time() - hourstart,0,3600))] = lastfield
 				discord.lastfield = lastfield
 			end
 		end
@@ -64406,6 +64559,8 @@ end
 
 ScreenGui.Destroying:Connect(function()
 	showerController:Shutdown()
+	visualOptimizer:Shutdown()
+	pcall(function() RunService:Set3dRenderingEnabled(true) end)
 	connections:CancelAll()
 	threads:CancelAll()
 	pcall(stopMovement)
@@ -67827,447 +67982,59 @@ Are you sure you want to enable it?]])
 					end
 				end, "antilag", "stations", { Hook = true })
 
-				antiLagFolder.AddSwitch("Hide Bees", function(n)
-					if n and not connections:Get("bees") then
-						for n, n in ipairs(workspace.Bees:GetChildren()) do
-							n:Destroy()
-						end
+				antiLagFolder.AddSwitch("Hide Bees", function(enabled) visualOptimizer:Set("bees",enabled) end, "antilag", "bees")
+				antiLagFolder.AddSwitch("Hide Frogs", function(enabled) visualOptimizer:Set("frogs",enabled) end, "antilag", "frogs")
 
-						connections:Add("bees", workspace.Bees.ChildAdded:Connect(function(n)
-							RunService.Heartbeat:Wait()
-							n:Destroy()
-						end))
-					end
-				end, "antilag", "bees")
+				antiLagFolder.AddSwitch("Hide Flowers", function(enabled) visualOptimizer:Set("flowers",enabled) end, "antilag", "flowers")
 
-				antiLagFolder.AddSwitch("Hide Flowers", function(n)
-					if n then
-						local n = workspace:FindFirstChild("Flowers")
+				antiLagFolder.AddSwitch("Hide Balloons",function(enabled)
+                    visualOptimizer:Set("balloons",enabled)
+                end,"antilag","balloons")
 
-						if n then
-							n:Destroy()
-						end
-					end
-				end, "antilag", "flowers")
-
-				antiLagFolder.AddSwitch("Destroy Balloons", function(n)
-					if n then
-						local n = workspace.Balloons:FindFirstChild("FieldBalloons")
-
-						if n then
-							n:Destroy()
-						end
-
-						tracked.balloons = {}
-					end
-				end, "antilag", "balloons")
-
-				local destroyTexturesSwitch = antiLagFolder.AddSwitch("Destroy Textures", function(n)
-					if not n then
-						cfg.antilag.textures = n
-						saveConfig()
-					else
-						local L = workspace.Toys["Sticker Printer"].StickerPrinterModel
-						local y = workspace.Toys["Sticker Stack"].StackModel
-						local o = workspace:FindFirstChild("Collectibles")
-						local Z = workspace.Particles
-
-						for p, p in ipairs(workspace:GetDescendants()) do
-							local P = p.ClassName
-
-							if P == "BasePart" or P == "Part" or P == "WedgePart" or P == "TrussPart" or P == "UnionOperation" or P == "SpawnLocation" then
-								if p.CollisionGroup == "BoostBallBarrier" then
-									p:Destroy()
-								else
-									p.Material = Enum.Material.Plastic
-									p.Reflectance = 0
-								end
-							elseif (P == "Decal" or P == "Texture") and p.Texture ~= "rbxassetid://3581259086" and not p:IsDescendantOf(L) and not p:IsDescendantOf(y) and (not state.hive or not p:IsDescendantOf(state.hive)) and (not o or not p:IsDescendantOf(o)) and not p:IsDescendantOf(Z) then
-								p:Destroy()
-							elseif P == "ParticleEmitter" and p.Name ~= "PuffshroomSpores" and not p:IsDescendantOf(Z) then
-								p:Destroy()
-							end
-						end
-
-						cfg.antilag.textures = n
-						saveConfig()
-					end
+				local destroyTexturesSwitch = antiLagFolder.AddSwitch("Strip Decorative Textures", function(enabled)
+					cfg.antilag.textures=enabled
+					visualOptimizer:Set("textures",enabled)
+					saveConfig()
 				end)
-
-				antiLagFolder.AddSwitch("Destroy Decorations", function(n)
-					if n then
-						local n = workspace:FindFirstChild("Amulets")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Shell Amulets")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Stickbug Amulets")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("BallArrowFolder")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("BoostBalls")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Campsite")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("ClassicMinigame")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Cubs")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Faces")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("FieldDecos")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Frame")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Frogs")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Goo")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Paths")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Invisible Walls")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Leaderboards")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Territories")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("TheGamesEvent")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("TheGames_WideBanners")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Bee Bear Hive")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Noob Bear")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("OnettNPC")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Pro Bear")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Top Bear")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("BuckoAtHQ")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("RileyAtHQ")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Honey")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Lion")
-
-						if n then
-							n:Destroy()
-						end
-
-						local n = workspace:FindFirstChild("Map")
-
-						if n then
-							local L = n:FindFirstChild("Fences")
-
-							if L then
-								n.Fences:Destroy()
-							end
-						end
-
-						local n = workspace:FindFirstChild("HiveDeco")
-
-						if n then
-							local L = n:FindFirstChild("HiveModels")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("StickerCanvases")
-
-							if L then
-								L:Destroy()
-							end
-						end
-
-						local n = workspace:FindFirstChild("HivePlatforms")
-
-						if n then
-							for L, L in ipairs(n:GetChildren()) do
-								for n, n in ipairs(L:GetChildren()) do
-									if n.Name == "Platform" then
-										n.CanCollide = false
-									elseif n.Name ~= "Hive" and n.Name ~= "PlayerRef" then
-										n:Destroy()
-									end
-								end
-							end
-						end
-
-						local n = workspace:FindFirstChild("Decorations")
-
-						if n then
-							local L = n:FindFirstChild("Misc")
-
-							if L then
-								for y, y in ipairs(L:GetChildren()) do
-									if string.find(y.Name, "Blue Flower") or y.Name == "Bamboo" or y.Name == "Bush" or y.Name == "Mushroom" then
-										y:Destroy()
-									end
-								end
-							end
-
-							local L = n:FindFirstChild("35ZoneCave")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("BubbleWandChimney")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("TreatBooth")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("Coconut Field")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("Pepper Patch")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("Pine Tree")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("SpiderCave")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("Petal Shop")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("JumpGames")
-
-							if L then
-								L:Destroy()
-							end
-
-							local L = n:FindFirstChild("PEggMaze")
-
-							if L then
-								L:Destroy()
-							end
-
-							for L, L in ipairs(n:GetChildren()) do
-								if string.find(L.Name, "Dandelion") or string.find(L.Name, "Clover") or string.find(L.Name, "Rose") or string.find(L.Name, "Sign") or string.find(L.Name, "Glider") or L.Name == "ShopWord" then
-									L:Destroy()
-								end
-							end
-						end
-
-						for n, n in ipairs(workspace:GetChildren()) do
-							if n.ClassName == "Part" and n.CollisionGroup == "BoostBallBarrier" then
-								n:Destroy()
-							end
-						end
-
-						for n, n in ipairs(removelinks) do
-							pathNodes[n] = nil
-							pathLinks[n] = nil
-
-							for O, O in pairs(pathLinks) do
-								O[n] = nil
-							end
-						end
-					end
-				end, "antilag", "decorations")
+				antiLagFolder.AddSwitch("Hide Decorations (Keep Game Objects)",function(enabled)
+					visualOptimizer:Set("decorations",enabled)
+				end,"antilag","decorations")
+				antiLagFolder.AddSwitch("Disable Visual Effects",function(enabled)
+					visualOptimizer:Set("effects",enabled)
+				end,"antilag","visualeffects")
+				antiLagFolder.AddSwitch("Aggressive Visual Optimization",function(enabled)
+					visualOptimizer:Set("aggressive",enabled)
+				end,"antilag","aggressivevisuals")
+				antiLagFolder.AddLabel("Preserves tokens, marks, hitboxes, collision and game folders")
+				antiLagFolder.AddLabel("Visual changes do not block asset downloads or enforce a RAM cap")
 
 				destroyTexturesSwitch.Set(cfg.antilag.textures)
 
-				antiLagFolder.AddSwitch("Disable 3D Rendering", function(n)
-					RunService:Set3dRenderingEnabled(not n)
-
-					if n then
-						local n = Instance.new("Frame")
-						n.Size = UDim2.new(1, 0, 1, 0)
-						n.BackgroundColor3 = Color3.new(0, 0, 0)
-						n.BorderSizePixel = 0
-						n.ZIndex = 0
-						n.Parent = ScreenGui
-					else
-						local n = ScreenGui:FindFirstChild("Frame")
-
-						if n then
-							n:Destroy()
-						end
-					end
+				antiLagFolder.AddSwitch("Disable 3D Rendering", function(disabled)
+					RunService:Set3dRenderingEnabled(not disabled)
+					local overlay = ScreenGui:FindFirstChild("AtlasRenderingOverlay")
+					if disabled and not overlay then
+						overlay = Instance.new("Frame")
+						overlay.Name = "AtlasRenderingOverlay"
+						overlay.Size = UDim2.new(1,0,1,0)
+						overlay.BackgroundColor3 = Color3.new(0,0,0)
+						overlay.BorderSizePixel = 0
+						overlay.ZIndex = 0
+						overlay.Parent = ScreenGui
+					elseif not disabled and overlay then overlay:Destroy() end
 				end, "antilag", "norender")
 
-				antiLagFolder.AddSwitch("Hide Other Players", function(n)
-					if n and not connections:Get("antilagplayers") then
-						for n, n in game.Players:GetPlayers() do
-							if n ~= localPlayer then
-								n.Character:Destroy()
-							end
-						end
-
-						connections:Add("antilagplayers", game.Players.PlayerAdded:Connect(function(n)
-							if n ~= localPlayer then
-								threadCount += 1
-
-								connections:Add(threadCount, n.CharacterAdded:Connect(function(n)
-									n:Destroy()
-								end))
-							end
-						end))
-					end
-				end, "antilag", "players")
+				antiLagFolder.AddSwitch("Hide Other Players",function(enabled)
+					visualOptimizer:Set("players",enabled)
+				end,"antilag","players")
 
 				antiLagFolder.AddSwitch("Hide BSS UI", function(n)
 					localPlayer.PlayerGui.ScreenGui.Enabled = not n
 				end, "antilag", "bssui")
 
-				antiLagFolder.AddSwitch("Anti Lag", function(enabled)
-					if not (not enabled or connections:Get("antilag")) then
-						settings().Rendering.QualityLevel = "Level01"
-						workspace.Terrain.WaterWaveSize = 0
-						workspace.Terrain.WaterWaveSpeed = 0
-						workspace.Terrain.WaterReflectance = 0
-						workspace.Terrain.WaterTransparency = 0
-						Lighting.GlobalShadows = false
-						Lighting.FogEnd = math.huge
-						Lighting.FogStart = math.huge
-						Lighting.Brightness = 0
-
-						connections:Add("antilag", Lighting.Changed:Connect(function()
-							Lighting.GlobalShadows = false
-							Lighting.FogEnd = math.huge
-							Lighting.FogStart = math.huge
-							Lighting.Brightness = 0
-						end))
-
-						gameApi:Event("PlayerSettingsEvent", "PollenPopUps", false)
-					end
-				end, "antilag", "main")
+				antiLagFolder.AddSwitch("Anti Lag",function(enabled)
+					visualOptimizer:Set("main",enabled)
+				end,"antilag","main")
 
 				antiLagFolder.Toggle(true, true)
 				detectedFolder.AddLabel("Use this at your own risk")
