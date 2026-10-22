@@ -17,7 +17,7 @@ local connections = {list={}}
 function connections:Get(id) return self.list[id] end
 function connections:Cancel(id) if self.list[id] then self.list[id]:Disconnect(); self.list[id]=nil end end
 function connections:Add(id,c) self:Cancel(id); self.list[id]=c end
-local cfg = {autoquest={dupedtokens=false},autofarm={farmdupedtokens=false,farmsmileys=false}}
+local cfg = {autoquest={dupedtokens=false},autofarm={farmdupedtokens=false}}
 local tracked = {dupedbear={},dupedsmiley={},dupedtokens={}}
 local folder = {ChildAdded=signal(),ChildRemoved=signal(), children={}}
 function folder:GetChildren() return self.children end
@@ -34,7 +34,7 @@ table.insert(folder.children,existing)
 local watchDupedTokens
 	watchDupedTokens = function(enable)
 		if not enable then
-			if cfg.autoquest.dupedtokens or cfg.autofarm.farmdupedtokens or cfg.autofarm.farmsmileys then return end
+			if cfg.autoquest.dupedtokens or cfg.autofarm.farmdupedtokens then return end
 			connections:Cancel("dupedtokens")
 			connections:Cancel("dupedtokens2")
 			connections:Cancel("dupedPending")

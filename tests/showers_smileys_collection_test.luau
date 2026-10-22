@@ -13,14 +13,14 @@ local function distanceTo(p)return (p-root.Position).Magnitude end
 local currentField={}
 local function getFieldAt()return currentField end
 local function isPathClear()return false end
-local cfg={autofarm={farmsmileys=true,smileytime=4}}
+local cfg={autofarm={farmdupedtokens=true,smileytime=4}}
 local tracked={dupedsmiley={}}
 local touchedMarks={}
 local showerController={active=false}
 local state={}
 local RunService={Heartbeat={Wait=function()now+=.05 end}}
 		local function pickFastSmiley(opts)
-			if not cfg.autofarm.farmsmileys then return end
+			if not (cfg.autofarm.farmdupedtokens or opts.dupedtokensquest) then return end
 			local now,root,best,bestDistance=os.clock(),getRootPart().Position,nil,math.huge
 			for key,value in pairs(tracked.dupedsmiley) do
 				local object=type(key)=="number" and value or key
@@ -84,5 +84,5 @@ tracked.dupedsmiley={[obj]=0}
 assert(not pickFastSmiley({}),"uncharged token must not stall farming")
 circle.Rotation=90;assert(pickFastSmiley({})==obj)
 obj.Parent=nil;assert(not pickFastSmiley({}) and not tracked.dupedsmiley[obj])
-cfg.autofarm.farmsmileys=false;assert(not pickFastSmiley({}))
+cfg.autofarm.farmdupedtokens=false;assert(not pickFastSmiley({}))
 print("PASS: nearest ready smiley, continuous approach, bounded retry, shower takeover, charge gating, removal and toggle")

@@ -1,4 +1,4 @@
--- Original Atlas + fast Star Showers and Smiley collection. Separate build/config.
+-- Original Atlas + fast Star Showers and Smiley collection. Separate build; compatible with normal Atlas configs.
 -- discord.gg/syncrypt
 
 if _G.loading then return end
@@ -169,7 +169,6 @@ local cfg = {
 		farmbubbles = false,
 		farmcoconuts = true,
 		farmdupedtokens = true,
-		farmsmileys = true,
 		farmfireflies = false,
 		farmfires = false,
 		farmfuzzbombs = false,
@@ -1247,22 +1246,41 @@ end
 local mergeTable
 
 mergeTable = function(target, source)
+	if type(source) ~= "table" then return end
 	for k, value in pairs(target) do
-		if type(value) ~= "table" or type(source[k]) ~= "table" then
-			if source[k] ~= nil then
-				target[k] = source[k]
-			end
-		elseif next(source[k]) ~= nil then
-			mergeTable(value, source[k])
+		local incoming = source[k]
+		if type(value) == "table" and type(incoming) == "table" then
+			if next(incoming) ~= nil then mergeTable(value, incoming) end
+		elseif type(incoming) == type(value) then
+			target[k] = incoming
 		end
 	end
 end
 
+-- Preserve Atlas+ options that this original-based build does not expose.
+local function overlaySupportedConfig(saved, supported)
+	for key, value in pairs(supported) do
+		if type(value) == "table" then
+			if type(saved[key]) ~= "table" then saved[key] = {} end
+			overlaySupportedConfig(saved[key], value)
+		else
+			saved[key] = value
+		end
+	end
+	return saved
+end
+
 local function saveConfig(cacheOnly)
 	if not cacheOnly then
-		writefile("atlas-showers/" .. state.config .. ".json", HttpService:JSONEncode(cfg))
+		local path = "atlas/" .. state.config .. ".json"
+		local saved = {}
+		if isfile(path) then
+			local ok, result = pcall(function() return HttpService:JSONDecode(readfile(path)) end)
+			if ok and type(result) == "table" then saved = result end
+		end
+		writefile(path, HttpService:JSONEncode(overlaySupportedConfig(saved, cfg)))
 	else
-		writefile("atlascache-showers-" .. localPlayer.Name .. ".json", HttpService:JSONEncode(cache))
+		writefile("atlascache-" .. localPlayer.Name .. ".json", HttpService:JSONEncode(cache))
 	end
 end
 
@@ -6045,7 +6063,7 @@ do
 
 	watchDupedTokens = function(enable)
 		if not enable then
-			if cfg.autoquest.dupedtokens or cfg.autofarm.farmdupedtokens or cfg.autofarm.farmsmileys then return end
+			if cfg.autoquest.dupedtokens or cfg.autofarm.farmdupedtokens then return end
 			connections:Cancel("dupedtokens")
 			connections:Cancel("dupedtokens2")
 			connections:Cancel("dupedPending")
@@ -45438,7 +45456,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 
 
 		local function pickFastSmiley(opts)
-			if not cfg.autofarm.farmsmileys then return end
+			if not (cfg.autofarm.farmdupedtokens or opts.dupedtokensquest) then return end
 			local now,root,best,bestDistance=os.clock(),getRootPart().Position,nil,math.huge
 			for key,value in pairs(tracked.dupedsmiley) do
 				local object=type(key)=="number" and value or key
@@ -64545,17 +64563,19 @@ end
 
 logger.log("Started")
 
-if not isfolder("atlas-showers") then
-	makefolder("atlas-showers")
+if not isfolder("atlas") then
+	makefolder("atlas")
 end
 
-writefile("atlas-showers/default.json", HttpService:JSONEncode(cfg))
+if not isfile("atlas/default.json") then
+	writefile("atlas/default.json", HttpService:JSONEncode(cfg))
+end
 
-if isfile("atlas-showers-" .. localPlayer.Name .. ".json") then
-	local lastConfigName = readfile("atlas-showers-" .. localPlayer.Name .. ".json")
+if isfile("atlas-" .. localPlayer.Name .. ".json") then
+	local lastConfigName = readfile("atlas-" .. localPlayer.Name .. ".json")
 
-	if isfile("atlas-showers/" .. lastConfigName) then
-		local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas-showers/" .. lastConfigName))
+	if isfile("atlas/" .. lastConfigName) then
+		local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas/" .. lastConfigName))
 
 		if not ok then
 			warn(result)
@@ -64570,10 +64590,10 @@ end
 if not state.config then
 	state.config = "Preset 1"
 
-	if not isfile("atlas-showers/Preset 1.json") then
+	if not isfile("atlas/Preset 1.json") then
 		saveConfig()
 	else
-		local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas-showers/Preset 1.json"))
+		local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas/Preset 1.json"))
 
 		if not ok then
 			warn(result)
@@ -64584,8 +64604,8 @@ if not state.config then
 	end
 end
 
-if isfile("atlascache-showers-" .. localPlayer.Name .. ".json") then
-	local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlascache-showers-" .. localPlayer.Name .. ".json"))
+if isfile("atlascache-" .. localPlayer.Name .. ".json") then
+	local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlascache-" .. localPlayer.Name .. ".json"))
 
 	if not ok then
 		warn(result)
@@ -65027,7 +65047,6 @@ which bees and get all 3 targets if
 					end
 				end, "autofarm", "farmpuppyball")
 
-				farmFolder.AddSwitch("Farm Smileys",function(enabled)watchDupedTokens(enabled or cfg.autofarm.farmdupedtokens or cfg.autoquest.dupedtokens)end,"autofarm","farmsmileys")
 				farmFolder.AddSwitch("Farm Showers",function(enabled)if not enabled then showerController:Reset() end end, "autofarm", "farmshowers")
 				farmFolder.AddSwitch("Farm Triangulate", nil, "autofarm", "farmtriangulate")
 
@@ -67343,16 +67362,16 @@ more accurate dodging]],
 				for _, configPath in ipairs(listfiles("atlas")) do
 					local normalizedPath = string.gsub(configPath, "\\", "/")
 
-					if not (normalizedPath == "atlas-showers/default.json" or normalizedPath == "atlas-showers/default.json" or not string.find(normalizedPath, ".json")) then
+					if not (normalizedPath == "atlas/default.json" or normalizedPath == "atlas/default.json" or not string.find(normalizedPath, ".json")) then
 						local add = configDropdown.Add
-						local configName = string.gsub(string.gsub(normalizedPath, "atlas-showers/", ""), ".json", "")
+						local configName = string.gsub(string.gsub(normalizedPath, "atlas/", ""), ".json", "")
 						add(configName)
 					end
 				end
 
 				Settings.AddTextBox("Autoload For Username", function(username)
 					if username ~= "" then
-						writefile("atlas-showers-" .. username .. ".json", config2 .. ".json")
+						writefile("atlas-" .. username .. ".json", config2 .. ".json")
 						ui.Notify("Config", "Set autoload for " .. username .. " to " .. config2)
 					else
 						ui.Notify("Config", "Invalid username")
@@ -67364,17 +67383,17 @@ more accurate dodging]],
 						ui.Notify("Config", "Invalid config name")
 					elseif string.len(config3) > 50 then
 						ui.Notify("Config", "Config name too long")
-					elseif not isfile("atlas-showers/" .. config2 .. ".json") then
+					elseif not isfile("atlas/" .. config2 .. ".json") then
 						ui.Notify("Config", "Config not found")
 					else
 						configDropdown.Remove(config2)
 						configDropdown.Add(config3)
-						writefile("atlas-showers/" .. config3 .. ".json", readfile("atlas-showers/" .. config2 .. ".json"))
-						delfile("atlas-showers/" .. config2 .. ".json")
+						writefile("atlas/" .. config3 .. ".json", readfile("atlas/" .. config2 .. ".json"))
+						delfile("atlas/" .. config2 .. ".json")
 
 						if state.config == config2 then
 							state.config = config3
-							writefile("atlas-showers-" .. localPlayer.Name .. ".json", config3 .. ".json")
+							writefile("atlas-" .. localPlayer.Name .. ".json", config3 .. ".json")
 						end
 
 						config2 = config3
@@ -67384,10 +67403,10 @@ more accurate dodging]],
 				end, nil, nil, { Clear = true, Size = 200 })
 
 				Settings.AddButton("Export Config To Clipboard", function()
-					if not isfile("atlas-showers/" .. config2 .. ".json") then
+					if not isfile("atlas/" .. config2 .. ".json") then
 						ui.Notify("Config", "Config not found")
 					else
-						local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas-showers/" .. config2 .. ".json"))
+						local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlas/" .. config2 .. ".json"))
 
 						if not ok then
 							warn(result)
@@ -67404,7 +67423,7 @@ more accurate dodging]],
 				end, 175)
 
 				Settings.AddButton("Delete Config", function()
-					if not isfile("atlas-showers/" .. config2 .. ".json") then
+					if not isfile("atlas/" .. config2 .. ".json") then
 						ui.Notify("Config", "Config not found")
 					elseif state.config ~= config2 then
 						if not now or os.clock() - now > 5 then
@@ -67413,7 +67432,7 @@ more accurate dodging]],
 						else
 							configDropdown.Remove(config2)
 							configDropdown.SetValue(state.config)
-							delfile("atlas-showers/" .. config2 .. ".json")
+							delfile("atlas/" .. config2 .. ".json")
 							ui.Notify("Config", "Deleted config " .. config2)
 						end
 					else
@@ -67422,10 +67441,10 @@ more accurate dodging]],
 				end, 96)
 
 				Settings.AddButton("Load Config", function()
-					if not isfile("atlas-showers/" .. config2 .. ".json") then
+					if not isfile("atlas/" .. config2 .. ".json") then
 						ui.Notify("Config", "Config not found")
 					else
-						writefile("atlas-showers-" .. localPlayer.Name .. ".json", config2 .. ".json")
+						writefile("atlas-" .. localPlayer.Name .. ".json", config2 .. ".json")
 						task.wait(0.1)
 						loadstring(game:HttpGet(getUrl("script.lua")))()
 					end
@@ -67436,20 +67455,20 @@ more accurate dodging]],
 				Settings.AddDropdown("Create Config", { "Default", "Blue", "Red" }, nil, function(presetType)
 					local fileName = "Preset 1.json"
 
-					while isfile("atlas-showers/" .. fileName) do
+					while isfile("atlas/" .. fileName) do
 						fileName = string.gsub(fileName, "%d", function(n)
 							return tonumber(n) + 1
 						end)
 					end
 
 					if presetType == "Default" then
-						writefile("atlas-showers/" .. fileName, readfile("atlas-showers/default.json"))
+						writefile("atlas/" .. fileName, readfile("atlas/default.json"))
 					elseif presetType ~= "Blue" then
 						if presetType == "Red" then
-							writefile("atlas-showers/" .. fileName, game:HttpGet(getUrl("configred.json")))
+							writefile("atlas/" .. fileName, game:HttpGet(getUrl("configred.json")))
 						end
 					else
-						writefile("atlas-showers/" .. fileName, game:HttpGet(getUrl("configblue.json")))
+						writefile("atlas/" .. fileName, game:HttpGet(getUrl("configblue.json")))
 					end
 
 					ui.Notify("Config", "Created config " .. string.gsub(fileName, ".json", ""))
@@ -67472,7 +67491,7 @@ more accurate dodging]],
 
 						local fileName = "Preset 1.json"
 
-						while isfile("atlas-showers/" .. fileName) do
+						while isfile("atlas/" .. fileName) do
 							fileName = string.gsub(fileName, "%d", function(n)
 								return tonumber(n) + 1
 							end)
@@ -67492,7 +67511,7 @@ more accurate dodging]],
 						local add = configDropdown.Add
 						local baseName = string.gsub(fileName, ".json", "")
 						add(baseName)
-						writefile("atlas-showers/" .. fileName, HttpService:JSONEncode(result))
+						writefile("atlas/" .. fileName, HttpService:JSONEncode(result))
 						ui.Notify("Config", "Imported config as " .. string.gsub(fileName, ".json", ""))
 					end
 				end, nil, nil, { Clear = true, Size = 200 })
@@ -68448,7 +68467,7 @@ Are you sure you want to enable it?]])
 				detectedFolder.Toggle(true, true)
 			end
 
-			watchDupedTokens(cfg.autofarm.farmsmileys or cfg.autofarm.farmdupedtokens or cfg.autoquest.dupedtokens)
+			watchDupedTokens(cfg.autofarm.farmdupedtokens or cfg.autoquest.dupedtokens)
 			showerController:Start()
 			return
 		end
