@@ -178,6 +178,8 @@ local localPlayer=player
 local function getHumanoid()return h end
 CFrame.lookAt=function(pos,target)return {X=pos.X,Y=pos.Y,Z=pos.Z,target=target}end
 local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
+local rbcSafety={}
+cfg.rbc={}
 local fieldPositionPolicy={}
 function fieldPositionPolicy:IsQuadrant(name)
 	return name=="Upper Left" or name=="Upper Right" or name=="Lower Left" or name=="Lower Right"
@@ -523,7 +525,7 @@ function fieldPositionPolicy:StrictArea()
 	if not cfg.autofarm.enabled or not cfg.autofarm.strictquadrant or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
 	local zones=workspace:FindFirstChild("FlowerZones")
 	local team=smoothMovement.comboController
-	local name=team and team:FollowingMain() and team:TeamField() or cfg.autofarm.field1
+	local name=cfg.rbc.enabled and rbcSafety.roundActive and currentField and currentField.Name or team and team:FollowingMain() and team:TeamField() or cfg.autofarm.field1
 	local field=zones and zones:FindFirstChild(name)
 	if not field then return end
 	local _,area=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),field.Position.Y)

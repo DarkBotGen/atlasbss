@@ -779,6 +779,7 @@ function comboController:WithTaskTravel(callback,...)
 	self.comboPriority,self.ownPriority,self.privatePriority=false,false,false
 	self:Finish("Task travel has movement priority")
 	local result=table.pack(pcall(callback,...))
+	if not result[1] then pcall(stopMovement) end
 	-- Keep the lock while the normal tween's final short fall settles.
 	if not state.stop and self.awaitLanding and localPlayer.Character==lock.character then pcall(self.awaitLanding) end
 	if self.taskTravel==lock then self.taskTravel=nil end

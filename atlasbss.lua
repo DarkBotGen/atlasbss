@@ -617,9 +617,10 @@ local cfg = {
 		buydrives = false,
 		usedrives = false,
 		goldcogmowers = true,
-		trackmobs = false,
-		precise = false,
-		precisemin = 5,
+		trackmobs = true,
+		precise = true,
+		precisemin = 1,
+		buffupkeep = true,
 		cogupgrades = true,
 		upgradesenabled = false,
 		upgrades = false,
@@ -746,11 +747,13 @@ local state = {
 }
 
 local function getRootPart()
-	return localPlayer.Character:WaitForChild("HumanoidRootPart")
+	local character=localPlayer.Character or localPlayer.CharacterAdded:Wait()
+	return character:WaitForChild("HumanoidRootPart")
 end
 
 local function getHumanoid()
-	return localPlayer.Character:WaitForChild("Humanoid")
+	local character=localPlayer.Character or localPlayer.CharacterAdded:Wait()
+	return character:WaitForChild("Humanoid")
 end
 
 local smoothMovement = {}
@@ -1158,33 +1161,29 @@ end
 
 stopMovement = function()
 	smoothMovement:Reset()
-	local humanoid = getHumanoid()
-
-	if humanoid.Health ~= 0 then
-		local rootPart = getRootPart()
-		humanoid:MoveTo(rootPart.Position)
-
-		if cfg.vars.movement ~= "Tween" then
-			state.break1 = true
-		else
-			for _, child in ipairs(rootPart:GetChildren()) do
-				if child.ClassName == "AlignPosition" or child.ClassName == "AlignOrientation" then
-					child:Destroy()
-				end
-			end
-
-			if state.tweennoclip then
-				state.tweennoclip:Disconnect()
-				state.tweennoclip = nil
-			end
-
-			humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+	local wasTween=state.tweennoclip~=nil or state.travelAlignPosition~=nil
+	if state.tweennoclip then state.tweennoclip:Disconnect();state.tweennoclip=nil end
+	if state.tweenPartsAdded then state.tweenPartsAdded:Disconnect();state.tweenPartsAdded=nil end
+	for part,collidable in pairs(state.tweenParts or {}) do
+		if part.Parent then part.CanCollide=collidable end
+	end
+	state.tweenParts=nil
+	for _,key in ipairs({"travelAlignPosition","travelAlignOrientation","gyro"}) do
+		local object=state[key]
+		if object then object:Destroy();state[key]=nil end
+	end
+	local char=localPlayer.Character
+	local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	if root and cfg.vars.movement=="Tween" then
+		for _,child in ipairs(root:GetChildren()) do
+			if child:IsA("AlignPosition") or child:IsA("AlignOrientation") then child:Destroy() end
 		end
-
-		if state.gyro then
-			state.gyro:Destroy()
-			state.gyro = nil
-		end
+	end
+	if humanoid and root and humanoid.Health>0 then
+		humanoid:MoveTo(root.Position)
+		if cfg.vars.movement~="Tween" then state.break1=true end
+		if wasTween then humanoid:ChangeState(Enum.HumanoidStateType.Freefall) end
 	end
 end
 
@@ -1338,38 +1337,17 @@ local function saveConfig(cacheOnly)
 end
 
 local function waitForLanding()
-	local now = os.clock()
-
-	while true do
-		if getHumanoid().Jump then
-			if os.clock() - now < 4 then
-				RunService.Heartbeat:Wait()
-				continue
-			end
-			break
-		end
-
-		if getHumanoid():GetState() == Enum.HumanoidStateType.Freefall then
-			if os.clock() - now < 4 then
-				RunService.Heartbeat:Wait()
-				continue
-			end
-			break
-		elseif getHumanoid():GetState() == Enum.HumanoidStateType.Landed then
-			if os.clock() - now < 4 then
-				RunService.Heartbeat:Wait()
-				continue
-			end
-			break
-		elseif localPlayer.Character:FindFirstChild("Glider") then
-			if os.clock() - now < 4 then
-				RunService.Heartbeat:Wait()
-				continue
-			end
-		end
-
-		break
+	local deadline=os.clock()+4
+	while os.clock()<deadline do
+		local character=localPlayer.Character
+		local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health<=0 then return false end
+		local movement=humanoid:GetState()
+		if not humanoid.Jump and not character:FindFirstChild("Glider") and movement~=Enum.HumanoidStateType.Freefall
+			and movement~=Enum.HumanoidStateType.Jumping and humanoid.FloorMaterial~=Enum.Material.Air then return true end
+		RunService.Heartbeat:Wait()
 	end
+	return false
 end
 
 local function disableJumpRequests()
@@ -1754,6 +1732,15 @@ function rbcBeePriorities:Get(preset,bee)
 	if type(value)=="number" and value==value and value>=1 and value<=100 then return math.floor(value) end
 	return self.defaults and self.defaults[preset] and self.defaults[preset][bee] or 51
 end
+function rbcBeePriorities:Better(candidate,current)
+	if not current then return true end
+	if candidate.priority~=current.priority then return candidate.priority<current.priority end
+	for _,key in ipairs({"gifted","mutated","beequip"}) do
+		if not not candidate[key]~=not not current[key] then return candidate[key]==true end
+	end
+	if candidate.lvl~=current.lvl then return candidate.lvl>current.lvl end
+	return candidate.index<current.index
+end
 function rbcBeePriorities:Set(preset,bee,value)
 	if not self.defaults[preset] or not table.find(self.names,bee) then return end
 	cfg.rbc.beepriorities=type(cfg.rbc.beepriorities)=="table" and cfg.rbc.beepriorities or {}
@@ -1812,6 +1799,168 @@ local ScreenGui = Instance.new("ScreenGui")
 local mobileToggleButton, controls, currentField, position, currentFieldName, vector, availableFields, setField, getFieldAt, isPathClear
 local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
+
+-- RBC runtime: bounded hazard snapshots, with live-model fallback when internals change.
+local rbcSafety={}
+function rbcSafety:Reset()
+	self.hazards,self.hazardField,self.hazardAt,self.flying,self.nextFlyingCheck=nil,nil,nil,nil,nil
+	self.buffNeeds,self.buffCheck,self.fieldRaycastParams,self.fieldRaycastFolder=nil,nil,nil,nil
+	self.lastSawKey,self.lastSawAt,self.roundActive=nil,nil,nil
+	self.pathParams,self.pathMap,self.pathGates,self.pathDecorations,self.pathBoards=nil,nil,nil,nil,nil
+end
+function rbcSafety:PathParams()
+	local map,gates,decorations,boards=workspace:FindFirstChild("Map"),workspace:FindFirstChild("Gates"),workspace:FindFirstChild("Decorations"),workspace:FindFirstChild("Leaderboards")
+	if self.pathParams and self.pathMap==map and self.pathGates==gates and self.pathDecorations==decorations and self.pathBoards==boards then return self.pathParams end
+	local filter={}
+	for _,name in ipairs({"Map","Gates","Decorations","Leaderboards"}) do
+		local object=workspace:FindFirstChild(name)
+		if object then filter[#filter+1]=object end
+	end
+	local params=RaycastParams.new()
+	params.FilterDescendantsInstances=filter;params.FilterType=Enum.RaycastFilterType.Include
+	self.pathParams,self.pathMap,self.pathGates,self.pathDecorations,self.pathBoards=params,map,gates,decorations,boards
+	return params
+end
+function rbcSafety:ResolveField(name,pollen)
+	local zones=workspace:FindFirstChild("FlowerZones")
+	if not zones then return end
+	local defaults={Red="Pepper Patch",Blue="Pine Tree Forest",White="Spider Field"}
+	for _,candidate in ipairs({type(name)=="string" and name or "",defaults[pollen] or "",cfg.autofarm.field1 or ""}) do
+		local field=candidate~="" and zones:FindFirstChild(candidate)
+		if field and field:IsA("BasePart") and (not availableFields or availableFields[candidate]) then return field.Name end
+	end
+	if availableFields then
+		for candidate,enabled in pairs(availableFields) do
+			local field=zones:FindFirstChild(candidate)
+			if enabled and field and field:IsA("BasePart") then return candidate end
+		end
+	end
+end
+function rbcSafety:FlyingRegistry()
+	local now=os.clock()
+	if self.nextFlyingCheck and now<self.nextFlyingCheck then return self.flying end
+	self.nextFlyingCheck=now+2
+	local ok,registry=pcall(function()
+		local module=ReplicatedStorage:FindFirstChild("LocalFlyingEntity")
+		if not module or type(getupvalue)~="function" then return end
+		local destroy=require(module).Destroy
+		local first,second=getupvalue(destroy,3)
+		local result=type(first)=="table" and first or second
+		if type(result)=="table" then return result end
+	end)
+	self.flying=ok and registry or nil
+	return self.flying
+end
+function rbcSafety:Segment(map,a,b,radius,admit)
+	if typeof(a)~="Vector3" or typeof(b)~="Vector3" then return end
+	local delta=b-a
+	local steps=math.clamp(math.ceil(delta.Magnitude/8),1,16)
+	for i=0,steps do admit(a+delta*(i/steps),radius) end
+end
+function rbcSafety:Hazards(field)
+	local now=os.clock()
+	if self.hazardField==field and self.hazardAt and now-self.hazardAt<.1 then return self.hazards end
+	local map,count={},0
+	self.hazards,self.hazardField,self.hazardAt=map,field,now
+	if not field or not tracked then return map end
+	local center,size=field.Position,field.Size
+	local char=localPlayer.Character
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	local y=root and root.Position.Y or center.Y
+	local function admit(pos,radius)
+		if count>=256 or typeof(pos)~="Vector3" then return end
+		if math.abs(pos.X-center.X)>size.X/2+20 or math.abs(pos.Z-center.Z)>size.Z/2+20 or math.abs(pos.Y-center.Y)>60 then return end
+		local point=Vector3.new(pos.X,y,pos.Z)
+		if not map[point] then count+=1 end
+		map[point]=math.max(map[point] or 0,radius)
+	end
+	for _,entry in ipairs({{"cogs",20},{"goldcogs",20},{"cogturrets",18},{"mech",12},{"megamech",18},{"mobs",12}}) do
+		local list=tracked[entry[1]] or {}
+		for model in pairs(list) do
+			if typeof(model)~="Instance" or not model.Parent then list[model]=nil;continue end
+			local body=model:FindFirstChild("Body") or model:FindFirstChild("HumanoidRootPart")
+			if body and body:IsA("BasePart") then
+				admit(body.Position,entry[2])
+				local velocity=body.AssemblyLinearVelocity
+				if velocity.Magnitude>1 then self:Segment(map,body.Position,body.Position+velocity*.35,entry[2],admit) end
+			end
+		end
+	end
+	if cfg.rbc.trackmobs then
+		for kind,group in pairs(self:FlyingRegistry() or {}) do
+			if type(kind)=="string" and (string.find(kind,"Cog",1,true) or string.find(kind,"Mech",1,true)) and type(group)=="table" then
+				for entity in pairs(group) do
+					if type(entity)=="table" and entity.Alive and typeof(entity.Pos)=="Vector3" then
+						admit(entity.Pos,kind=="Mechsquito" and 12 or 20)
+						if entity.Moving and typeof(entity.PosNext)=="Vector3" then
+							local delta=entity.PosNext-entity.Pos
+							local finish=delta.Magnitude>35 and entity.Pos+delta.Unit*35 or entity.PosNext
+							self:Segment(map,entity.Pos,finish,15,admit)
+						end
+					end
+				end
+			end
+		end
+	end
+	for saw in pairs(tracked.cogsaws or {}) do
+		if type(saw)=="table" and saw.ExpiresAt and saw.ExpiresAt<=now then tracked.cogsaws[saw]=nil
+		elseif type(saw)=="table" then self:Segment(map,saw.Start,saw.End,15,admit) end
+	end
+	return map
+end
+function rbcSafety:ObserveFX(name,data)
+	if name~="CogSawProjectile" or type(data)~="table" or not tracked then return end
+	if typeof(data.Pos1)~="Vector3" or typeof(data.Pos2)~="Vector3" then return end
+	local now=os.clock()
+	local key=tostring(data.Pos1)..":"..tostring(data.Pos2)..":"..tostring(data.EndTime)
+	if self.lastSawKey==key and now-(self.lastSawAt or 0)<.1 then return end
+	self.lastSawKey,self.lastSawAt=key,now
+	local count=0
+	for entry in pairs(tracked.cogsaws) do
+		if entry.ExpiresAt and entry.ExpiresAt<=now then tracked.cogsaws[entry]=nil else count+=1 end
+	end
+	if count>=64 then return end
+	local serverTime=workspace:FindFirstChild("ServerTime")
+	local duration=tonumber(data.Dur) or 2
+	if type(data.EndTime)=="number" and serverTime then duration=data.EndTime-serverTime.Value end
+	local entry={Start=data.Pos1,End=data.Pos2,ExpiresAt=now+math.clamp(duration,0,12)}
+	tracked.cogsaws[entry]=true
+end
+function rbcSafety:Escape(field,options)
+	if not field then return end
+	local root=getRootPart().Position
+	local hazards=options.avoid or {}
+	local function clearance(point)
+		local closest=math.huge
+		for position,radius in pairs(hazards) do
+			if typeof(position)=="Vector3" then
+				local delta=Vector3.new(point.X-position.X,0,point.Z-position.Z)
+				closest=math.min(closest,delta.Magnitude-radius)
+			end
+		end
+		return closest
+	end
+	local current=clearance(root)
+	if current>=2 then return end
+	local best,bestScore=nil,current
+	for i=0,15 do
+		local angle=i*math.pi/8
+		for _,distance in ipairs({12,24,36}) do
+			local p=root+Vector3.new(math.cos(angle)*distance,0,math.sin(angle)*distance)
+			local c,size=field.Position,field.Size
+			if math.abs(p.X-c.X)>size.X/2-2 or math.abs(p.Z-c.Z)>size.Z/2-2 then continue end
+			local safe=clearance(p)
+			local score=safe-distance*.02
+			if score>bestScore+1 and not isPathClear(p,hazards,true,true) then best,bestScore=p,score end
+		end
+	end
+	return best
+end
+function rbcSafety:Options(field,extra)
+	local options=table.clone(extra or {})
+	options.rbc,options.avoid,options.skipoverlap=true,self:Hazards(field),true
+	return options
+end
 
 -- Shared geometry for quadrant targeting and its local testing overlay.
 local fieldPositionPolicy
@@ -2220,7 +2369,7 @@ function fieldPositionPolicy:StrictArea()
 	if not cfg.autofarm.enabled or not cfg.autofarm.strictquadrant or not cfg.autofarm.farmposenabled or not self:IsQuadrant(cfg.autofarm.farmposition) then return end
 	local zones=workspace:FindFirstChild("FlowerZones")
 	local team=smoothMovement.comboController
-	local name=team and team:FollowingMain() and team:TeamField() or cfg.autofarm.field1
+	local name=cfg.rbc.enabled and rbcSafety.roundActive and currentField and currentField.Name or team and team:FollowingMain() and team:TeamField() or cfg.autofarm.field1
 	local field=zones and zones:FindFirstChild(name)
 	if not field then return end
 	local _,area=self:Region(cfg.autofarm.farmposition,field.Position,self:QuadrantSize(field),field.Position.Y)
@@ -3021,6 +3170,7 @@ function comboController:WithTaskTravel(callback,...)
 	self.comboPriority,self.ownPriority,self.privatePriority=false,false,false
 	self:Finish("Task travel has movement priority")
 	local result=table.pack(pcall(callback,...))
+	if not result[1] then pcall(stopMovement) end
 	-- Keep the lock while the normal tween's final short fall settles.
 	if not state.stop and self.awaitLanding and localPlayer.Character==lock.character then pcall(self.awaitLanding) end
 	if self.taskTravel==lock then self.taskTravel=nil end
@@ -7002,76 +7152,60 @@ do
 	availableFields = {}
 
 	setField = function(fieldName)
-		if currentFieldName ~= fieldName then
-			currentField = workspace.FlowerZones[fieldName]
-			position = currentField.Position
-			currentFieldName = fieldName
-			vector=fieldPositionPolicy:UsableSize(currentField)
+		local zones=workspace:FindFirstChild("FlowerZones")
+		local field=type(fieldName)=="string" and zones and zones:FindFirstChild(fieldName)
+		if not field or not field:IsA("BasePart") then return false end
+		if currentField~=field or not position or not vector then
+			currentField,position,currentFieldName=field,field.Position,field.Name
+			vector=fieldPositionPolicy:UsableSize(field)
 		end
+		return true
 	end
 
 	getFieldAt = function(point)
-		local raycastParams = RaycastParams.new()
-		raycastParams.FilterDescendantsInstances = { workspace.FlowerZones }
-		raycastParams.FilterType = Enum.RaycastFilterType.Include
-		local hit = workspace:Raycast(point - Vector3.new(0, 35, 0), Vector3.new(0, 50, 0), raycastParams)
-		if not hit or hit.Instance.Parent.Name ~= "FlowerZones" then
-			return
+		if typeof(point)~="Vector3" then return end
+		local zones=workspace:FindFirstChild("FlowerZones")
+		if not zones then return end
+		if not rbcSafety.fieldRaycastParams or rbcSafety.fieldRaycastFolder~=zones then
+			local params=RaycastParams.new()
+			params.FilterDescendantsInstances={zones}
+			params.FilterType=Enum.RaycastFilterType.Include
+			rbcSafety.fieldRaycastParams,rbcSafety.fieldRaycastFolder=params,zones
 		end
-		return hit.Instance
+		local hit=workspace:Raycast(point+Vector3.new(0,8,0),Vector3.new(0,-128,0),rbcSafety.fieldRaycastParams)
+		return hit and hit.Instance.Parent==zones and hit.Instance or nil
 	end
 
-	isPathClear = function(target, avoid, v71, v72, v73)
-		local position2 = getRootPart().Position
-		local offset = target - position2
-		local magnitude = offset.magnitude
-		local unit = offset.unit
-
-		for k, radius in pairs(avoid) do
-			local timestamp = nil
-
-			if radius > 100 then
-				timestamp = radius
-				radius = 24
+	isPathClear = function(target,avoid,allowEscape,rbc,overlap)
+		-- Historical name: true means the path is BLOCKED by an avoidance zone.
+		if typeof(target)~="Vector3" then return true end
+		local root=getRootPart()
+		local start=root.Position
+		local delta=target-start
+		local lengthSquared=delta:Dot(delta)
+		for object,value in pairs(avoid or {}) do
+			if type(value)~="number" then continue end
+			local radius,timestamp=value,nil
+			if radius>100 then timestamp=radius;radius=24 end
+			local point
+			if typeof(object)=="Vector3" then point=object
+			elseif type(object)=="table" then point=object.Position
+			elseif typeof(object)=="Instance" and object.Parent then
+				local plane=object:FindFirstChild("Plane")
+				if plane and plane:IsA("BasePart") then point=plane.Position
+				elseif object:IsA("BasePart") then point=object.Position end
 			end
-
-			local position3
-
-			if type(k) ~= "vector" then
-				if k.Name == true then
-					position3 = k.Position
-				else
-					local Plane = k:FindFirstChild("Plane")
-
-					if not Plane then
-						position3 = k.Position
-					else
-						position3 = Plane.Position
-					end
-				end
-			else
-				position3 = k
+			if typeof(point)~="Vector3" then continue end
+			if (target-point).Magnitude<radius then return true end
+			if timestamp and not rbc and 2.2-(os.time()-timestamp)<math.sqrt(lengthSquared)/math.max(1,getHumanoid().WalkSpeed) then return true end
+			local startDistance=(start-point).Magnitude
+			if allowEscape and startDistance<=(overlap and radius-6 or radius) then continue end
+			if lengthSquared>.000001 then
+				local t=math.clamp((point-start):Dot(delta)/lengthSquared,0,1)
+				if (point-(start+delta*t)).Magnitude<radius then return true end
 			end
-
-			if (target - position3).magnitude < radius then
-				return true
-			end
-
-			if not v72 and not (radius ~= 24 or not (2.2 - (os.time() - timestamp) < magnitude / getHumanoid().WalkSpeed)) then
-				return true
-			end
-
-			if v71 then
-				if not ((v73 and radius - 6 or radius) < (position2 - position3).magnitude) then
-					continue
-				end
-			end
-
-			if not ((position3 - (position2 + offset * math.clamp((position3 - position2):Dot(unit) / magnitude, 0, 1))).magnitude < radius) then
-				continue
-			end
-			return true
 		end
+		return false
 	end
 
 	randomFieldPosition = function(constraints, widen, v71)
@@ -8257,8 +8391,13 @@ do
 			if not enable and not cfg.rbc.enabled and not cfg.beesmas.roboparty then
 				connections:Cancel("rbcmobs")
 				connections:Cancel("rbcmobs2")
+				connections:Cancel("rbcMobFX")
+				for _,key in ipairs({"goldcogs","cogturrets","partymech","partycog","partycogturret","partymegamech","megamech","mech","cogs","cogsaws"}) do table.clear(tracked[key]) end
+				rbcSafety:Reset()
 			end
 		else
+			local fx=gameApi.Events and gameApi.Events:FindFirstChild("LocalFX")
+			if fx then connections:Add("rbcMobFX",fx.OnClientEvent:Connect(function(name,data)rbcSafety:ObserveFX(name,data)end)) end
 			local mobKeys = {
 				["Gold Cogmower"] = "goldcogs",
 				Cogturret = "cogturrets",
@@ -8758,22 +8897,7 @@ local function findPath(from, to, useCannon, nodes, links)
 	local goalNode = nil
 	local huge = math.huge
 	local huge2 = math.huge
-	local filterList = {}
-	local Leaderboards = workspace:FindFirstChild("Leaderboards")
-
-	if Leaderboards then
-		table.insert(filterList, Leaderboards)
-	end
-
-	for _, descendant in pairs(workspace.Decorations:GetDescendants()) do
-		if descendant:IsA("Model") then
-			table.insert(filterList, descendant)
-		end
-	end
-
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterDescendantsInstances = { workspace.Map, filterList, workspace.Gates }
-	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	local raycastParams=rbcSafety:PathParams()
 
 	for k, nodePosition in pairs(nodePositions) do
 		local magnitude = (from - nodePosition).magnitude
@@ -9053,19 +9177,31 @@ do
 		AlignPosition.MaxVelocity = maxVelocity
 		AlignPosition.Position = position2
 		AlignPosition.Parent = rootPart
+		state.travelAlignPosition=AlignPosition
 		local AlignOrientation = Instance.new("AlignOrientation")
 		AlignOrientation.Attachment0 = rootPart.RootAttachment
 		AlignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
 		AlignOrientation.RigidityEnabled = true
 		AlignOrientation.CFrame = rootPart.CFrame
 		AlignOrientation.Parent = rootPart
+		state.travelAlignOrientation=AlignOrientation
 		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 
-		state.tweennoclip = RunService.PreSimulation:Connect(function()
-			for n, n in ipairs(character:GetDescendants()) do
-				if n:IsA("BasePart") and n.CanCollide then
-					n.CanCollide = false
-				end
+		local parts={}
+		state.tweenParts=parts
+		local function rememberPart(part)
+			if part:IsA("BasePart") then
+				if parts[part]==nil then parts[part]=part.CanCollide end
+				part.CanCollide=false
+			end
+		end
+		for _,part in ipairs(character:GetDescendants()) do rememberPart(part) end
+		state.tweenPartsAdded=character.DescendantAdded:Connect(rememberPart)
+		local ownerThread=coroutine.running()
+		state.tweennoclip=RunService.PreSimulation:Connect(function()
+			if localPlayer.Character~=character or humanoid.Health<=0 or not rootPart.Parent or coroutine.status(ownerThread)=="dead" then stopMovement();return end
+			for part in pairs(parts) do
+				if part.Parent and part.CanCollide then part.CanCollide=false end
 			end
 		end)
 
@@ -9091,6 +9227,12 @@ do
 		local cannon = cfg.vars.cannon
 		local path = findPath(getRootPart().Position, to, cannon)
 
+		if not path and cfg.rbc.enabled then
+			-- Do not kill the character or abandon the challenge over a missing graph edge.
+			tweenTo(to+Vector3.new(0,9,0))
+			waitForLanding()
+			return
+		end
 		if not path and distanceTo(localPlayer.SpawnPos.Value.Position, true) > 9 then
 			logger.warn("No path found", stepLabel and "(" .. stepLabel .. ")" or nil)
 			getHumanoid().Health = 0
@@ -9214,34 +9356,34 @@ do
 	end
 
 	goToField = function()
-		if getFieldAt(getRootPart().Position) ~= currentField then
-			if fieldPositionPolicy:InsideGuardedField(currentField,getRootPart().Position) then return end
-			if not state.fasttween then
-				state.stopface = true
-			else
-				error("return", 0)
-			end
-
-			if UserInputService.MouseIcon == "rbxasset://textures/MouseLockedCursor.png" then
-				input.prepareInput()
-				input.pressKey(Enum.KeyCode.LeftShift)
-			end
-
-			if cfg.vars.movement ~= "Tween" then
-				travelTo(position + Vector3.new(0, 0, currentFieldName == "Coconut Field" and -10 or 0), currentFieldName)
-			else
-				tweenTo(position + Vector3.new(0, (currentFieldName == "Coconut Field" or currentFieldName == "Stump Field") and 16 or 9, currentFieldName == "Coconut Field" and -10 or 0))
-			end
-
-			if getFieldAt(getRootPart().Position) ~= currentField then
-				local field = getFieldAt(getRootPart().Position)
-				logger.warn("Failed to move to", currentFieldName)
-				logger.warn("Player field", field and field.Name or "nil")
-				error("return", 0)
-			else
-				state.stopface = nil
-			end
+		local field=currentField
+		if not field or not field.Parent or not position then error("return",0) end
+		local function arrived()
+			local char=localPlayer.Character
+			local root=char and char:FindFirstChild("HumanoidRootPart")
+			local h=char and char:FindFirstChildOfClass("Humanoid")
+			if not root or not h or h.Health<=0 then return false end
+			local p,c,size=root.Position,field.Position,field.Size
+			return p.Y>=c.Y+size.Y/2-3 and p.Y<=c.Y+size.Y/2+18 and (getFieldAt(p)==field or fieldPositionPolicy:InsideGuardedField(field,p))
 		end
+		if arrived() then return true end
+		if state.fasttween or state.stop then error("return",0) end
+		state.stopface=true
+		if UserInputService.MouseIcon=="rbxasset://textures/MouseLockedCursor.png" then
+			input.prepareInput();input.pressKey(Enum.KeyCode.LeftShift)
+		end
+		if cfg.vars.movement~="Tween" then
+			travelTo(field.Position+Vector3.new(0,0,field.Name=="Coconut Field" and -10 or 0),field.Name)
+		else
+			tweenTo(field.Position+Vector3.new(0,(field.Name=="Coconut Field" or field.Name=="Stump Field") and 16 or 9,field.Name=="Coconut Field" and -10 or 0))
+		end
+		local deadline=os.clock()+1.25
+		while not arrived() and os.clock()<deadline and not state.stop do RunService.Heartbeat:Wait() end
+		state.stopface=nil
+		if arrived() then return true end
+		-- Caller retries on its next managed pass; never dereference a nil player field.
+		task.wait(.25)
+		error("return",0)
 	end
 
 	connections:Add("fieldEdgeGuards",RunService.Heartbeat:Connect(function()
@@ -43793,11 +43935,7 @@ do
 					end
 
 					if effectName == "CogSawProjectile" then
-						local sawEntry = { Start = effectData.Pos1, End = effectData.Pos2 }
-						tracked.cogsaws[sawEntry] = true
-
-						sawEntry.ExpiresAt = os.clock() + math.max(0, tonumber(effectData.EndTime - workspace.ServerTime.Value) or 0)
-
+						rbcSafety:ObserveFX(effectName,effectData)
 						return true
 					end
 
@@ -47441,6 +47579,55 @@ end
 
 dupedTokenPolicy.bearCombat = bearCombat
 
+function rbcSafety:BuffTarget(options)
+	if not options.rbc or cfg.rbc.buffupkeep==false or options.loot then return end
+	local now=os.clock()
+	if not self.buffCheck or now-self.buffCheck>=.5 then
+		self.buffCheck=now
+		local needs={}
+		for _,entry in ipairs({
+			{"Haste","haste","65867881",10},{"Focus","focus","1629649299",10},
+			{"Melody","melody","253828517",1},{"Baby Love","babylove","1472256444",1},
+			{"Blue Boost","blueboost","1442863423",10},{"Red Boost","redboost","1442859163",10},
+			{"Inspire","inspire","2000457501",1}}) do
+			local label=buffs.Graph and buffs.Graph[entry[2]]
+			local count=label and tonumber(string.match(label.Text,"%d+")) or (label and 1 or 0)
+			local needed=count<entry[4]
+			if not needed then
+				local ok,tile=pcall(secureCall,gameApi.BuffTile,entry[1])
+				if ok and type(tile)=="table" and type(tile.TimerDur)=="number" and type(tile.TimerStart)=="number" then
+					needed=tile.TimerDur-(os.time()-tile.TimerStart)<=math.max(3,tile.TimerDur*.3)
+				end
+			end
+			if needed then needs[entry[3]]=true end
+		end
+		local remaining=bearCombat:Remaining()
+		if not buffs.Bear or remaining and remaining<=10 then for icon in pairs(bearCombat.icons) do needs[icon]=true end end
+		self.buffNeeds=needs
+	end
+	local root=getRootPart().Position
+	local best,bestDistance,kind
+	for _,key in ipairs({"tokenlink","tokens","dupedbear","dupedtokens"}) do
+		local duped=key=="dupedbear" or key=="dupedtokens"
+		if duped and not cfg.autofarm.farmdupedtokens then continue end
+		for object,value in pairs(tracked[key] or {}) do
+			if type(object)=="number" then object=value end
+			if typeof(object)=="Instance" and not object.Parent then continue end
+			local icon=bearCombat:Icon(object)
+			if not icon or (key~="tokenlink" and not self.buffNeeds[icon]) then continue end
+			if duped and not dupedTokenPolicy:Allowed(object) then continue end
+			local position=object.Position
+			if typeof(position)~="Vector3" then continue end
+			if duped then position-=Vector3.new(0,10,0) end
+			local distance=(position-root).Magnitude
+			if distance>(key=="tokenlink" and 20 or 45) or not gatheringPriorities:Allowed(position,options,root) then continue end
+			local score=distance*(key=="tokenlink" and .5 or 1)
+			if not best or score<bestDistance then best,bestDistance,kind=object,score,duped and (bearCombat.icons[icon] and "Duped Bear" or "Duped") or "Token" end
+		end
+	end
+	return kind,best
+end
+
 local petalCollector = {
 	retryAt = setmetatable({}, {__mode = "k"}),
 	passed = setmetatable({}, {__mode = "k"}),
@@ -47806,10 +47993,17 @@ function gatheringPriorities:Pick(opts, stopBefore)
 end
 
 function gatheringPriorities:ShouldPreempt()
+	local active=self.activeOptions
+	if active and active.rbc and self.activeCategory~="Combo Coconuts" and not comboController.active then
+		active.avoid=rbcSafety:Hazards(currentField)
+		local point=fieldPositionPolicy:TargetPosition(self.activeWaypoint or self.activeTarget)
+		if point and isPathClear(point,active.avoid,true,true) then return true end
+	end
 	if fieldPositionPolicy:SmileyOnly() and self.activeCategory~="Combo Coconuts" and self.activeCategory~="Duped Smiley" then return true end
 	if showerController.active then return true end
 	if self.activeCategory == "Combo Coconuts" then return false end
 	if self.activeCategory ~= "Combo Coconuts" and self:Candidate("Combo Coconuts", self.activeOptions or {}, getRootPart().Position) then return true end
+	if self.precisionActive and active and active.rbc and self:PrecisionReady() and rbcSafety:BuffTarget(active) then return true end
 	if self.precisionActive and cfg.autofarm.precisionupkeep~=false then return false end
 	if not self.precisionActive and self.activeCategory~="Precise Targets" and self:PrecisionUpkeep(self.activeOptions or {}) then return true end
     if bearCombat.active then return false end
@@ -47905,14 +48099,16 @@ end
 
 function gatheringPriorities:PrecisionUpkeep(opts)
 	local farm=cfg.autofarm
-	if farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1
+	local rbcUpkeep=opts.rbc and cfg.rbc.precise
+	if (not rbcUpkeep and (farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1))
 		or opts.loot or opts.mondotokens then return end
 	if comboController.active or showerController.active or comboController:TravelBlocked() then return end
-	if not self:PrecisionReady() and opts.avoid then
-		for target in pairs(tracked.precise)do opts.avoid[target]=nil end
-		for _,target in pairs(tracked.precise2)do opts.avoid[target]=nil;opts.avoid[target.Position]=nil end
+	local copy=self:PrecisionOptions(opts)
+	if not self:PrecisionReady() then
+		for target in pairs(tracked.precise)do copy.avoid[target]=nil end
+		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil end
 	end
-	return self:Precise(self:PrecisionOptions(opts),true)
+	return self:Precise(copy,true)
 end
 
 function gatheringPriorities:Precise(opts,upkeep)
@@ -47957,7 +48153,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 								end
 
 								if preciseKind then
-									if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or (not (upkeep and preciseKind=="Precise Purple") and not (not opts.avoid or not isPathClear(k.Position, opts.avoid)))) then
+									if not ((not opts.ignorefield or getFieldAt(k.Position)) and not (not opts.ignorefield and getFieldAt(k.Position) == currentField) or (not (upkeep and not opts.rbc and preciseKind=="Precise Purple") and not (not opts.avoid or not isPathClear(k.Position, opts.avoid)))) then
 										preciseDistance = distanceTo(k.Position, true)
 
 										local rank=upkeep and not preciseMarkActive and isPurpleMark and 1 or 0
@@ -48012,7 +48208,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 								end
 
 								if precise2Kind then
-									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
+									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and not opts.rbc and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
 										precise2Distance = distanceTo(preciseMark.Position, true)
 
 										local rank=upkeep and not preciseMarkActive and preciseMark.Mark and 1 or 0
@@ -48040,8 +48236,14 @@ end
 			if showerController.active then return "Safeshower" end
 			local comboKind, comboObject = gatheringPriorities:Candidate("Combo Coconuts", opts, getRootPart().Position)
 			if comboKind then return comboKind, comboObject end
+			if opts.rbc and gatheringPriorities:PrecisionReady() then
+				local buffKind,buffObject=rbcSafety:BuffTarget(opts)
+				if buffKind then gatheringPriorities.last="RBC Buff Upkeep";return buffKind,buffObject end
+			end
 			local precisionKind,precisionObject=gatheringPriorities:PrecisionUpkeep(opts)
 			if precisionKind then gatheringPriorities.last="Precise Targets";return precisionKind,precisionObject end
+			local buffKind,buffObject=rbcSafety:BuffTarget(opts)
+			if buffKind then gatheringPriorities.last="RBC Buff Upkeep";return buffKind,buffObject end
 			local combatKind, combatObject = bearCombat:Pick(opts)
 			bearCombat.active = combatKind ~= nil
             if combatKind then
@@ -53707,11 +53909,12 @@ end
 				nodeEdges[nodeToRemove] = nil
 			end
 
+			local gridLink={bidirectional=true,label=""}
 			local function addLink(fromId, toId, bidirectional)
-				nodeEdges[fromId][toId] = { bidirectional = bidirectional, label = "" }
+				nodeEdges[fromId][toId] = gridLink
 
 				if bidirectional then
-					nodeEdges[toId][fromId] = { bidirectional = true, label = "" }
+					nodeEdges[toId][fromId] = gridLink
 				end
 			end
 
@@ -53841,22 +54044,14 @@ end
 				end
 			end
 
-			for _, edgeId in ipairs(edgeNodes) do
-				local edgePosition = nodePositions[edgeId]
-
-				for _, otherEdgeId in ipairs(edgeNodes) do
-					if otherEdgeId ~= edgeId and not nodeEdges[edgeId][otherEdgeId] and (nodePositions[otherEdgeId] - edgePosition).magnitude < 6 then
-						addLink(edgeId, otherEdgeId, true)
-					end
-				end
+			local obstacles={}
+			for object,radius in pairs(v128 or {}) do
+				local point=fieldPositionPolicy:TargetPosition(object)
+				if typeof(point)=="Vector3" and type(radius)=="number" then obstacles[#obstacles+1]={point,radius>100 and 24 or radius} end
 			end
-
-			for k, nodePosition in pairs(nodePositions) do
-				for k2, avoidRadius in pairs(v128) do
-					if (type(k2) == "vector" and k2 or k2.Name ~= true and k2:FindFirstChild("Plane") and k2.Plane.Position or k2.Position - nodePosition).magnitude < avoidRadius then
-						removeNode(k)
-						break
-					end
+			for id,nodePosition in pairs(nodePositions) do
+				for _,obstacle in ipairs(obstacles) do
+					if (obstacle[1]-nodePosition).Magnitude<obstacle[2] then removeNode(id);break end
 				end
 			end
 
@@ -53897,9 +54092,11 @@ end
 				if not (not state.break1 and getHumanoid().Health ~= 0) then
 					break
 				end
+				gatheringPriorities.activeWaypoint=waypoint.Position
 				smoothMovement:MoveTo(waypoint.Position)
 
 				while distanceTo(waypoint.Position, true) > 6 do
+					if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 					if not RunService.Heartbeat:Wait() then
 						break
 					end
@@ -53926,6 +54123,7 @@ end
 			local now2
 
 			while true do
+				if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 				if not v132 or not (os.clock() - now < 4) then
 					return
 				else
@@ -53935,10 +54133,12 @@ end
 					now2 = os.clock()
 
 					if distanceTo(v132.v.Position, true) > 6 then
+						gatheringPriorities.activeTarget=v132.v
 						smoothMovement:MoveTo(v132.v.Position)
 					end
 
 					while not (not v132.v.Parent or not (not not (distanceTo(v132.v.Position, true) > 6) and os.clock() - now2 < 4)) do
+						if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 						RunService.Heartbeat:Wait()
 					end
 
@@ -53970,6 +54170,7 @@ end
 			end
 
 			while not (not v132.v.Parent or not (os.clock() - now2 < 4)) do
+				if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 				RunService.Heartbeat:Wait()
 			end
 		end
@@ -54003,9 +54204,11 @@ end
 				if not (not state.break1 and getHumanoid().Health ~= 0) then
 					break
 				end
+				gatheringPriorities.activeWaypoint=waypoint.Position
 				smoothMovement:MoveTo(waypoint.Position)
 
 				while distanceTo(waypoint.Position, true) > 6 do
+					if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 					if not RunService.Heartbeat:Wait() then
 						break
 					end
@@ -54032,6 +54235,7 @@ end
 			local now2
 
 			while true do
+				if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 				if not v134 or not (os.clock() - now < 4) then
 					return
 				else
@@ -54041,10 +54245,12 @@ end
 					now2 = os.clock()
 
 					if distanceTo(v134.v.Position, true) > 6 then
+						gatheringPriorities.activeTarget=v134.v
 						smoothMovement:MoveTo(v134.v.Position)
 					end
 
 					while not (not tracked.precise2[v134.v.ID] or not (not not (distanceTo(v134.v.Position, true) > 6) and os.clock() - now2 < 4)) do
+						if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 						RunService.Heartbeat:Wait()
 					end
 
@@ -54076,6 +54282,7 @@ end
 			end
 
 			while not (not tracked.precise2[v134.v.ID] or not (os.clock() - now2 < 4)) do
+				if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
 				RunService.Heartbeat:Wait()
 			end
 		end
@@ -54185,6 +54392,8 @@ end
 			if targetKind then fieldPositionPolicy:ReleaseIdle() end
 			gatheringPriorities:Record(targetKind, targetObject)
 			gatheringPriorities.activeOptions = options
+			gatheringPriorities.activeTarget = targetObject
+			gatheringPriorities.activeWaypoint = nil
 			gatheringPriorities.nextPreemptCheck = nil
 			if targetKind == "Bloom" then
 				if distanceTo(targetObject.Position, true) > 2 then smoothMovement:MoveTo(targetObject.Position) end
@@ -54283,11 +54492,23 @@ end
 			gatheringPriorities.activeCategory = nil
 			gatheringPriorities.precisionActive = false
 			gatheringPriorities.activeOptions = nil
+			gatheringPriorities.activeTarget = nil
+			gatheringPriorities.activeWaypoint = nil
 			if not ok then error(result, 0) end
 			return result
 		end
 
 		farmStep = function(options)
+			if options.rbc then
+				if comboController.active or comboController:TravelBlocked() then return end
+				options.avoid=rbcSafety:Hazards(currentField)
+				local escape=rbcSafety:Escape(currentField,options)
+				if escape then
+					fieldPositionPolicy:ReleaseIdle();fieldPositionPolicy:RemoveGuards()
+					smoothMovement:MoveTo(escape)
+					return
+				end
+			end
 			if collectTarget(options) then smoothMovement.roam = nil; return end
 			if options.blooms and not options.loot and not options.ignoreflower and not fieldPositionPolicy:SmileyOnly() then
 				local bloom = bloomController:Select(options)
@@ -54300,6 +54521,7 @@ end
 			if not options.ignoreflower then
 				local makeGoal=function()return randomFieldPosition(options)end
 				local allowed=function(goal)
+					if options.rbc then options.avoid=rbcSafety:Hazards(currentField) end
 					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
 					if options.range and options.origin and (options.origin - goal).Magnitude >= options.range then return false end
@@ -54307,7 +54529,7 @@ end
 						if options.avoid and isPathClear(goal,options.avoid,true,options.rbc) then return false end
 						return true
 					end
-					if options.avoid and not isPathClear(goal, options.avoid) then return false end
+					if options.avoid and isPathClear(goal, options.avoid,true,options.rbc) then return false end
 					return options.loot or options.skipoverlap or
 						(not cfg.autofarm.farmballoons2 and not cfg.autofarm.farmmarks) or questTasks:check(goal)
 				end
@@ -54727,6 +54949,7 @@ end
 		end
 
 		getAggroMobs = function()
+			if cfg.rbc.enabled and rbcSafety.roundActive then return end
 			local aggroPositions = {}
 
 			for k in pairs(tracked.mobs) do
@@ -63634,6 +63857,7 @@ end
 				reportStatus(3)
 
 				while true do
+					if not cfg.rbc.enabled or state.stop then return false end
 					if os.clock() - now < (cogType == "goldcogs" and 6 or 1) then
 						if RunService.Heartbeat:Wait() then
 							if goldcogs then
@@ -63672,57 +63896,7 @@ end
 									input:handleShiftLock(true)
 								end
 
-								if not cfg.rbc.trackmobs then
-									for k in pairs(tracked.cogs) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											farmOptions[Body.Position] = 20
-										end
-									end
-
-									for k in pairs(tracked.goldcogs) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											farmOptions[Body.Position] = 20
-										end
-									end
-
-									for k in pairs(tracked.cogturrets) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											farmOptions[Body.Position] = 20
-										end
-									end
-								else
-									for k, entitySet in pairs(getupvalue(require(ReplicatedStorage.LocalFlyingEntity).Destroy, 3)) do
-										if not (k == "Bee" or k == "Mechsquito") then
-											for k2 in pairs(entitySet) do
-												if k2.Alive then
-													local field = getFieldAt(k2.Pos)
-
-													if not (not field or field.Name ~= cogField.Name) then
-														farmOptions[k2.Pos] = 15
-
-														if not mob then
-															mob = k2.Pos
-														end
-
-														if not (not k2.Moving or not k2.PosNext) then
-															rbc.Avoid(farmOptions, k2.Pos, k2.PosNext, 10)
-														end
-													end
-												end
-											end
-										end
-									end
-								end
-
-								for k in pairs(tracked.cogsaws) do
-									rbc.Avoid(farmOptions, k.Start, k.End, 10)
-								end
+								farmOptions=rbcSafety:Hazards(cogField)
 
 								farmStep({
 									rbc = true,
@@ -63793,17 +63967,8 @@ end
 				end
 			end
 		end,
-		Avoid = function(avoidTable, startPosition, endPosition, spacing)
-			local offset = endPosition - startPosition
-			local magnitude = offset.magnitude
-			if magnitude < spacing then
-				return
-			end
-			local unit = offset.unit
-
-			for i = 1, math.floor(magnitude / spacing) - 1 do
-				avoidTable[startPosition + unit * (i * spacing)] = 15
-			end
+		Avoid = function(avoidTable,startPosition,endPosition,spacing)
+			rbcSafety:Segment(avoidTable,startPosition,endPosition,15,function(point,radius)avoidTable[point]=radius end)
 		end,
 		Priority = function(v131, targetPollen)
 			if not v131.Pollen and not v131.Field then
@@ -63829,7 +63994,8 @@ end
 
 	local rbcAmuletCheck
 
-	rbcAmuletCheck = function()
+	local function rbcAmuletStep()
+		rbcSafety.roundActive=rbc.challenge.Visible and rbc.challenge.Position.X.Scale<.9
 		local rewardsPopUp = localPlayer.PlayerGui.ScreenGui.RewardsPopUp
 
 		if not rbc.frame.Visible and rewardsPopUp.Visible then
@@ -63879,7 +64045,7 @@ end
 			local visible = box.EndScreen.Visible
 			local v132 = 25
 
-			while rbc.frame.Visible do
+			while cfg.rbc.enabled and not state.stop and rbc.frame.Visible do
 				if not RunService.Heartbeat:Wait() then
 					break
 				end
@@ -64055,17 +64221,9 @@ end
 							local hasBeequip = string.find(child.Text2.Text, "Beequip: None") == nil
 							local hasMutation = string.find(child.Text2.Text, "Mutation: None") == nil
 
-							if not v134 or not (not v138 or not (v138 < v134.priority) and (v138 ~= v134.priority or not (not v134.gifted and isGifted or not v134.beequip and hasMutation or not v134.mutated and not v134.beequip and hasBeequip or not v134.mutated and not v134.beequip and not (v134.gifted ~= isGifted or not (v134.lvl < beeLevel))))) then
-								v134 = {
-									button = child,
-									index = tonumber(string.match(child.Name, "%d+")) or 1,
-									priority = v138 or 51,
-									beequip = hasMutation,
-									mutated = hasBeequip,
-									gifted = isGifted,
-									lvl = beeLevel,
-								}
-							end
+							local candidate={button=child,index=tonumber(string.match(child.Name,"%d+")) or 1,
+								priority=v138,beequip=hasBeequip,mutated=hasMutation,gifted=isGifted,lvl=beeLevel}
+							if rbcBeePriorities:Better(candidate,v134) then v134=candidate end
 						end
 					end
 
@@ -64273,7 +64431,7 @@ end
 			end
 
 			if not (not cfg.rbc.enabled and not (not visible and not (not rbc.challenge.Visible or not (rbc.challenge.Position.X.Scale < 0.9)))) then
-				rbcAmuletCheck()
+				return true
 			end
 		elseif not (not rbc.challenge.Visible or not (rbc.challenge.Position.X.Scale < 0.9)) then
 			if not rbc.disableusedrives and not (not cfg.rbc.usedrives.Blue and not cfg.rbc.usedrives.Red and not cfg.rbc.usedrives.White and not cfg.rbc.usedrives.Glitched) then
@@ -64420,7 +64578,7 @@ end
 			local exitTo2 = nil
 
 			while true do
-				if not rbc.challenge.Visible or not (rbc.challenge.Position.X.Scale < 0.9) or not (os.clock() - now < 300) then
+				if not cfg.rbc.enabled or state.stop or not rbc.challenge.Visible or not (rbc.challenge.Position.X.Scale < 0.9) or not (os.clock() - now < 300) then
 					exitTo2 = 1
 					break
 				else
@@ -64439,7 +64597,7 @@ end
 									break
 								else
 									local value = localPlayer.CoreStats.Pollen.Value
-									if tonumber(string.match(string.gsub(convertTask.Text, ",", ""), "%d+")) < value then
+									if (tonumber(string.match(string.gsub(convertTask.Text, ",", ""), "%d+")) or math.huge) < value then
 										convertHoney()
 										break
 									end
@@ -64490,7 +64648,7 @@ end
 											if child.Name == "UGEntry" then
 												local text = child.TitleLbl.Text
 
-												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= tonumber(string.match(text, "%d+")))) then
+												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= (tonumber(string.match(text, "%d+")) or 0))) then
 													homepageMatched = true
 													v140 = { Field = "Mushroom Field", Pollen = "Red" }
 												end
@@ -64511,7 +64669,7 @@ end
 											if child.Name == "UGEntry" then
 												local text = child.TitleLbl.Text
 
-												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= tonumber(string.match(text, "%d+")))) then
+												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= (tonumber(string.match(text, "%d+")) or 0))) then
 													homepageMatched = true
 													v140 = { Field = "Blue Flower Field", Pollen = "Blue" }
 												end
@@ -64536,7 +64694,7 @@ end
 											if child.Name == "UGEntry" then
 												local text = child.TitleLbl.Text
 
-												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= tonumber(string.match(text, "%d+")))) then
+												if not (not string.find(text, "Homepage") or not (cfg.rbc.homepagemin <= (tonumber(string.match(text, "%d+")) or 0))) then
 													homepageMatched = true
 													v140 = { Field = "Dandelion Field", Pollen = "White" }
 												end
@@ -64553,6 +64711,14 @@ end
 
 										v140 = { Field = cfg.rbc.bestwhitefield, Pollen = "White" }
 									end
+								end
+
+								v140=v140 or {Pollen=cfg.rbc.preset}
+								v140.Field=rbcSafety:ResolveField(v140.Field,v140.Pollen or cfg.rbc.preset)
+								if not v140.Field then
+									reportStatus(1,"Waiting for an available RBC field")
+									task.wait(.25)
+									continue
 								end
 
 								if not (not cfg.rbc.mask and not cfg.rbc.tool) then
@@ -64606,7 +64772,7 @@ end
 										useItems({
 											RBC = true,
 											Field = hasPollenQuest,
-											Round = "Round " .. tonumber(string.match(mainFrame.RoundLabel.Text, "%d+")),
+											Round = "Round " .. (tonumber(string.match(mainFrame.RoundLabel.Text, "%d+")) or currentRound or 1),
 										})
 									end
 								else
@@ -64685,7 +64851,7 @@ end
 										RBC = true,
 										Mobs = mobFlags,
 										Field = hasPollenQuest,
-										Round = "Round " .. tonumber(string.match(mainFrame.RoundLabel.Text, "%d+")),
+										Round = "Round " .. (tonumber(string.match(mainFrame.RoundLabel.Text, "%d+")) or currentRound or 1),
 									})
 								end
 
@@ -64697,84 +64863,7 @@ end
 									input:handleShiftLock(true)
 								end
 
-								local avoidMap = {}
-								local position2 = nil
-
-								if not cfg.rbc.trackmobs then
-									for k in pairs(tracked.cogturrets) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											local field = getFieldAt(Body.Position)
-
-											if not (not field or field.Name ~= v140.Field) then
-												avoidMap[Body.Position] = 15
-												position2 = position2 or Body.Position
-											end
-										end
-									end
-
-									for k in pairs(tracked.goldcogs) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											local field = getFieldAt(Body.Position)
-
-											if not (not field or field.Name ~= v140.Field) then
-												avoidMap[Body.Position] = 20
-												position2 = position2 or Body.Position
-											end
-										end
-									end
-
-									for k in pairs(tracked.cogs) do
-										local Body = k:FindFirstChild("Body")
-
-										if Body then
-											local field = getFieldAt(Body.Position)
-
-											if not (not field or field.Name ~= v140.Field) then
-												avoidMap[Body.Position] = 20
-												position2 = position2 or Body.Position
-											end
-										end
-									end
-								else
-									for k, entityGroup in pairs(getupvalue(require(ReplicatedStorage.LocalFlyingEntity).Destroy, 3)) do
-										if not (k == "Bee" or k == "Mechsquito") then
-											for k2 in pairs(entityGroup) do
-												if k2.Alive then
-													local field = getFieldAt(k2.Pos)
-
-													if not (not field or field.Name ~= v140.Field) then
-														avoidMap[k2.Pos] = 20
-														position2 = position2 or k2.Pos
-
-														if not (not k2.Moving or not k2.PosNext) then
-															rbc.Avoid(avoidMap, k2.Pos, k2.PosNext, 10)
-														end
-													end
-												end
-											end
-										end
-									end
-								end
-
-								for k in pairs(tracked.cogsaws) do
-									rbc.Avoid(avoidMap, k.Start, k.End, 10)
-								end
-
-								if not position2 then
-									farmStep({ rbc = true })
-								else
-									farmStep({
-										rbc = true,
-										avoid = avoidMap,
-										skipoverlap = true,
-										origin = position2,
-										range = 50,
-									})
-								end
+								farmStep(rbcSafety:Options(currentField))
 							elseif shouldConvert() then
 								convertHoney()
 							end
@@ -64788,13 +64877,12 @@ end
 			end
 
 			if exitTo2 ~= 1 then
-				rbcAmuletCheck()
-				return
+				return true
 			end
 
 			if cfg.rbc.enabled then
 				task.wait(0.2)
-				rbcAmuletCheck()
+				return true
 			end
 		elseif not (not inventory:Has({ ["Robo Pass"] = 1 }, true) and not inventory:Has({ Cog = 1 })) then
 			if rbc.disableroundend then
@@ -64867,7 +64955,7 @@ end
 					setField("Rose Field")
 					local now = os.clock()
 
-					while not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.5)) do
+					while cfg.rbc.enabled and not state.stop and not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.5)) do
 						if not RunService.Heartbeat:Wait() then
 							break
 						end
@@ -64888,7 +64976,7 @@ end
 								input:handleShiftLock(true)
 							end
 
-							farmStep({ nowait = true })
+							farmStep(rbcSafety:Options(currentField,{nowait=true}))
 						elseif shouldConvert() then
 							convertHoney()
 						end
@@ -64986,7 +65074,7 @@ end
 
 				if rbc.frame.Visible then
 					rbc.disableusedrives = nil
-					rbcAmuletCheck()
+					return true
 				end
 			end
 		elseif not cfg.rbc.buypass or not (state.bees >= 30) then
@@ -65011,12 +65099,22 @@ end
 					inventory.time.Ticket = nil
 					rbc.pass = os.clock()
 					task.wait(0.2)
-					rbcAmuletCheck()
+					return true
 				end
 			elseif not (not cfg.rbc.mask and not cfg.rbc.tool) then
 				rbc.DefaultMask()
 			end
 		end
+	end
+
+	rbcAmuletCheck = function()
+		while cfg.rbc.enabled and not state.stop do
+			local ok,again=pcall(rbcAmuletStep)
+			if not ok then rbcSafety.roundActive=nil;error(again,0) end
+			if not again then rbcSafety.roundActive=nil;return end
+			RunService.Heartbeat:Wait()
+		end
+		rbcSafety.roundActive=nil
 	end
 
 	local function findPartyMob(targetField)
@@ -67230,6 +67328,7 @@ end
 ScreenGui.Destroying:Connect(function()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
+	rbcSafety:Reset()
 	meteorMovement:Release()
 	fieldPositionPolicy:ReleaseIdle()
 	fieldPositionPolicy:StopPreview()
@@ -67920,7 +68019,7 @@ which bees and get all 3 targets if
 				farmFolder.AddLabel("Field coverage: green = player inside; red = empty. Labels show current occupants.")
 				farmFolder.AddSwitch("Ignore Outside Quadrant", function()smoothMovement.roam=nil end, "autofarm", "strictquadrant")
 				farmFolder.AddSwitch("Idle Field Loop", function()fieldPositionPolicy:ReleaseIdle();smoothMovement.roam=nil;fieldPositionPolicy.idleLoop=nil end, "autofarm", "idlefieldloop")
-				farmFolder.AddSwitch("Field Idle: Smileys & Combos Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt idle farming in any field. Requires Idle Field Loop. Other tasks and conversion are skipped while enabled."})
+				controls["Field Idle: Smileys & Combos Only"]=farmFolder.AddSwitch("Field Idle: Smileys & Combos Only", nil, "autofarm", "stumpsmileyonly", {Tooltip="Only combos and smileys interrupt idle farming in any field. Requires Idle Field Loop. Other tasks and conversion are skipped while enabled."})
 				farmFolder.AddLabel("Stump route: continuous infinity; each side and middle once per repetition.")
 				farmFolder.AddSwitch("Idle Pattern Density", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepatternmass")
 				farmFolder.AddSwitch("Idle Pattern 140 PMS", function()fieldPositionPolicy:ReleaseIdle()end, "autofarm", "idlepattern140")
@@ -69643,43 +69742,26 @@ which bees and get all 3 targets if
 				rbcFolder.AddSlider("Maximum Round", nil, 4, 25, "rbc", "maxround", { Left = true })
 				rbcFolder.AddSwitch("Auto Buy Robo Pass", nil, "rbc", "buypass")
 				rbcFolder.AddSlider("Purchase Cooldown (mins)", nil, 0, 120, "rbc", "passcooldown", { Left = true })
-				rbcFolder.AddSwitch("Maintain 10x Precision", nil, "rbc", "precise")
-				rbcFolder.AddSlider("Minimum Round", nil, 1, 15, "rbc", "precisemin", { Left = true })
+				local precisionSwitch=rbcFolder.AddSwitch("Maintain 10x Precision", nil, "rbc", "precise")
+				local precisionRound=rbcFolder.AddSlider("Minimum Round", nil, 1, 15, "rbc", "precisemin", { Left = true })
+				rbcFolder.AddLabel("Precision requires Precise bees; set their ranking in Bee Pick Priorities.")
+				local buffSwitch=rbcFolder.AddSwitch("Prioritize Buff Upkeep",nil,"rbc","buffupkeep",{Tooltip="Safely collect nearby Token Links and missing or expiring Haste, Focus, Melody, Baby Love, color boosts, Inspire and Bear Morph. Precision and immediate hazard escape take precedence."})
 				rbcFolder.AddSwitch("Reroll Bees For Digital", nil, "rbc", "rerollbees")
 				rbcFolder.AddSlider("Maximum Rerolls", nil, 0, 5, "rbc", "rerollbeesmax", { Left = true })
 				rbcFolder.AddSwitch("Kill Gold Cogmowers", nil, "rbc", "goldcogmowers")
 
-				rbcFolder.AddSwitch("Track Mobs", function(n)
-					if n then
-						local n, q = pcall(function()
-							local y = require(ReplicatedStorage.LocalFX).ClientRun
+				local trackingSwitch=rbcFolder.AddSwitch("Track Mobs",function()
+					rbcSafety.flying,rbcSafety.nextFlyingCheck,rbcSafety.hazardAt=nil,nil,nil
+					watchRbcMobs(cfg.rbc.enabled or cfg.beesmas.roboparty)
+				end,"rbc","trackmobs",{Tooltip="Predict moving RBC hazards when internal data is available. Live mob models remain the fallback; no LocalFX function hook is required."})
+				rbcFolder.AddButton("Apply Optimized RBC Settings",function()
+					precisionSwitch.Set(true);precisionRound.Set(1);buffSwitch.Set(true);trackingSwitch.Set(true)
+					if controls["Auto Sprinkler"] then controls["Auto Sprinkler"].Set(true) else cfg.autofarm.autosprinkler=true end
+					if controls["Field Idle: Smileys & Combos Only"] then controls["Field Idle: Smileys & Combos Only"].Set(false) else cfg.autofarm.stumpsmileyonly=false end
+					saveConfig()
+					ui.Notify("RBC","Enabled Precision, buff upkeep, mob prediction and sprinklers. Exclusive idle disabled so RBC tasks can run.")
+				end)
 
-							if not isfunctionhooked(y) then
-								local P
-
-								P = hookfunction(y, newcclosure(function(...)
-									local l = { ... }
-									local u, o = l[1], l[2]
-									if not u or not o or not tracked or tokenFilter:LocalFX(u, o) then
-										return P(...)
-									end
-								end))
-
-								tokenFilter.list[y] = true
-								state.precise = true
-							end
-						end)
-
-						if not n then
-							ui.Notify("Track Mobs", "Failed to hook function:\n" .. tostring(q))
-						end
-					end
-				end, "rbc", "trackmobs", {
-					Hook = true,
-					Tooltip = [[This tracks where the starting and ending
-positions of mobs are using remotes for
-more accurate dodging]],
-				})
 
 				controls["Auto Use Materials"] = rbcFolder.AddSwitch("Auto Use Materials", nil, "rbc", "materialsenabled")
 

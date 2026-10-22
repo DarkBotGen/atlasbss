@@ -11,6 +11,15 @@ function rbcBeePriorities:Get(preset,bee)
 	if type(value)=="number" and value==value and value>=1 and value<=100 then return math.floor(value) end
 	return self.defaults and self.defaults[preset] and self.defaults[preset][bee] or 51
 end
+function rbcBeePriorities:Better(candidate,current)
+	if not current then return true end
+	if candidate.priority~=current.priority then return candidate.priority<current.priority end
+	for _,key in ipairs({"gifted","mutated","beequip"}) do
+		if not not candidate[key]~=not not current[key] then return candidate[key]==true end
+	end
+	if candidate.lvl~=current.lvl then return candidate.lvl>current.lvl end
+	return candidate.index<current.index
+end
 function rbcBeePriorities:Set(preset,bee,value)
 	if not self.defaults[preset] or not table.find(self.names,bee) then return end
 	cfg.rbc.beepriorities=type(cfg.rbc.beepriorities)=="table" and cfg.rbc.beepriorities or {}
@@ -125,3 +134,10 @@ assert(rbcBeePriorities:Get("White","Vector")==6 and rbcBeePriorities:Get("Blue"
 cfg.rbc.beepriorities.Blue.Buoyant="bad"
 assert(rbcBeePriorities:Get("Blue","Buoyant")==19)
 print("PASS: preset defaults, independent saved overrides, unranked bees, editor selection/save/reset and invalid-value fallback")
+
+local baseline={priority=2,gifted=false,mutated=false,beequip=false,lvl=15,index=2}
+assert(rbcBeePriorities:Better({priority=1,gifted=false,mutated=false,beequip=false,lvl=1,index=3},baseline))
+assert(rbcBeePriorities:Better({priority=2,gifted=true,mutated=false,beequip=false,lvl=1,index=3},baseline))
+assert(rbcBeePriorities:Better({priority=2,gifted=false,mutated=true,beequip=false,lvl=1,index=3},baseline))
+assert(not rbcBeePriorities:Better({priority=3,gifted=true,mutated=true,beequip=true,lvl=20,index=1},baseline))
+print("PASS: explicit bee ranking and deterministic gifted/mutation/beequip/level tie-breaks")
