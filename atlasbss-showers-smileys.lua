@@ -45619,12 +45619,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				if touchedMarks[object] then continue end
 				local start=virtual and object.Start or value
 				if type(start)~="number" or now-start<(tonumber(cfg.autofarm.smileytime) or 4) then continue end
-				if not virtual then
-					local attachment=object:FindFirstChild("Attachment")
-					local gui=attachment and attachment:FindFirstChild("BillboardGuiBack")
-					local circle=gui and gui:FindFirstChild("FrontCircle1")
-					if circle and circle.Rotation<90 then continue end
-				end
+
 				local point=object.Position-Vector3.new(0,10,0)
 				if not opts.ignorefield and getFieldAt(point)~=currentField then continue end
 				if opts.range and opts.origin and (opts.origin-point).Magnitude>=opts.range then continue end
@@ -45636,18 +45631,27 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			return best
 		end
 		local function collectFastSmiley(object,opts)
-			local now=os.clock()
-			local deadline=now+math.min(4,distanceTo(object.Position,true)/math.max(1,getHumanoid().WalkSpeed)+.75)
+			-- Smiley tokens need sustained contact: proximity alone is not collection.
+			local deadline=os.clock()+math.min(4,distanceTo(object.Position,true)/math.max(1,getHumanoid().WalkSpeed)+.75)+6
+			local nextMove=0
 			while os.clock()<deadline do
 				if showerController.active or state.stop then return true end
 				if object.Name==true then
 					if tracked.dupedsmiley[object.ID]~=object then return true end
-				elseif not object.Parent then return true end
+				elseif not object.Parent then
+					tracked.dupedsmiley[object]=nil
+					return true
+				end
+				local humanoid=getHumanoid()
+				if humanoid.Health<=0 then return true end
 				local root=getRootPart().Position
 				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
 				if opts.avoid and isPathClear(point,opts.avoid) then break end
-				if distanceTo(point,true)<=4 then break end
-				getHumanoid():MoveTo(point)
+				if os.clock()>=nextMove then
+					humanoid:MoveTo(point)
+					nextMove=os.clock()+.15
+				end
+				-- Keep this job owning movement while the server charges/collects it.
 				RunService.Heartbeat:Wait()
 			end
 			touchedMarks[object]=os.clock()+.4

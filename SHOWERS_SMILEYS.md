@@ -23,3 +23,5 @@ The in-game title is Atlas+ RBC Edition. The shower collector comes from Atlas+;
 RBC Edition also includes Atlas+ reversible visual optimization: hide bees/frogs/flowers/balloons/other players, strip decorative textures, disable visual effects, and aggressive visuals. These preserve game containers, collision and functional token identifiers. Optimizer listeners and saved-property records are released on removal, disable and unload. Disable 3D Rendering owns one overlay and rendering is restored on unload. Graph status/field histories are bounded when their sender stalls.
 
 RBC field dropdowns, upgrade selections, Buy Cog Upgrades and Auto Buy Upgrades load from normal configs. Unset dropdown/modal defaults accept their saved values; deselections replace old selection tables rather than merging removed entries back in. Unsupported settings are preserved on save.
+
+Smiley collection maintains contact until server removal instead of leaving at four studs. The existing wait timer controls approach eligibility; uncharged smileys remain collectible. A bounded timeout permits retries, and showers, hazards, death, or stopping farming can interrupt the collector.
