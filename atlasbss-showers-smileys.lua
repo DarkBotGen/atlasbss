@@ -1,4 +1,4 @@
--- Original Atlas + fast Star Showers and Smiley collection. Separate build; compatible with normal Atlas configs.
+-- Atlas+ RBC Edition: original Atlas with Atlas+ Star Showers and smiley collection.
 -- discord.gg/syncrypt
 
 if _G.loading then return end
@@ -1783,7 +1783,7 @@ do
 		end
 	end))
 
-	local title = _G.title and string.find(string.lower(_G.title), "atlas") and not string.find(string.lower(_G.title), "pre") and not string.find(string.lower(_G.title), "paid") and _G.title or "deobfuscated by skynex - .gg/syncrypt"
+	local title = "Atlas+ RBC Edition"
 	local uicolor = _G.uicolor and _G.uicolor or Color3.fromRGB(41, 74, 122)
 	local isDesktop = ScreenGui.AbsoluteSize.X >= 850 and ScreenGui.AbsoluteSize.Y >= 500
 
@@ -44979,6 +44979,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 	end
 
 	reportStatus = function(laststatus, lastfield)
+		if laststatus then state.activityStatus = laststatus end
 		if not (not cfg.webhook.graph and not cfg.webhook.dashboard or not discord.hourstart) then
 			if not (not laststatus or discord.laststatus == laststatus) then
 				local hourstart = discord.hourstart

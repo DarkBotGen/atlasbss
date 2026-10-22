@@ -1,9 +1,9 @@
-# Original Atlas: fast Showers + Smileys
+# Atlas+ RBC Edition
 
 Separate script: `atlasbss-showers-smileys.lua`.
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/DarkBotGen/atlasbss/main/loader-showers-smileys.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/DarkBotGen/atlasbss/main/loader-rbc-edition.lua"))()
 ```
 
 This build starts from the untouched original Atlas source, not Atlas+. It adds the fast first-to-last star shower collector with numbered world indicators, and improved smiley collection through the existing Farm Duped Tokens toggle and Smiley Token Wait Duration timer, with ready-token selection and bounded retries. Other farming and RBC behavior stays original. It does not include Atlas+ coconut-team coordination, quadrant routes, or RBC rewrites.
@@ -17,3 +17,5 @@ Cleanup changes retire completed tasks, disconnect replaced listeners, expire sy
 Original source SHA-256: `fad2bfc17b1e55993c7473b1428632ebd85fbc9564eca3e78cfd6d49be372e2b`.
 
 Validation: Luau compilation and `tests/showers_smileys_{engine,tracking,collection,retention,config}_test.luau`. Test fixtures contain the relevant extracted production functions with mocked Roblox APIs.
+
+The in-game title is Atlas+ RBC Edition. The shower collector comes from Atlas+; its activity gate is connected to original Atlas status updates even when dashboard and graph reporting are disabled. The old separate loader remains compatible.
