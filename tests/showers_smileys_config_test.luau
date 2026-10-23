@@ -1,10 +1,11 @@
-local cfg={rbc={bestbluefield=false,bestredfield=false,bestwhitefield=false,upgrades=false,cogupgrades=true,upgradesenabled=false},autofarm={smileytime=4}}
+local cfg={rbc={enabled=false,bestbluefield=false,bestredfield=false,bestwhitefield=false,upgrades=false,cogupgrades=true,upgradesenabled=false},autofarm={smileytime=4}}
 local disk={rbc={bestbluefield="Pine Tree Forest",bestredfield="Pepper Patch",bestwhitefield="Coconut Field",upgrades={RAM=true,Botnet=true},cogupgrades=false,upgradesenabled=true,unknown="keep"},team={main="Main"}}
 local HttpService={JSONDecode=function()return disk end,JSONEncode=function(_,v)return v end}
 local state={config="Preset 1"};local localPlayer={Name="Player"};local cache={}
 local function isfile()return true end
 local function readfile()return disk end
-local function writefile(_,v)disk=v end
+local marker
+local function writefile(path,v)if path=="atlas-Player.json" then marker=v else disk=v end end
 local function copyConfig(value)
 	if type(value) ~= "table" then return value end
 	local result = {}
@@ -52,6 +53,7 @@ local function saveConfig(cacheOnly)
 			if ok and type(result) == "table" then saved = result end
 		end
 		writefile(path, HttpService:JSONEncode(overlaySupportedConfig(saved, cfg)))
+		writefile("atlas-" .. localPlayer.Name .. ".json", state.config .. ".json")
 	else
 		writefile("atlascache-" .. localPlayer.Name .. ".json", HttpService:JSONEncode(cache))
 	end
@@ -61,11 +63,12 @@ mergeTable(cfg,disk)
 assert(cfg.rbc.bestbluefield=="Pine Tree Forest" and cfg.rbc.bestredfield=="Pepper Patch" and cfg.rbc.bestwhitefield=="Coconut Field")
 assert(cfg.rbc.upgrades.RAM and cfg.rbc.upgrades.Botnet and cfg.rbc.upgradesenabled and not cfg.rbc.cogupgrades)
 assert(not cfg.team and not cfg.rbc.unknown)
-cfg.rbc.upgrades.Botnet=nil;cfg.rbc.cogupgrades=true
+cfg.rbc.enabled=true;cfg.rbc.upgrades.Botnet=nil;cfg.rbc.cogupgrades=true
 saveConfig(false)
+assert(marker=="Preset 1.json","active preset not remembered for rejoin")
 assert(not disk.rbc.upgrades.Botnet and disk.rbc.upgrades.RAM,"deselected upgrades resurrected")
 assert(disk.team.main=="Main" and disk.rbc.unknown=="keep","unsupported settings erased")
-cfg.rbc.bestbluefield=false;cfg.rbc.upgrades=false;cfg.rbc.cogupgrades=false;cfg.rbc.upgradesenabled=false
+cfg.rbc.enabled=false;cfg.rbc.bestbluefield=false;cfg.rbc.upgrades=false;cfg.rbc.cogupgrades=false;cfg.rbc.upgradesenabled=false
 mergeTable(cfg,disk)
-assert(cfg.rbc.bestbluefield=="Pine Tree Forest" and cfg.rbc.upgrades.RAM and cfg.rbc.cogupgrades and cfg.rbc.upgradesenabled,"relaunch lost RBC options")
+assert(cfg.rbc.enabled and cfg.rbc.bestbluefield=="Pine Tree Forest" and cfg.rbc.upgrades.RAM and cfg.rbc.cogupgrades and cfg.rbc.upgradesenabled,"relaunch lost RBC options")
 print("PASS: RBC field selections, upgrade modal, auto-buy toggles, deselections and unknown settings round-trip")

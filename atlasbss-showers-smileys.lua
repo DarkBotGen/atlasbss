@@ -1293,6 +1293,7 @@ local function saveConfig(cacheOnly)
 			if ok and type(result) == "table" then saved = result end
 		end
 		writefile(path, HttpService:JSONEncode(overlaySupportedConfig(saved, cfg)))
+		writefile("atlas-" .. localPlayer.Name .. ".json", state.config .. ".json")
 	else
 		writefile("atlascache-" .. localPlayer.Name .. ".json", HttpService:JSONEncode(cache))
 	end
@@ -6029,6 +6030,15 @@ do
 			task.wait(3)
 			TeleportService:TeleportCancel()
 			TeleportService:Teleport(game.PlaceId, localPlayer)
+		end
+	end))
+
+	connections:Add("saveBeforeTeleport", localPlayer.OnTeleport:Connect(function(teleportState)
+		if teleportState == Enum.TeleportState.Started or teleportState == Enum.TeleportState.InProgress then
+			if cfg and state and state.config then
+				local ok, err = pcall(saveConfig)
+				if not ok then warn("Atlas+ RBC Edition: failed to save before teleport: " .. tostring(err)) end
+			end
 		end
 	end))
 
@@ -67606,7 +67616,7 @@ more accurate dodging]],
 					else
 						writefile("atlas-" .. localPlayer.Name .. ".json", config2 .. ".json")
 						task.wait(0.1)
-						loadstring(game:HttpGet(getUrl("script.lua")))()
+						loadstring(game:HttpGet("https://raw.githubusercontent.com/DarkBotGen/atlasbss/main/loader-rbc-edition.lua"))()
 					end
 				end, 86)
 

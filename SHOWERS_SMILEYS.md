@@ -25,3 +25,5 @@ RBC Edition also includes Atlas+ reversible visual optimization: hide bees/frogs
 RBC field dropdowns, upgrade selections, Buy Cog Upgrades and Auto Buy Upgrades load from normal configs. Unset dropdown/modal defaults accept their saved values; deselections replace old selection tables rather than merging removed entries back in. Unsupported settings are preserved on save.
 
 Smiley collection maintains contact until server removal instead of leaving at four studs. The existing wait timer controls approach eligibility; uncharged smileys remain collectible. A bounded timeout permits retries, and showers, hazards, death, or stopping farming can interrupt the collector.
+
+Saving settings remembers the current preset for the player. Teleport start flushes that preset, including Auto RBC, before rejoin. Load Config uses the RBC Edition loader. For automatic execution after rejoin, the execution environment must also launch loader-rbc-edition.lua.
