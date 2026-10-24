@@ -1720,6 +1720,41 @@ function visualOptimizer:Shutdown()
 	table.clear(self.modes)
 end
 
+local crabPlatformSupport = {saved={}}
+function crabPlatformSupport:Release()
+	connections:Cancel("crabPlatformSupport")
+	for part, value in pairs(self.saved) do
+		if part.Parent then part.CanCollide=value end
+	end
+	table.clear(self.saved)
+	local platform=self.platform
+	self.platform=nil
+	if platform then platform:Destroy() end
+end
+function crabPlatformSupport:Start(platform)
+	self:Release()
+	self.platform=platform
+	local character=localPlayer.Character
+	connections:Add("crabPlatformSupport",RunService.PreSimulation:Connect(function()
+		if not platform.Parent or localPlayer.Character~=character or not state or state.stop then self:Release();return end
+		local h=character:FindFirstChildOfClass("Humanoid")
+		local root=character:FindFirstChild("HumanoidRootPart")
+		if not h or h.Health<=0 or not root then self:Release();return end
+		platform.Anchored=true;platform.CanCollide=true
+		-- Travel owns noclip until it finishes. Keep a collidable body on the support afterwards.
+		if not state.tweennoclip then
+			if self.saved[root]==nil then self.saved[root]=root.CanCollide end
+			root.CanCollide=true
+		end
+	end))
+end
+function crabPlatformSupport:Inside(point, margin)
+	local platform=self.platform
+	if not platform or not platform.Parent then return false end
+	local p=platform.CFrame:PointToObjectSpace(point)
+	return math.abs(p.X)<=platform.Size.X/2-margin and math.abs(p.Z)<=platform.Size.Z/2-margin
+end
+
 local ui = {}
 local uiParts = {}
 local rbcBeePriorities = {
@@ -9185,8 +9220,6 @@ do
 		AlignOrientation.CFrame = rootPart.CFrame
 		AlignOrientation.Parent = rootPart
 		state.travelAlignOrientation=AlignOrientation
-		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-
 		local parts={}
 		state.tweenParts=parts
 		local function rememberPart(part)
@@ -9197,6 +9230,7 @@ do
 		end
 		for _,part in ipairs(character:GetDescendants()) do rememberPart(part) end
 		state.tweenPartsAdded=character.DescendantAdded:Connect(rememberPart)
+		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 		local ownerThread=coroutine.running()
 		state.tweennoclip=RunService.PreSimulation:Connect(function()
 			if localPlayer.Character~=character or humanoid.Health<=0 or not rootPart.Parent or coroutine.status(ownerThread)=="dead" then stopMovement();return end
@@ -60696,6 +60730,7 @@ end
 		end
 
 		v127 = function()
+			crabPlatformSupport:Release()
 			local combat = cfg.combat
 			local bees = state.bees
 
@@ -61113,32 +61148,34 @@ end
 						end
 					else
 						local vector2 = Vector3.new(-258, 106, 483)
-						local platform = state.platform
+						local platform = Instance.new("Part")
+						platform.Name="AtlasCrabPlatform"
+						platform.Anchored=true
+						platform.CanCollide=true
+						platform.Transparency=1
+						platform.Size=Vector3.new(vector.X+10,1,vector.Z+10)
+						platform.Position=vector2
+						platform.Parent=workspace
+						state.stopfasttween=true
+						crabPlatformSupport:Start(platform)
 
-						if not platform then
-							platform = Instance.new("Part")
-							state.platform = platform
-							platform.Anchored = true
-							platform.CanCollide = true
-							platform.Transparency = 1
-							platform.Size = vector + Vector3.new(10, 1, 10)
-							platform.Position = vector2
-							platform.Parent = workspace
-						else
-							platform.Orientation = Vector3.new(0, 0, 0)
-							platform.Size = vector + Vector3.new(10, 1, 10)
-							platform.Position = vector2
-						end
-
+						local arrived, travelError=pcall(function()
 						if distanceTo(vector2) > 50 then
 							goTo(Vector3.new(-450, 123, 483), "Crab Wait")
 							task.wait(8)
 						end
 
 						goTo(vector2 + Vector3.new(0, 10, 0), "Crab Platform")
+						end)
+						if not arrived then
+							crabPlatformSupport:Release()
+							state.stopfasttween=nil
+							error(travelError,0)
+						end
+
 						local now, v131 = os.clock()
 
-						while not v131 and os.clock() - now < 6 do
+						while not v131 and not state.stop and cfg.combat.killcrab and os.clock() - now < 6 do
 							if not RunService.Heartbeat:Wait() then
 								break
 							end
@@ -61153,6 +61190,8 @@ end
 						end
 
 						if not v131 then
+							crabPlatformSupport:Release()
+							state.stopfasttween=nil
 							toyUse.time.crab = os.clock()
 							v127()
 							return
@@ -61161,7 +61200,7 @@ end
 						state.stopfasttween = true
 						reportStatus(3)
 
-						while not (not v131.Parent or getHumanoid().Health == 0) do
+						while not state.stop and cfg.combat.killcrab and platform.Parent and v131.Parent and getHumanoid().Health > 0 do
 							if not RunService.Heartbeat:Wait() then
 								break
 							end
@@ -61169,7 +61208,7 @@ end
 							local ok2, result = pcall(function()
 								local y = vector2.Y
 
-								if math.abs(getRootPart().Position.Y - y) > 10 then
+								if getRootPart().Position.Y < y+2 or getRootPart().Position.Y > y+20 or not crabPlatformSupport:Inside(getRootPart().Position,4) then
 									goTo(vector2 + Vector3.new(0, 5, 0), "Crab Platform")
 								end
 
@@ -61183,7 +61222,7 @@ end
 								farmStep({
 									origin = vector2,
 									loot = true,
-									range = 30,
+									range = math.max(1,math.min(30,platform.Size.X/2-6,platform.Size.Z/2-6)),
 									ignorefield = true,
 									ignoreflower = true,
 									checkheight = true,
@@ -61196,7 +61235,7 @@ end
 							end
 						end
 
-						platform:Destroy()
+						crabPlatformSupport:Release()
 						local ok2 = nil
 
 						for i = 1, 4 do
@@ -67326,6 +67365,7 @@ end
 end
 
 ScreenGui.Destroying:Connect(function()
+	crabPlatformSupport:Release()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
 	rbcSafety:Reset()
