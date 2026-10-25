@@ -53676,53 +53676,24 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				elseif useOptions.RBC then
 					local rbcMaterial = cfg.rbc.materials[materialName]
 
-					if not (materialName ~= "Stinger" or not rbcMaterial or not rbcMaterial[1] or not (not rbcMaterial[3] or not rbcMaterial[3][useOptions.Round])) then
-						local allowedMobs, hasDisallowedMob
-
-						if not cache.Materials[materialName] then
-							allowedMobs = rbcMaterial[4]
-							hasDisallowedMob = nil
-
-							if allowedMobs then
-								for k in pairs(useOptions.Mobs) do
-									if not allowedMobs[k] then
-										hasDisallowedMob = true
-										break
-									end
-								end
+					if materialName=="Stinger" and rbcMaterial and rbcMaterial[1]
+						and (not rbcMaterial[3] or not rbcMaterial[3][useOptions.Round]) then
+						-- Mob selections are stored as exclusions by the materials UI.
+						local excluded=rbcMaterial[4]
+						local shouldUse=type(excluded)~="table" or next(excluded)==nil
+						if not shouldUse then
+							for mob, active in pairs(useOptions.Mobs or {}) do
+								if active and not excluded[mob] then shouldUse=true;break end
 							end
-
-							if not hasDisallowedMob or not inventory:Use(materialName, true) then
-								continue
-							end
-							logger.log("Using material:", materialName)
-							cache.Materials[materialName] = os.time()
-							saveConfig(true)
-							continue
 						end
-
-						local lastUsed = cache.Materials[materialName]
-
-						if (rbcMaterial[5] and 10 or 29) < os.time() - lastUsed then
-							allowedMobs = rbcMaterial[4]
-							hasDisallowedMob = nil
-
-							if allowedMobs then
-								for k in pairs(useOptions.Mobs) do
-									if not allowedMobs[k] then
-										hasDisallowedMob = true
-										break
-									end
-								end
+						local interval=rbcMaterial[5] and 10 or math.max(10,tonumber(rbcMaterial[2]) or 29)
+						local lastUsed=cache.Materials[materialName]
+						if shouldUse and (not lastUsed or os.time()-lastUsed>=interval) then
+							if inventory:Use(materialName,true) then
+								logger.log("Using material:",materialName)
+								cache.Materials[materialName]=os.time()
+								saveConfig(true)
 							end
-
-							if not hasDisallowedMob or not inventory:Use(materialName, true) then
-								continue
-							end
-							logger.log("Using material:", materialName)
-							cache.Materials[materialName] = os.time()
-							saveConfig(true)
-							continue
 						end
 					end
 
