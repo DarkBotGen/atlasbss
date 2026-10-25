@@ -6769,6 +6769,47 @@ inventory.GetName = function(owner, eggKey)
 	return owner.names[eggKey]
 end
 
+-- Bounded inventory-rate counters; no retained per-sample history.
+local rbcHourly = {
+	materials={"Gumdrops","Stinger","Enzymes","Glue","Oil","Snowflake","Blue Extract","Red Extract","Jelly Beans","Tropical Drink","Purple Potion","Super Smoothie"},
+	previous=nil, totals={}, started=nil,
+}
+function rbcHourly:Sample(snapshot,now)
+	if type(snapshot)~="table" then return end
+	if not self.started then self.started=now end
+	local names={"Glitched Drive","Red Drive","Blue Drive","White Drive","Ticket"}
+	for _,name in ipairs(self.materials) do table.insert(names,name) end
+	local previous=self.previous
+	local nextSnapshot={}
+	for _,name in ipairs(names) do
+		local amount=tonumber(snapshot[name]) or 0
+		nextSnapshot[name]=amount
+		local total=self.totals[name]
+		if not total then total={gain=0,used=0};self.totals[name]=total end
+		if previous then
+			local delta=amount-(previous[name] or 0)
+			if delta>0 then total.gain+=delta else total.used-=delta end
+		end
+	end
+	self.previous=nextSnapshot
+end
+function rbcHourly:Fields(now)
+	local seconds=self.started and now-self.started or 0
+	if seconds<60 then return {{name="RBC hourly estimates",value="Collecting inventory samples (at least 1 minute needed).",inline=false}} end
+	local hours=seconds/3600
+	local function rate(names)
+		local gain,used=0,0
+		for _,name in ipairs(names) do local t=self.totals[name] or {};gain+=t.gain or 0;used+=t.used or 0 end
+		return string.format("+%.1f gained / -%.1f used / %+.1f net",gain/hours,used/hours,(gain-used)/hours)
+	end
+	local lines={}
+	for _,name in ipairs(self.materials) do table.insert(lines,name..": "..rate({name})) end
+	return {
+		{name="Drives & tickets / hour (estimated)",value="Glitched: "..rate({"Glitched Drive"}).."\nColored (R+B+W): "..rate({"Red Drive","Blue Drive","White Drive"}).."\nTickets: "..rate({"Ticket"})..string.format("\nAverage over %.1f minutes this run.",seconds/60),inline=false},
+		{name="RBC materials / hour (estimated)",value=table.concat(lines,"\n").."\nObserved inventory changes; simultaneous gains/use may cancel.",inline=false},
+	}
+end
+
 inventory.Fetch = function(owner)
 	local Eggs = gameApi:Cache("Eggs")
 	local owned = {}
@@ -43699,6 +43740,10 @@ do
 			table.insert(fields2, { name = utf8.char(8203), value = utf8.char(8203), inline = true })
 		end
 
+		if rbcHourly.started then
+			for _, field in ipairs(rbcHourly:Fields(os.clock())) do table.insert(fields2,field) end
+		end
+
 		if cfg.webhook.items then
 			local ok, result = pcall(function()
 				local itemsText = v121.Items(true)
@@ -68249,6 +68294,15 @@ Are you sure you want to enable it?]])
 
 			watchDupedTokens(cfg.autofarm.farmdupedtokens or cfg.autoquest.dupedtokens)
 			showerController:Start()
+			threads:Add("rbcHourlyInventory",function()
+				while cfg and state do
+					if not state.disconnect then
+						local ok,snapshot=pcall(function()return inventory:Fetch()end)
+						if ok then rbcHourly:Sample(snapshot,os.clock()) end
+					end
+					task.wait(5)
+				end
+			end)
 			return
 		end
 	end
