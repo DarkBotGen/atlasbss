@@ -6272,7 +6272,7 @@ do
 
 	watchStations = function(enable)
 		if not enable then
-			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise then return end
+			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.rbc.precise then return end
 			connections:Cancel("stations")
 			connections:Cancel("stations2")
 			connections:Cancel("stationPending")
@@ -45818,8 +45818,8 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			if (tonumber(cfg.rbc.precisemin) or 1)>1 and (not challenge or (tonumber(challenge.Round) or 0)<cfg.rbc.precisemin) then precisionRefresh=false;return end
 			local precision=buffs.Precision
 			local remaining=precision and precision.Percent.Size.Y.Scale or 0
-			if not precision or precision.Text.Text~="x10" or remaining<.7 then precisionRefresh=true
-			elseif remaining>=.9 then precisionRefresh=false end
+			if not precision or precision.Text.Text~="x10" or remaining<.85 then precisionRefresh=true
+			elseif remaining>=.97 then precisionRefresh=false end
 			if not precisionRefresh then return end
 			local best,kind,bestDistance=nil,nil,math.huge
 			local function consider(object,targetKind)
@@ -45838,6 +45838,25 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 				if not object.Mark and not object.Touched then consider(object,"Precise2") end
 			end
 			return kind,best
+		end
+
+		local function collectRbcPrecision(object,opts)
+			local deadline=os.clock()+3
+			local nextMove=0
+			while os.clock()<deadline do
+				if state.stop or showerController.active or not cfg.rbc.enabled or not cfg.rbc.precise then return true end
+				if object.Name==true then
+					if tracked.precise2[object.ID]~=object or object.Touched or object.Mark then return true end
+				elseif not object.Parent or object.BrickColor.Name=="Flint" or object.BrickColor.Name=="Alder" then return true end
+				if getHumanoid().Health<=0 then return true end
+				local root=getRootPart().Position
+				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
+				if opts.avoid and isPathClear(point,opts.avoid) then return true end
+				if os.clock()>=nextMove then getHumanoid():MoveTo(point);nextMove=os.clock()+.1 end
+				RunService.Heartbeat:Wait()
+			end
+			-- Unconfirmed targets remain eligible rather than being removed at six studs.
+			return true
 		end
 
 		pickTarget = function(opts)
@@ -51813,6 +51832,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			end
 
 			if targetKind == "Precise" then
+				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
 				return collectObject(targetObject, "precise", 6)
 			end
 
@@ -51825,6 +51845,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			end
 
 			if targetKind == "Precise2" or targetKind == "Precise2All" then
+				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
 				return collectObject(targetObject, nil, 6, nil, nil, nil, nil, true)
 			end
 
@@ -60968,22 +60989,23 @@ do
 		},
 		redbees = {
 			Digital = 1,
-			Vicious = 2,
+			Precise = 2,
 			Bear = 3,
-			Tabby = 4,
-			Photon = 5,
-			Festive = 6,
-			Crimson = 7,
-			Basic = 8,
-			Riley = 9,
-			Rad = 10,
-			Brave = 11,
-			Commander = 12,
-			Carpenter = 13,
-			Precise = 14,
-			Spicy = 15,
-			Vector = 16,
-			Fuzzy = 17,
+			Windy = 4,
+			Vicious = 5,
+			Tabby = 6,
+			Photon = 7,
+			Festive = 8,
+			Crimson = 9,
+			Basic = 10,
+			Riley = 11,
+			Rad = 12,
+			Brave = 13,
+			Commander = 14,
+			Carpenter = 15,
+			Spicy = 16,
+			Vector = 17,
+			Fuzzy = 18,
 		},
 		whitebees = { Digital = 1, Tabby = 2, Bear = 3, Photon = 4, Gummy = 5, Vector = 6 },
 		cogupgrades = { "Botnet", "Credit", "RAM", "Subscribe", "beeBay", "Stack Overflow" },
@@ -66997,7 +67019,7 @@ which bees and get all 3 targets if
 				rbcFolder.AddSlider("Maximum Round", nil, 4, 25, "rbc", "maxround", { Left = true })
 				rbcFolder.AddSwitch("Auto Buy Robo Pass", nil, "rbc", "buypass")
 				rbcFolder.AddSlider("Purchase Cooldown (mins)", nil, 0, 120, "rbc", "passcooldown", { Left = true })
-				rbcFolder.AddSwitch("Maintain 10x Precision", nil, "rbc", "precise")
+				rbcFolder.AddSwitch("Maintain 10x Precision", function(enabled) watchStations(enabled) end, "rbc", "precise")
 				rbcFolder.AddSlider("Minimum Round", nil, 1, 15, "rbc", "precisemin", { Left = true })
 				rbcFolder.AddSwitch("Reroll Bees For Digital", nil, "rbc", "rerollbees")
 				rbcFolder.AddSlider("Maximum Rerolls", nil, 0, 5, "rbc", "rerollbeesmax", { Left = true })

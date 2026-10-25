@@ -16,8 +16,8 @@ local function isPathClear(p)return p.hazard end
 			if (tonumber(cfg.rbc.precisemin) or 1)>1 and (not challenge or (tonumber(challenge.Round) or 0)<cfg.rbc.precisemin) then precisionRefresh=false;return end
 			local precision=buffs.Precision
 			local remaining=precision and precision.Percent.Size.Y.Scale or 0
-			if not precision or precision.Text.Text~="x10" or remaining<.7 then precisionRefresh=true
-			elseif remaining>=.9 then precisionRefresh=false end
+			if not precision or precision.Text.Text~="x10" or remaining<.85 then precisionRefresh=true
+			elseif remaining>=.97 then precisionRefresh=false end
 			if not precisionRefresh then return end
 			local best,kind,bestDistance=nil,nil,math.huge
 			local function consider(object,targetKind)
@@ -42,7 +42,7 @@ local target={Position={field=currentField,distance=5},Mark=false,Touched=false}
 tracked.precise2[1]=target
 local kind,obj=pickRbcPrecision({rbc=true});assert(kind=="Precise2" and obj==target)
 buffs.Precision.Percent.Size.Y.Scale=.8;assert(select(2,pickRbcPrecision({rbc=true}))==target,"refresh must continue")
-buffs.Precision.Percent.Size.Y.Scale=.95;assert(not pickRbcPrecision({rbc=true}))
+buffs.Precision.Percent.Size.Y.Scale=.99;assert(not pickRbcPrecision({rbc=true}))
 buffs.Precision.Text.Text="x9";assert(select(2,pickRbcPrecision({rbc=true}))==target)
 target.Position.hazard=true;assert(not pickRbcPrecision({rbc=true,avoid={}}))
 target.Position.hazard=nil;target.Mark=true;assert(not pickRbcPrecision({rbc=true}))
