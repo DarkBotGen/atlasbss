@@ -6090,7 +6090,7 @@ do
 			tracked.marks[n] = true
 		elseif L == "Bubble" and (cfg.autofarm.farmbubbles or cfg.autofarm.autopopstar or cfg.face.bubbles or cfg.face.gbubbles) then
 			tracked.bubbles[n] = true
-		elseif L == "Crosshair" and not state.precise and (cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise) then
+		elseif L == "Crosshair" and not state.precise and (cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.rbc.precise) then
 			tracked.precise[n] = true
 		elseif L == "DustBunnyInstance" and cfg.autofarm.farmfuzzbombs then
 			tracked.fuzzbombs[n] = true
@@ -45811,8 +45811,39 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			["rbxassetid://1442863423"] = "Blue Boost",
 		}
 
+		local precisionRefresh=false
+		local function pickRbcPrecision(opts)
+			if not (opts.rbc or opts.rbcprecision) or not cfg.rbc.enabled or not cfg.rbc.precise or state.precise then precisionRefresh=false;return end
+			local challenge=gameApi:Cache({"RoboChallenges","ActiveChallenge"})
+			if (tonumber(cfg.rbc.precisemin) or 1)>1 and (not challenge or (tonumber(challenge.Round) or 0)<cfg.rbc.precisemin) then precisionRefresh=false;return end
+			local precision=buffs.Precision
+			local remaining=precision and precision.Percent.Size.Y.Scale or 0
+			if not precision or precision.Text.Text~="x10" or remaining<.7 then precisionRefresh=true
+			elseif remaining>=.9 then precisionRefresh=false end
+			if not precisionRefresh then return end
+			local best,kind,bestDistance=nil,nil,math.huge
+			local function consider(object,targetKind)
+				if touchedMarks[object] then return end
+				local point=object.Position
+				if getFieldAt(point)~=currentField then return end
+				if opts.origin and opts.range and (point-opts.origin).Magnitude>=opts.range then return end
+				if opts.avoid and isPathClear(point,opts.avoid) then return end
+				local distance=distanceTo(point,true)
+				if distance<bestDistance then best,kind,bestDistance=object,targetKind,distance end
+			end
+			for object in pairs(tracked.precise) do
+				if object.Parent and object.BrickColor.Name~="Flint" and object.BrickColor.Name~="Alder" then consider(object,"Precise") end
+			end
+			for _,object in pairs(tracked.precise2) do
+				if not object.Mark and not object.Touched then consider(object,"Precise2") end
+			end
+			return kind,best
+		end
+
 		pickTarget = function(opts)
 			if showerController.active then return "Safeshower" end
+			local precisionKind,precisionTarget=pickRbcPrecision(opts)
+			if precisionTarget then return precisionKind,precisionTarget end
 			local smiley=pickFastSmiley(opts)
 			if smiley then return "Duped Smiley",smiley end
 			local fallbackToken = nil
@@ -62222,12 +62253,12 @@ do
 				local activeChallenge = gameApi:Cache({ "RoboChallenges", "ActiveChallenge" })
 				local precision = buffs.Precision
 
-				if (cfg.rbc.precisemin == 1 or not (not activeChallenge or not (cfg.rbc.precisemin <= activeChallenge.Round))) and (not precision or precision.Text.Text ~= "x10" or precision.Percent.Size.Y.Scale < 0.5) then
+				if (cfg.rbc.precisemin == 1 or not (not activeChallenge or not (cfg.rbc.precisemin <= activeChallenge.Round))) and (not precision or precision.Text.Text ~= "x10" or precision.Percent.Size.Y.Scale < 0.7) then
 					logger.log("Maintaining 10x Precision")
 					setField("Rose Field")
 					local now = os.clock()
 
-					while not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.5)) do
+					while cfg.rbc.enabled and cfg.rbc.precise and not state.stop and getHumanoid().Health>0 and not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.9)) do
 						if not RunService.Heartbeat:Wait() then
 							break
 						end
@@ -62248,7 +62279,7 @@ do
 								input:handleShiftLock(true)
 							end
 
-							farmStep({ nowait = true })
+							farmStep({ nowait = true, rbcprecision = true })
 						elseif shouldConvert() then
 							convertHoney()
 						end
