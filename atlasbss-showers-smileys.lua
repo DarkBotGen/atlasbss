@@ -61258,6 +61258,15 @@ do
 		return best or fallback
 	end
 
+	local function lateHiveConversion(round,tasks)
+		if round<14 then return false end
+		for _,taskText in ipairs(tasks) do
+			local text=string.lower(taskText)
+			if string.find(text,"convert",1,true) and (string.find(text,"hive",1,true) or string.find(text,"pollen",1,true)) then return true end
+		end
+		return false
+	end
+
 	local rbcAmuletCheck
 
 	rbcAmuletCheck = function()
@@ -61343,6 +61352,25 @@ do
 						end
 					end
 
+					local selectionRound=tonumber(string.match(rbc.challenge.MainFrame.RoundLabel.Text,"%d+")) or 0
+					if selectionRound>=14 then
+						for i=#questButtons,1,-1 do
+							if lateHiveConversion(selectionRound,questButtons[i].tasks) then table.remove(questButtons,i) end
+						end
+						if #questButtons==0 then
+							if rbc.lateConvertReroll~=selectionRound and box.RerollButton.Visible and box.RerollButton.BackgroundTransparency==0 then
+								rbc.lateConvertReroll=selectionRound
+								logger.log("Rerolling late-round hive conversion quests")
+								gameApi:Event("RoboBearReroll")
+								task.wait(.75)
+							else
+								logger.log("Quitting RBC: round 14+ hive conversion quest")
+								gameApi:Event("RoboBearRoundEnd",true)
+								task.wait(.75)
+							end
+							error("return",0)
+						end
+					else rbc.lateConvertReroll=nil end
 					table.sort(questButtons, function(buttonA, buttonB)
 						if cfg.rbc.highestcog then
 							local highestcogmax = cfg.rbc.highestcogmax
@@ -61864,6 +61892,12 @@ do
 						local hasPollenQuest = nil
 
 						for _, convertTask in ipairs(convertTasks) do
+							if not string.find(convertTask.Text,"Complete") and lateHiveConversion(currentRound,{convertTask.Text}) then
+								logger.log("Quitting RBC: active late-round hive conversion quest")
+								gameApi:Event("RoboBearRoundEnd",true)
+								task.wait(.75)
+								error("return",0)
+							end
 							if not string.find(convertTask.Text, "Complete") then
 								if bagPercent() > 50 then
 									convertHoney()
