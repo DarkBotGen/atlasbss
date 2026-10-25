@@ -56847,9 +56847,7 @@ end
 				end
 			end
 
-			local v147, v148, v149
-
-			for _, missingIngredient in v147, v148, v149 do
+			for _, missingIngredient in ipairs(missingIngredients) do
 				if cfg.toys.progblender then
 					logger.log(logPrefix, "Crafting x" .. count, recipe)
 					logger.log(logPrefix, "Missing x" .. missingIngredient.Amount, missingIngredient.Type)
@@ -66501,11 +66499,11 @@ end
 				end
 
 				if not (not cfg.planters.enabled or cfg.planters.method ~= "Nectar" or not cfg.planters.nectar.farmfield) then
-					local v136, v137, v138
-
-					for _, v139 in v136, v137, v138 do
-						setField(v139.field)
-						break
+					for _, planter in ipairs(tracked.planters or {}) do
+						if planter.field and workspace.FlowerZones:FindFirstChild(planter.field) then
+							setField(planter.field)
+							break
+						end
 					end
 				end
 
