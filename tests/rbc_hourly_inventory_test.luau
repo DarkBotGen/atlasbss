@@ -1,6 +1,5 @@
--- Bounded inventory-rate counters; no retained per-sample history.
 local rbcHourly = {
-	materials={"Gumdrops","Stinger","Enzymes","Glue","Oil","Snowflake","Blue Extract","Red Extract","Jelly Beans","Tropical Drink","Purple Potion","Super Smoothie"},
+	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger"},
 	previous=nil, totals={}, started=nil,
 }
 function rbcHourly:Sample(snapshot,now)
@@ -24,31 +23,46 @@ function rbcHourly:Sample(snapshot,now)
 end
 function rbcHourly:Fields(now)
 	local seconds=self.started and now-self.started or 0
-	if seconds<60 then return {{name="RBC hourly estimates",value="Collecting inventory samples (at least 1 minute needed).",inline=false}} end
+	if seconds<60 then return {{name="RBC summary",value="Tracking started. Hourly estimates appear after 1 minute.",inline=false}} end
 	local hours=seconds/3600
-	local function rate(names)
-		local gain,used=0,0
-		for _,name in ipairs(names) do local t=self.totals[name] or {};gain+=t.gain or 0;used+=t.used or 0 end
-		return string.format("+%.1f gained / -%.1f used / %+.1f net",gain/hours,used/hours,(gain-used)/hours)
+	local function total(name,key) local t=self.totals[name];return t and t[key] or 0 end
+	local glitched=total("Glitched Drive","gain")
+	local colored=total("Red Drive","gain")+total("Blue Drive","gain")+total("White Drive","gain")
+	local spent=total("Ticket","used")
+	local tickets=self.previous and self.previous.Ticket or 0
+	local summary=string.format("Glitched drives: **%.1f/hour**\nColored drives: **%.1f/hour**\nTickets spent: **%.1f/hour**\nTickets gained: **%.1f/hour**",glitched/hours,colored/hours,spent/hours,total("Ticket","gain")/hours)
+	local budget=string.format("Tickets left: **%.0f**",tickets)
+	if glitched>0 and spent>0 then
+		local cost=spent/glitched
+		budget..=string.format("\nAverage cost: **%.1f tickets per glitched drive**\nYour tickets could fund about **%.0f more glitched drives**",cost,math.floor(tickets/cost))
+	else budget..="\nDrive estimate: waiting for both ticket spending and a glitched drive gain." end
+	local materials={}
+	for _,name in ipairs(self.materials) do
+		table.insert(materials,string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,total(name,"used")/hours,total(name,"gain")/hours))
 	end
-	local lines={}
-	for _,name in ipairs(self.materials) do table.insert(lines,name..": "..rate({name})) end
 	return {
-		{name="Drives & tickets / hour (estimated)",value="Glitched: "..rate({"Glitched Drive"}).."\nColored (R+B+W): "..rate({"Red Drive","Blue Drive","White Drive"}).."\nTickets: "..rate({"Ticket"})..string.format("\nAverage over %.1f minutes this run.",seconds/60),inline=false},
-		{name="RBC materials / hour (estimated)",value=table.concat(lines,"\n").."\nObserved inventory changes; simultaneous gains/use may cancel.",inline=false},
+		{name="RBC per hour",value=summary,inline=false},
+		{name="Ticket budget estimate",value=budget,inline=false},
+		{name="Materials per hour",value=table.concat(materials,"\n"),inline=false},
+		{name="Tracking",value=string.format("%.0f minutes this run. Colored = red + blue + white. Estimates use observed inventory changes and assume the same ticket cost; rewards and costs vary. Resets on rejoin.",seconds/60),inline=false},
 	}
 end
 
-
-rbcHourly:Sample({["Glitched Drive"]=10,["Red Drive"]=4,["Blue Drive"]=5,["White Drive"]=6,Ticket=100,Oil=5},0)
-rbcHourly:Sample({["Glitched Drive"]=12,["Red Drive"]=5,["Blue Drive"]=7,["White Drive"]=9,Ticket=110,Oil=3},1800)
-rbcHourly:Sample({["Glitched Drive"]=11,["Red Drive"]=5,["Blue Drive"]=7,["White Drive"]=9,Ticket=107,Oil=4},3600)
+rbcHourly:Sample({["Glitched Drive"]=10,Ticket=100,["Smooth Dice"]=10,["Field Dice"]=5,["Purple Potion"]=2,Stinger=20},0)
+assert(#rbcHourly:Fields(20)==1)
+rbcHourly:Sample({["Glitched Drive"]=12,Ticket=80,["Red Drive"]=1,["Blue Drive"]=2,["White Drive"]=3,["Smooth Dice"]=8,["Field Dice"]=4,["Purple Potion"]=1,Stinger=10},3600)
 local fields=rbcHourly:Fields(3600)
-assert(string.find(fields[1].value,"Glitched: +2.0 gained / -1.0 used / +1.0 net",1,true))
-assert(string.find(fields[1].value,"Colored (R+B+W): +6.0 gained",1,true))
-assert(string.find(fields[1].value,"Tickets: +10.0 gained / -3.0 used / +7.0 net",1,true))
-assert(string.find(fields[2].value,"Oil: +1.0 gained / -2.0 used / -1.0 net",1,true))
-assert(#fields[1].value<=1024 and #fields[2].value<=1024)
+assert(string.find(fields[1].value,"Glitched drives: **2.0/hour**",1,true))
+assert(string.find(fields[1].value,"Colored drives: **6.0/hour**",1,true))
+assert(string.find(fields[2].value,"10.0 tickets per glitched drive",1,true))
+assert(string.find(fields[2].value,"8 more glitched drives",1,true))
+assert(string.find(fields[3].value,"Smooth Dice: **2.0 used/hour**",1,true))
+assert(not string.find(fields[3].value,"Oil",1,true))
+for _,field in ipairs(fields)do assert(#field.value<=1024)end
+rbcHourly.totals["Glitched Drive"].gain=0
+assert(string.find(rbcHourly:Fields(3600)[2].value,"waiting",1,true))
+rbcHourly.totals.Ticket.used=0;rbcHourly.totals["Glitched Drive"].gain=2
+assert(string.find(rbcHourly:Fields(3600)[2].value,"waiting",1,true))
 for i=1,10000 do rbcHourly:Sample({},3600+i)end
-local n=0;for _ in pairs(rbcHourly.previous)do n+=1 end;assert(n==17)
-print("PASS: glitched/combined colored drives, ticket and material gain/use/net averages, Discord field sizes and bounded sample state")
+local n=0;for _ in pairs(rbcHourly.previous)do n+=1 end;assert(n==9)
+print("PASS: simple rates, four materials, combined colored drives, ticket budget, insufficient samples, Discord size and bounded state")

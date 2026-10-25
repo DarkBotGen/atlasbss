@@ -6771,7 +6771,7 @@ end
 
 -- Bounded inventory-rate counters; no retained per-sample history.
 local rbcHourly = {
-	materials={"Gumdrops","Stinger","Enzymes","Glue","Oil","Snowflake","Blue Extract","Red Extract","Jelly Beans","Tropical Drink","Purple Potion","Super Smoothie"},
+	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger"},
 	previous=nil, totals={}, started=nil,
 }
 function rbcHourly:Sample(snapshot,now)
@@ -6795,18 +6795,28 @@ function rbcHourly:Sample(snapshot,now)
 end
 function rbcHourly:Fields(now)
 	local seconds=self.started and now-self.started or 0
-	if seconds<60 then return {{name="RBC hourly estimates",value="Collecting inventory samples (at least 1 minute needed).",inline=false}} end
+	if seconds<60 then return {{name="RBC summary",value="Tracking started. Hourly estimates appear after 1 minute.",inline=false}} end
 	local hours=seconds/3600
-	local function rate(names)
-		local gain,used=0,0
-		for _,name in ipairs(names) do local t=self.totals[name] or {};gain+=t.gain or 0;used+=t.used or 0 end
-		return string.format("+%.1f gained / -%.1f used / %+.1f net",gain/hours,used/hours,(gain-used)/hours)
+	local function total(name,key) local t=self.totals[name];return t and t[key] or 0 end
+	local glitched=total("Glitched Drive","gain")
+	local colored=total("Red Drive","gain")+total("Blue Drive","gain")+total("White Drive","gain")
+	local spent=total("Ticket","used")
+	local tickets=self.previous and self.previous.Ticket or 0
+	local summary=string.format("Glitched drives: **%.1f/hour**\nColored drives: **%.1f/hour**\nTickets spent: **%.1f/hour**\nTickets gained: **%.1f/hour**",glitched/hours,colored/hours,spent/hours,total("Ticket","gain")/hours)
+	local budget=string.format("Tickets left: **%.0f**",tickets)
+	if glitched>0 and spent>0 then
+		local cost=spent/glitched
+		budget..=string.format("\nAverage cost: **%.1f tickets per glitched drive**\nYour tickets could fund about **%.0f more glitched drives**",cost,math.floor(tickets/cost))
+	else budget..="\nDrive estimate: waiting for both ticket spending and a glitched drive gain." end
+	local materials={}
+	for _,name in ipairs(self.materials) do
+		table.insert(materials,string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,total(name,"used")/hours,total(name,"gain")/hours))
 	end
-	local lines={}
-	for _,name in ipairs(self.materials) do table.insert(lines,name..": "..rate({name})) end
 	return {
-		{name="Drives & tickets / hour (estimated)",value="Glitched: "..rate({"Glitched Drive"}).."\nColored (R+B+W): "..rate({"Red Drive","Blue Drive","White Drive"}).."\nTickets: "..rate({"Ticket"})..string.format("\nAverage over %.1f minutes this run.",seconds/60),inline=false},
-		{name="RBC materials / hour (estimated)",value=table.concat(lines,"\n").."\nObserved inventory changes; simultaneous gains/use may cancel.",inline=false},
+		{name="RBC per hour",value=summary,inline=false},
+		{name="Ticket budget estimate",value=budget,inline=false},
+		{name="Materials per hour",value=table.concat(materials,"\n"),inline=false},
+		{name="Tracking",value=string.format("%.0f minutes this run. Colored = red + blue + white. Estimates use observed inventory changes and assume the same ticket cost; rewards and costs vary. Resets on rejoin.",seconds/60),inline=false},
 	}
 end
 
