@@ -595,6 +595,7 @@ local cfg = {
 		max = 15,
 	},
 	rbc = {
+		boostedfields = true,
 		enabled = false,
 		preset = "Blue",
 		buydrives = false,
@@ -61240,6 +61241,23 @@ do
 		end,
 	}
 
+	local function rbcBoostedField(color,fallback)
+		if not cfg.rbc.boostedfields then return fallback end
+		local candidates={White={"Dandelion Field","Sunflower Field"},Blue={"Blue Flower Field"},Red={"Pepper Patch","Mushroom Field"}}
+		local best,bestStacks,bestTime=nil,0,-1
+		for _,name in ipairs(candidates[color] or {}) do
+			local boost=buffs.Fields and buffs.Fields[name]
+			if boost and workspace.FlowerZones:FindFirstChild(name) then
+				local stacks=tonumber(string.match(boost.Text.Text,"[%d%.]+")) or 1
+				local remaining=boost.Percent and boost.Percent.Size.Y.Scale or 1
+				if remaining>0 and (stacks>bestStacks or stacks==bestStacks and remaining>bestTime) then
+					best,bestStacks,bestTime=name,stacks,remaining
+				end
+			end
+		end
+		return best or fallback
+	end
+
 	local rbcAmuletCheck
 
 	rbcAmuletCheck = function()
@@ -61884,10 +61902,12 @@ do
 									end
 								end
 
+								local requiredQuestField
 								for _, pollenTask in ipairs(pollenTasks) do
 									if not string.find(pollenTask.Text.Text, "Complete") then
 										if not (not pollenTask.Field and not pollenTask.Pollen) then
 											v140 = { Field = pollenTask.Field, Pollen = pollenTask.Pollen }
+											requiredQuestField=pollenTask.Field
 										end
 
 										hasPollenQuest = true
@@ -61966,6 +61986,10 @@ do
 
 										v140 = { Field = cfg.rbc.bestwhitefield, Pollen = "White" }
 									end
+								end
+
+								if v140 and not requiredQuestField then
+									v140.Field=rbcBoostedField(v140.Pollen,v140.Field)
 								end
 
 								if not (not cfg.rbc.mask and not cfg.rbc.tool) then
@@ -67075,6 +67099,7 @@ more accurate dodging]],
 				}, 135, "RBC Materials")
 
 				rbcFolder.Toggle(true)
+				rbcQuestFolder.AddSwitch("Prefer Boosted Fields", nil, "rbc", "boostedfields")
 				rbcQuestFolder.AddDropdown("Best Blue Field", state.bluefields, true, nil, "rbc", "bestbluefield", { Field = true, Width = 250 })
 				rbcQuestFolder.AddDropdown("Best Red Field", state.redfields, true, nil, "rbc", "bestredfield", { Field = true, Width = 250 })
 				rbcQuestFolder.AddDropdown("Best White Field", state.whitefields, true, nil, "rbc", "bestwhitefield", { Field = true, Width = 250 })
