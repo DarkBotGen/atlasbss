@@ -2001,6 +2001,13 @@ end
 local fieldPositionPolicy
 local meteorMovement={}
 function meteorMovement:Release()
+	for part, saved in pairs(self.densityParts or {}) do
+		if part.Parent then
+			if part.CustomPhysicalProperties==saved.assigned then part.CustomPhysicalProperties=saved.original end
+			if part.Massless==false then part.Massless=saved.massless end
+		end
+	end
+	self.densityParts=nil
 	local h=self.humanoid
 	if h and h.Parent and h.WalkSpeed==self.assigned then h.WalkSpeed=self.original end
 	if self.root and self.root.Parent then
@@ -2015,7 +2022,7 @@ function meteorMovement:Chase(object,deadline)
 	local h=getHumanoid()
 	if not cfg.autofarm.dynamicmeteors then self:Release()
 	else
-		if self.humanoid~=h then self:Release();self.humanoid=h;self.original=h.WalkSpeed end
+		if self.humanoid~=h or self.root and self.root~=getRootPart() then self:Release();self.humanoid=h;self.original=h.WalkSpeed end
 		if self.assigned and h.WalkSpeed~=self.assigned then self.original=h.WalkSpeed end
 		local delta=object.Position-getRootPart().Position
 		local distance=math.sqrt(delta.X*delta.X+delta.Z*delta.Z)
@@ -2028,11 +2035,21 @@ function meteorMovement:Chase(object,deadline)
 			self.root=root;self.massOriginal=root.CustomPhysicalProperties
 			self.masslessOriginal=root.Massless;self.massBase=root.CurrentPhysicalProperties
 		end
-		local factor=math.clamp(speed/math.max(self.original,1),1,10)
-		if self.massBase and (not self.massFactor or math.abs(factor-self.massFactor)>=0.25) then
-			local base=self.massBase
-			self.massAssigned=PhysicalProperties.new(math.clamp(base.Density*factor,0.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)
-			root.Massless=false;root.CustomPhysicalProperties=self.massAssigned;self.massFactor=factor
+		-- Full 10x density during the actual chase, independent of the speed multiplier.
+		-- Include character body parts so a light root does not leave the assembly unchanged.
+		self.densityParts=self.densityParts or {}
+		for _,part in ipairs(localPlayer.Character:GetDescendants()) do
+			if part:IsA("BasePart") and not part:FindFirstAncestorOfClass("Accessory") then
+				local saved=self.densityParts[part]
+				if not saved then
+					local base=part.CurrentPhysicalProperties
+					saved={original=part.CustomPhysicalProperties,massless=part.Massless,
+						assigned=PhysicalProperties.new(math.clamp(base.Density*10,.01,100),base.Friction,base.Elasticity,base.FrictionWeight,base.ElasticityWeight)}
+					self.densityParts[part]=saved
+				end
+				part.Massless=false
+				part.CustomPhysicalProperties=saved.assigned
+			end
 		end
 	end
 	smoothMovement:MoveTo(object.Position)
