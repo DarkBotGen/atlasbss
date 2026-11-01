@@ -47189,7 +47189,7 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 			end
 
 			if ok then
-				local stackMethod=cfg.toys.stackall~=false and "Stickers" or cfg.toys.stackmethod
+				local stackMethod=cfg.toys.stackmethod
 				if stackMethod ~= "Tickets" or inventory:Has({ Ticket = 25 }) then
 					if stackMethod ~= "Stickers" then
 						reportStatus(3)
@@ -69367,7 +69367,7 @@ which bees and get all 3 targets if
 				}, 135, "Materials")
 
 				controls["Auto Sticker Stacker"] = Stickers.AddSwitch("Auto Sticker Stacker", nil, "toys", "stickerstacker")
-				Stickers.AddSwitch("Stack All Eligible Inventory Stickers", nil, "toys", "stackall", { Tooltip = "Use any sticker the game allows stacking, including rare stickers. Overrides Stack Method and the selected list." })
+				Stickers.AddSwitch("Stack All Eligible Inventory Stickers", nil, "toys", "stackall", { Tooltip = "Use any sticker the game allows stacking, including rare stickers. Applies only when Stack Method is Stickers; ignores the selected sticker list." })
 				Stickers.AddDropdown("Stack Method", { "Tickets", "Stickers" }, nil, nil, "toys", "stackmethod")
 				local stackDropdown = nil
 
