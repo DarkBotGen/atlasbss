@@ -355,6 +355,8 @@ local cfg = {
 		snail = false,
 		killmondochick = false,
 		lootmondo = false,
+		mondohop = false,
+		mondohoplink = "",
 		mondochicktime = 15,
 		mondocenter = false,
 		mondoseekhit = true,
@@ -1187,6 +1189,7 @@ stopMovement = function()
 	end
 end
 
+local mondoHop
 local threads = { list = {}, closed = false }
 local connections = { list = {}, closed = false }
 
@@ -1467,7 +1470,7 @@ end
 
 threads.Add = function(manager, threadId, callback, delaySeconds, ...)
 	if manager.closed then return end
-	local exclusive = (smoothMovement.comboController and smoothMovement.comboController.active and smoothMovement.comboController) or smoothMovement.showerController
+	local exclusive = (mondoHop and mondoHop.active and mondoHop) or (smoothMovement.comboController and smoothMovement.comboController.active and smoothMovement.comboController) or smoothMovement.showerController
 	if exclusive and exclusive.active and exclusive:IsMovementJob(threadId) then
 		local pending = exclusive.paused or smoothMovement.showerController.paused
 		pending[threadId] = {callback=callback,args=table.pack(...),delaySeconds=delaySeconds}
@@ -3202,6 +3205,7 @@ function comboController:AcceptTeamJob(job)
 end
 
 function comboController:TravelBlocked()
+	if mondoHop and mondoHop.active then return true end
 	local lock=self.taskTravel
 	if lock and (coroutine.status(lock.thread)=="dead" or localPlayer.Character~=lock.character) then self.taskTravel=nil;lock=nil end
 	return lock~=nil or state.tweennoclip~=nil or state.fasttween==true or state.movementTween~=nil
@@ -3345,6 +3349,7 @@ function comboController:TravelToField(job, session)
 end
 
 function comboController:Tick()
+	if mondoHop and mondoHop.active then self:Finish("Mondo Hop priority");return end
 	local now=os.clock()
 	for key,chain in pairs(self.chains)do
 		if chain.expires<=now then self.chains[key]=nil;self.chainCount-=1 end
@@ -7625,6 +7630,7 @@ do
 
 	if workspace:FindFirstChild("Collectibles") then
 		local function v69(target)
+			if mondoHop and mondoHop.active then return end
 			if showerController.active then return end
 			local distance = distanceTo(target)
 			local tween = showerController:CreateMovementTween(getRootPart(), TweenInfo.new(distance / 200, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), { CFrame = CFrame.new(target) })
@@ -7914,6 +7920,7 @@ do
 	end))
 
 	connections:Add("reconnect", TeleportService.TeleportInitFailed:Connect(function()
+		if mondoHop and mondoHop.active then return end
 		task.wait(3)
 		TeleportService:TeleportCancel()
 		TeleportService:Teleport(game.PlaceId, localPlayer)
@@ -60437,7 +60444,97 @@ function mondoPositioning:Move(goal, lastCommand)
 	return lastCommand
 end
 
-	local function killMondo(v126, v127)
+-- Per-account hop state survives autoexec/rejoin without changing normal farming config.
+mondoHop={paused={},visited={},active=false,teleporting=false}
+function mondoHop:IsMovementJob(id) return showerController:IsMovementJob(id) end
+function mondoHop:Window(now)
+	local hour=math.floor(now/3600)
+	return hour,now-hour*3600<870,hour*3600+870
+end
+function mondoHop:Save()
+	writefile("atlas-mondohop-"..localPlayer.UserId..".json",HttpService:JSONEncode(self.session or {}))
+end
+function mondoHop:Load()
+	local path="atlas-mondohop-"..localPlayer.UserId..".json"
+	if not isfile(path) then return end
+	local ok,value=pcall(function()return HttpService:JSONDecode(readfile(path))end)
+	if ok and type(value)=="table" and value.place==game.PlaceId and type(value.homeJob)=="string" and type(value.hour)=="number" and type(value.deadline)=="number" then
+		self.session=value
+		self.visited=type(value.visited)=="table" and value.visited or {}
+	end
+end
+function mondoHop:TakeMovement()
+	if self.active then return end
+	self.active=true
+	self.previousStopFast=state.stopfasttween
+	state.stopfasttween=true
+	showerController:Reset()
+	comboController:Finish("Mondo Hop priority")
+	crabPlatformSupport:Release()
+	meteorMovement:Release()
+	fieldPositionPolicy:ReleaseIdle();fieldPositionPolicy:RemoveGuards()
+	for id,job in pairs(threads.jobs or {}) do
+		if showerController:IsMovementJob(id) then self.paused[id]=job end
+	end
+	for id in pairs(self.paused) do threads:Cancel(id) end
+	stopMovement()
+end
+function mondoHop:Resume()
+	if not self.active then return end
+	self.active=false
+	if state then state.mondoHopActive=nil;state.stopfasttween=self.previousStopFast end
+	local paused=self.paused;self.paused={}
+	if threads.closed or not state or state.stop then return end
+	for id,job in pairs(paused) do
+		if id~="Autofarm" or cfg.autofarm.enabled then
+			if not threads:Get(id) then threads:Add(id,job.callback,job.delaySeconds,table.unpack(job.args,1,job.args.n)) end
+		end
+	end
+end
+function mondoHop:PublicServer()
+	local cursor=""
+	for page=1,3 do
+		local url="https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"
+		if cursor~="" then url..="&cursor="..HttpService:UrlEncode(cursor) end
+		local payload=HttpService:JSONDecode(game:HttpGet(url))
+		local choices={}
+		for _,server in ipairs(payload.data or {}) do
+			if type(server.id)=="string" and server.id~=game.JobId and server.playing<server.maxPlayers and not self.visited[server.id] then table.insert(choices,server.id) end
+		end
+		if #choices>0 then return choices[math.random(1,#choices)] end
+		cursor=payload.nextPageCursor or ""
+		if cursor=="" then break end
+	end
+end
+function mondoHop:Teleport(home)
+	if self.teleporting or self.returnNotice or os.clock()<(self.retryAt or 0) then return end
+	local session=self.session
+	local destination=home and session.homeJob or self:PublicServer()
+	if not destination then self.retryAt=os.clock()+10;return end
+	saveConfig()
+	writefile("atlas-"..localPlayer.Name..".json",state.config..".json")
+	self.teleporting=true;self.sentAt=os.clock();self.returning=home
+	session.returning=home or nil
+	if not home then
+		self.visited[game.JobId]=true
+		local count=0;for _ in pairs(self.visited)do count+=1 end
+		if count>100 then self.visited={[game.JobId]=true} end
+		session.visited=self.visited
+	end
+	self:Save()
+	local ok,err=pcall(function()TeleportService:TeleportToPlaceInstance(game.PlaceId,destination,localPlayer)end)
+	if not ok then self:Failed(tostring(err)) end
+end
+function mondoHop:Failed(reason)
+	self.teleporting=false;self.retryAt=os.clock()+15
+	if self.returning and not self.returnNotice then
+		self.returnNotice=true
+		ui.Notify("Mondo Hop return failed","Roblox rejected private-server return. Use your saved invite link; hopping is paused.",15)
+		warn("Mondo Hop: private-server return failed; the original instance may have closed. "..tostring(reason))
+	end
+end
+
+	local function killMondo(v126, v127, hop)
 		local mondo = tracked.mondo
 
 		if not mondo and (cfg.combat.mondoprep or cfg.combat.mondoseekhit) then
@@ -60501,7 +60598,7 @@ end
 			return
 		end
 
-		if not v126 and not cfg.combat.mondoseekhit and cfg.combat.mondochicktime < 15 then
+		if not hop and not v126 and not cfg.combat.mondoseekhit and cfg.combat.mondochicktime < 15 then
 			local scale = nil
 
 			for _, child in ipairs(mondo.Head.GuiAttachment.MonsterGui:GetChildren()) do
@@ -60534,7 +60631,7 @@ end
 
 
 		while true do
-			if state.stop or getHumanoid().Health <= 0 then return end
+			if state.stop or getHumanoid().Health <= 0 or hop and (not cfg.combat.mondohop or os.time()>=hop.deadline) then return end
 			if not mondo.Parent then
 				exitTo = 1
 				break
@@ -60648,7 +60745,7 @@ end
 			return
 		end
 
-		if not cfg.combat.lootmondo then
+		if not hop and not cfg.combat.lootmondo then
 			if not v126 then
 				local stats = discord.stats
 				stats["Total Boss Kills"] = stats["Total Boss Kills"] + 1
@@ -60656,7 +60753,7 @@ end
 		else
 			local now = os.clock()
 
-			while os.clock() - now < 60 do
+			while os.clock() - now < (hop and 30 or 60) and not state.stop and (not hop or cfg.combat.mondohop and os.time()<hop.deadline) do
 				if not RunService.Heartbeat:Wait() then
 					break
 				end
@@ -60664,7 +60761,56 @@ end
 				farmStep({ loot = true })
 			end
 		end
+			return true
 	end
+
+function mondoHop:Start()
+	self:Load()
+	connections:Add("mondoHopTeleportFailed",TeleportService.TeleportInitFailed:Connect(function(player,result,message)
+		if player==localPlayer and self.teleporting then self:Failed(message or tostring(result)) end
+	end))
+	threads:Add("MondoHop",function()
+		local loadedAt=os.clock()
+		while cfg and state do
+			local ok,err=pcall(function()
+				local hour,open,deadline=self:Window(os.time())
+				local session=self.session
+				if self.teleporting then
+					if os.clock()-self.sentAt>25 then self:Failed("Teleport timed out") end
+					return
+				end
+				if session and (game.JobId==session.homeJob or game.PrivateServerId~="" and game.PrivateServerId==session.homePrivateId) and session.returning then
+					session.done=true;session.returning=nil;self:Save();self:Resume()
+				end
+				if not cfg.combat.mondohop or state.stop then
+					if session and not session.done and game.JobId~=session.homeJob then self:TakeMovement();self:Teleport(true)
+					else self:Resume() end
+					return
+				end
+				if not session or session.done and session.hour~=hour then
+					if not open or not tracked.mondo or game.PrivateServerId=="" then return end
+					session={place=game.PlaceId,hour=hour,deadline=deadline,homeJob=game.JobId,homePrivateId=game.PrivateServerId,visited={}}
+					self.session=session;self.visited={};self:Save()
+				end
+				if session.done then return end
+				self:TakeMovement();state.mondoHopActive=true
+				if not open or session.hour~=hour or session.returning then
+					if game.JobId==session.homeJob then session.done=true;self:Save();self:Resume()
+					else self:Teleport(true) end
+					return
+				end
+				if tracked.mondo then
+					local killed=killMondo(nil,nil,session)
+					if not killed then return end
+				end
+				if os.clock()-loadedAt<12 then return end
+				if os.time()>=session.deadline then self:Teleport(true) else self:Teleport(false) end
+			end)
+			if not ok and tostring(err)~="return" then self.retryAt=os.clock()+10;warn("Mondo Hop: "..tostring(err)) end
+			task.wait(1)
+		end
+	end)
+end
 
 	local function killStumpSnail(v127)
 		if not ((not cfg.puffshrooms.enabled or not findPuffshroom()) and (not cfg.sprouts.enabled or not findSprout()) and not mobCooldown(monsterSpawners.StumpSnail)) then
@@ -66790,7 +66936,7 @@ function showerController:Start()
  self.started=true
  local bridge=self
  bridge.allowed=function()
-  return not fieldPositionPolicy:SmileyOnly() and not bridge.shuttingDown and cfg and state and not state.stop
+  return not (mondoHop and mondoHop.active) and not fieldPositionPolicy:SmileyOnly() and not bridge.shuttingDown and cfg and state and not state.stop
    and not comboController.comboPriority and not comboController:TravelBlocked() and cfg.autofarm.enabled and cfg.autofarm.farmshowers and state.activityStatus == 1
    and currentField ~= nil and getHumanoid().Health > 0 and getFieldAt(getRootPart().Position) == currentField
  end
@@ -67380,6 +67526,7 @@ end
 end
 
 ScreenGui.Destroying:Connect(function()
+	if mondoHop then mondoHop.active=false;table.clear(mondoHop.paused) end
 	crabPlatformSupport:Release()
 	showerController.shuttingDown = true
 	comboController:Shutdown()
@@ -68531,6 +68678,13 @@ which bees and get all 3 targets if
 				crabMethodDropdown.Set(combat2.crabmethod)
 				crabFolder.AddSwitch("Auto Oil", nil, "combat", "craboil")
 				mondoFolder.AddSwitch("Auto Kill Mondo Chick", nil, "combat", "killmondochick")
+				mondoFolder.AddSwitch("Mondo Hop", nil, "combat", "mondohop")
+				mondoFolder.AddTextBox("Private Server Invite Link",function(link)
+					cfg.combat.mondohoplink=link;saveConfig()
+				end,cfg.combat.mondohoplink,true)
+				mondoFolder.AddButton("Copy Private Server Link",function()setclipboard(cfg.combat.mondohoplink)end)
+				mondoFolder.AddLabel("Private Mondo first, then public hops; loot 30s. Return at :14:30.")
+				mondoFolder.AddLabel("Start in your private server. Autoexec required. Invite link is a return fallback.")
 				mondoFolder.AddSwitch("Collect Mondo Chick Loot", nil, "combat", "lootmondo")
 				mondoFolder.AddSwitch("Approach Mondo For One Hit", nil, "combat", "mondoseekhit")
 				mondoFolder.AddSwitch("Farm Tokens Inside Precise Marks", nil, "combat", "mondoholdprecise")
@@ -71145,6 +71299,7 @@ Are you sure you want to enable it?]])
 			comboController.atlasTargets=function()return atlasComboTargets end
 			comboController:BuildMenu(controls.farming)
 			showerController:Start()
+			mondoHop:Start()
 			comboController:Start()
 			return
 		end
