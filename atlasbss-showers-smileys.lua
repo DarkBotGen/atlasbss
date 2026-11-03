@@ -62060,6 +62060,18 @@ do
 								setField(v140.Field)
 								goToField()
 
+								-- Dice can refresh the current field without leaving a timed round.
+								if cfg.boosters.enabled2 and cfg.boosters.allowed and cfg.boosters.allowed["Loaded Dice"]
+									and not buffs.Fields[v140.Field] and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
+									and os.time() - (cache.Materials.loadeddice or 0) >= 120 then
+									rbc.nextLoadedDiceCheck = os.clock() + 10
+									if inventory:Has({["Loaded Dice"] = 1}, true, true) and inventory:Use("Loaded Dice") then
+										rbc.nextLoadedDiceCheck = os.clock() + 120
+										cache.Materials.loadeddice = os.time()
+										saveConfig(true)
+									end
+								end
+
 								if not (v140.Field ~= "Mountain Top Field" or not tracked.mondo) then
 									killMondo(true, true)
 								end
@@ -62412,6 +62424,12 @@ do
 			end
 
 			local dialog = gameGui.Dialog
+			-- Visit enabled boosters before opening the challenge, so travel does not cost round time.
+			if cfg.boosters.enabled2 and cfg.boosters.allowed and os.clock() >= (rbc.nextBoostCheck or 0) then
+				rbc.nextBoostCheck = os.clock() + 60
+				pickBoostedField(nil, true)
+			end
+
 			local roboBear = workspace.NPCs["Robo Bear"]
 			goTo(roboBear.Platform.Position, "Robo Bear")
 
