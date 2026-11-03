@@ -596,6 +596,8 @@ local cfg = {
 	},
 	rbc = {
 		boostedfields = true,
+		autoboosters = false,
+		loadeddice = false,
 		enabled = false,
 		preset = "Blue",
 		buydrives = false,
@@ -62061,12 +62063,12 @@ do
 								goToField()
 
 								-- Dice can refresh the current field without leaving a timed round.
-								if cfg.boosters.enabled2 and cfg.boosters.allowed and cfg.boosters.allowed["Loaded Dice"]
+								if cfg.rbc.loadeddice
 									and not buffs.Fields[v140.Field] and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
-									and os.time() - (cache.Materials.loadeddice or 0) >= 120 then
+									and os.time() - math.max(cache.Materials.loadeddice or 0, rbc.loadedDiceEnabledAt or os.time()) >= 900 then
 									rbc.nextLoadedDiceCheck = os.clock() + 10
 									if inventory:Has({["Loaded Dice"] = 1}, true, true) and inventory:Use("Loaded Dice") then
-										rbc.nextLoadedDiceCheck = os.clock() + 120
+										rbc.nextLoadedDiceCheck = os.clock() + 900
 										cache.Materials.loadeddice = os.time()
 										saveConfig(true)
 									end
@@ -62425,9 +62427,13 @@ do
 
 			local dialog = gameGui.Dialog
 			-- Visit enabled boosters before opening the challenge, so travel does not cost round time.
-			if cfg.boosters.enabled2 and cfg.boosters.allowed and os.clock() >= (rbc.nextBoostCheck or 0) then
+			if cfg.rbc.autoboosters and os.clock() >= (rbc.nextBoostCheck or 0) then
 				rbc.nextBoostCheck = os.clock() + 60
-				pickBoostedField(nil, true)
+				local preset = cfg.rbc.preset
+				local booster = preset == "Red" and state.redhq and "Red Field Booster"
+					or preset == "Blue" and state.bluehq and "Blue Field Booster"
+					or preset == "White" and state.bees >= 25 and "Field Booster"
+				if booster and not rbcBoostedField(preset, nil) then toyUse:Do(booster) end
 			end
 
 			local roboBear = workspace.NPCs["Robo Bear"]
@@ -67151,6 +67157,10 @@ more accurate dodging]],
 				}, 135, "RBC Materials")
 
 				rbcFolder.Toggle(true)
+				rbcQuestFolder.AddSwitch("RBC Auto Boosters", nil, "rbc", "autoboosters")
+				rbcQuestFolder.AddSwitch("RBC Loaded Dice (15 min)", function(enabled)
+					rbc.loadedDiceEnabledAt = enabled and os.time() or nil
+				end, "rbc", "loadeddice")
 				rbcQuestFolder.AddSwitch("Prefer Boosted Fields", nil, "rbc", "boostedfields")
 				rbcQuestFolder.AddDropdown("Best Blue Field", state.bluefields, true, nil, "rbc", "bestbluefield", { Field = true, Width = 250 })
 				rbcQuestFolder.AddDropdown("Best Red Field", state.redfields, true, nil, "rbc", "bestredfield", { Field = true, Width = 250 })
