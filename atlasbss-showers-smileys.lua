@@ -62071,8 +62071,7 @@ do
 									materials.rbcLoadedDiceEnabledAt = os.time()
 									saveConfig(true)
 								end
-								if cfg.rbc.loadeddice
-									and not buffs.Fields[v140.Field] and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
+								if cfg.rbc.loadeddice and hasPollenQuest and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
 									and os.time() - math.max(materials.loadeddice or 0, materials.loaded or 0, materials.rbcLoadedDiceEnabledAt or 0) >= 900 then
 									rbc.nextLoadedDiceCheck = os.clock() + 10
 									if inventory:Has({["Loaded Dice"] = 1}, true, true) and inventory:Use("Loaded Dice") then
