@@ -1,5 +1,5 @@
 local rbcHourly = {
-	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger"},
+	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger","Loaded Dice"},
 	previous=nil, totals={}, started=nil,
 }
 function rbcHourly:Sample(snapshot,now)
@@ -38,7 +38,10 @@ function rbcHourly:Fields(now)
 	else budget..="\nDrive estimate: waiting for both ticket spending and a glitched drive gain." end
 	local materials={}
 	for _,name in ipairs(self.materials) do
-		table.insert(materials,string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,total(name,"used")/hours,total(name,"gain")/hours))
+		local used,gained=total(name,"used"),total(name,"gain")
+		local line=string.format("%s: **%.1f used/hour** Â· %.1f gained/hour",name,used/hours,gained/hours)
+		if name=="Loaded Dice" then line..=string.format(" (%d used / %d gained this run)",used,gained) end
+		table.insert(materials,line)
 	end
 	return {
 		{name="RBC per hour",value=summary,inline=false},
@@ -64,5 +67,5 @@ assert(string.find(rbcHourly:Fields(3600)[2].value,"waiting",1,true))
 rbcHourly.totals.Ticket.used=0;rbcHourly.totals["Glitched Drive"].gain=2
 assert(string.find(rbcHourly:Fields(3600)[2].value,"waiting",1,true))
 for i=1,10000 do rbcHourly:Sample({},3600+i)end
-local n=0;for _ in pairs(rbcHourly.previous)do n+=1 end;assert(n==9)
+local n=0;for _ in pairs(rbcHourly.previous)do n+=1 end;assert(n==10)
 print("PASS: simple rates, four materials, combined colored drives, ticket budget, insufficient samples, Discord size and bounded state")

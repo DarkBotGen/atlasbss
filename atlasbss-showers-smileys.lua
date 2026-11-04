@@ -6774,7 +6774,7 @@ end
 
 -- Bounded inventory-rate counters; no retained per-sample history.
 local rbcHourly = {
-	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger"},
+	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger","Loaded Dice"},
 	previous=nil, totals={}, started=nil,
 }
 function rbcHourly:Sample(snapshot,now)
@@ -6813,7 +6813,10 @@ function rbcHourly:Fields(now)
 	else budget..="\nDrive estimate: waiting for both ticket spending and a glitched drive gain." end
 	local materials={}
 	for _,name in ipairs(self.materials) do
-		table.insert(materials,string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,total(name,"used")/hours,total(name,"gain")/hours))
+		local used,gained=total(name,"used"),total(name,"gain")
+		local line=string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,used/hours,gained/hours)
+		if name=="Loaded Dice" then line..=string.format(" (%d used / %d gained this run)",used,gained) end
+		table.insert(materials,line)
 	end
 	return {
 		{name="RBC per hour",value=summary,inline=false},
