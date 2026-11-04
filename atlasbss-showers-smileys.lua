@@ -62063,13 +62063,19 @@ do
 								goToField()
 
 								-- Dice can refresh the current field without leaving a timed round.
+								local materials = cache.Materials
+								if cfg.rbc.loadeddice and not materials.rbcLoadedDiceEnabledAt then
+									materials.rbcLoadedDiceEnabledAt = os.time()
+									saveConfig(true)
+								end
 								if cfg.rbc.loadeddice
 									and not buffs.Fields[v140.Field] and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
-									and os.time() - math.max(cache.Materials.loadeddice or 0, rbc.loadedDiceEnabledAt or os.time()) >= 900 then
+									and os.time() - math.max(materials.loadeddice or 0, materials.loaded or 0, materials.rbcLoadedDiceEnabledAt or 0) >= 900 then
 									rbc.nextLoadedDiceCheck = os.clock() + 10
 									if inventory:Has({["Loaded Dice"] = 1}, true, true) and inventory:Use("Loaded Dice") then
 										rbc.nextLoadedDiceCheck = os.clock() + 900
-										cache.Materials.loadeddice = os.time()
+										materials.loadeddice = os.time()
+										logger.log("RBC: Used Loaded Dice in " .. v140.Field)
 										saveConfig(true)
 									end
 								end
@@ -67159,7 +67165,13 @@ more accurate dodging]],
 				rbcFolder.Toggle(true)
 				rbcQuestFolder.AddSwitch("RBC Auto Boosters", nil, "rbc", "autoboosters")
 				rbcQuestFolder.AddSwitch("RBC Loaded Dice (15 min)", function(enabled)
-					rbc.loadedDiceEnabledAt = enabled and os.time() or nil
+					local materials = cache.Materials
+					if enabled then
+						materials.rbcLoadedDiceEnabledAt = materials.rbcLoadedDiceEnabledAt or os.time()
+					else
+						materials.rbcLoadedDiceEnabledAt = nil
+					end
+					saveConfig(true)
 				end, "rbc", "loadeddice")
 				rbcQuestFolder.AddSwitch("Prefer Boosted Fields", nil, "rbc", "boostedfields")
 				rbcQuestFolder.AddDropdown("Best Blue Field", state.bluefields, true, nil, "rbc", "bestbluefield", { Field = true, Width = 250 })
