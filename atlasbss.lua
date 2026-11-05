@@ -357,6 +357,7 @@ local cfg = {
 		lootmondo = false,
 		mondohop = false,
 		mondohoplink = "",
+		mondopriority = false,
 		mondochicktime = 15,
 		mondocenter = false,
 		mondoseekhit = true,
@@ -60593,7 +60594,7 @@ function mondoHop:TakeMovement()
 	self.previousStopFast=state.stopfasttween
 	state.stopfasttween=true
 	showerController:Reset()
-	comboController:Finish("Mondo Hop priority")
+	comboController:Finish("Mondo priority")
 	crabPlatformSupport:Release()
 	meteorMovement:Release()
 	fieldPositionPolicy:ReleaseIdle();fieldPositionPolicy:RemoveGuards()
@@ -60601,6 +60602,13 @@ function mondoHop:TakeMovement()
 		if showerController:IsMovementJob(id) then self.paused[id]=job end
 	end
 	for id in pairs(self.paused) do threads:Cancel(id) end
+	if state.movementTween then
+		local tween=state.movementTween
+		state.movementTween=nil
+		tween:Cancel()
+		tween:Destroy()
+	end
+	state.fasttween=nil
 	stopMovement()
 end
 function mondoHop:Resume()
@@ -60610,7 +60618,7 @@ function mondoHop:Resume()
 	local paused=self.paused;self.paused={}
 	if threads.closed or not state or state.stop then return end
 	for id,job in pairs(paused) do
-		if id~="Autofarm" or cfg.autofarm.enabled then
+		if id~="Autofarm" or cfg.autofarm.enabled or cfg.rbc.enabled then
 			if not threads:Get(id) then threads:Add(id,job.callback,job.delaySeconds,table.unpack(job.args,1,job.args.n)) end
 		end
 	end
@@ -60658,7 +60666,8 @@ function mondoHop:Failed(reason)
 	end
 end
 
-	local function killMondo(v126, v127, hop)
+	local function killMondo(v126, v127, hop, priority)
+		if cfg.combat.mondopriority and not (priority or hop) then return end
 		local mondo = tracked.mondo
 
 		if not mondo and (cfg.combat.mondoprep or cfg.combat.mondoseekhit) then
@@ -60722,7 +60731,7 @@ end
 			return
 		end
 
-		if not hop and not v126 and not cfg.combat.mondoseekhit and cfg.combat.mondochicktime < 15 then
+		if not priority and not hop and not v126 and not cfg.combat.mondoseekhit and cfg.combat.mondochicktime < 15 then
 			local scale = nil
 
 			for _, child in ipairs(mondo.Head.GuiAttachment.MonsterGui:GetChildren()) do
@@ -60745,6 +60754,7 @@ end
 
 		reportStatus(3)
 		setField("Mountain Top Field")
+		if priority then goToField() end
 
 		if not v126 then
 			logger.log("Killing Mondo Chick")
@@ -60755,7 +60765,7 @@ end
 
 
 		while true do
-			if state.stop or getHumanoid().Health <= 0 or hop and (not cfg.combat.mondohop or os.time()>=hop.deadline) then return end
+			if state.stop or getHumanoid().Health <= 0 or priority and not cfg.combat.mondopriority or hop and (not cfg.combat.mondohop or os.time()>=hop.deadline) then return end
 			if not mondo.Parent then
 				exitTo = 1
 				break
@@ -60877,7 +60887,7 @@ end
 		else
 			local now = os.clock()
 
-			while os.clock() - now < (hop and 30 or 60) and not state.stop and (not hop or cfg.combat.mondohop and os.time()<hop.deadline) do
+			while os.clock() - now < (hop and 30 or 60) and not state.stop and (not priority or cfg.combat.mondopriority) and (not hop or cfg.combat.mondohop and os.time()<hop.deadline) do
 				if not RunService.Heartbeat:Wait() then
 					break
 				end
@@ -60887,6 +60897,22 @@ end
 		end
 			return true
 	end
+
+function mondoHop:RunPriority()
+	if self.active or self.teleporting or state.stop or not cfg.combat.mondopriority then return end
+	local mondo=tracked.mondo
+	if not mondo or not mondo.Parent then return end
+	local character=localPlayer.Character
+	local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health<=0 then return end
+	local ok,err=pcall(function()
+		self:TakeMovement()
+		killMondo(nil,nil,nil,true)
+	end)
+	pcall(stopMovement)
+	self:Resume()
+	if not ok and err~="return" then warn("Mondo priority: "..tostring(err)) end
+end
 
 function mondoHop:Start()
 	self:Load()
@@ -60931,6 +60957,7 @@ function mondoHop:Start()
 				if os.time()>=session.deadline then self:Teleport(true) else self:Teleport(false) end
 			end)
 			if not ok and tostring(err)~="return" then self.retryAt=os.clock()+10;warn("Mondo Hop: "..tostring(err)) end
+			self:RunPriority()
 			task.wait(1)
 		end
 	end)
@@ -68890,6 +68917,9 @@ which bees and get all 3 targets if
 				crabMethodDropdown.Set(combat2.crabmethod)
 				crabFolder.AddSwitch("Auto Oil", nil, "combat", "craboil")
 				mondoFolder.AddSwitch("Auto Kill Mondo Chick", nil, "combat", "killmondochick")
+				mondoFolder.AddSwitch("Mondo Takes Priority", nil, "combat", "mondopriority", {
+					Tooltip = "Interrupts conversion, gathering, and other Atlas+ tasks when Mondo is present. Does not hop servers.",
+				})
 				mondoFolder.AddSwitch("Mondo Hop", nil, "combat", "mondohop")
 				mondoFolder.AddTextBox("Private Server Invite Link",function(link)
 					cfg.combat.mondohoplink=link;saveConfig()
