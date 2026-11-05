@@ -613,6 +613,12 @@ local cfg = {
 		max = 15,
 	},
 	rbc = {
+		boostedfields = true,
+		autoboosters = false,
+		loadeddice = false,
+		boostersminround = 1,
+		stacker = false,
+		stackerminround = 1,
 		enabled = false,
 		preset = "Blue",
 		beepriorities = {},
@@ -1316,7 +1322,9 @@ local mergeTable
 
 mergeTable = function(target, source)
 	for k, value in pairs(target) do
-		if target == cfg.prioritization and k == "order" and type(source[k]) == "table" then
+		if target == cfg.rbc and k == "beepriorities" and type(source[k]) == "table" then
+			target[k] = table.clone(source[k])
+		elseif target == cfg.prioritization and k == "order" and type(source[k]) == "table" then
 			-- Ordered lists must replace the default, including an empty default.
 			-- Recursing over target's keys silently drops saved array entries.
 			target[k] = table.clone(source[k])
@@ -7919,6 +7927,12 @@ do
 		end
 	end))
 
+	connections:Add("saveBeforeTeleport",localPlayer.OnTeleport:Connect(function(status)
+		if status==Enum.TeleportState.Started or status==Enum.TeleportState.InProgress then
+			if cfg and state and state.config then pcall(saveConfig) end
+		end
+	end))
+
 	connections:Add("reconnect", TeleportService.TeleportInitFailed:Connect(function()
 		if mondoHop and mondoHop.active then return end
 		task.wait(3)
@@ -8153,7 +8167,7 @@ do
 
 	watchStations = function(enable)
 		if not enable then
-			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise then return end
+			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.rbc.precise then return end
 			connections:Cancel("stations")
 			connections:Cancel("stations2")
 			connections:Cancel("stationPending")
@@ -8666,6 +8680,60 @@ inventory.GetName = function(owner, eggKey)
 	end
 
 	return owner.names[eggKey]
+end
+
+-- Bounded inventory-rate counters; no retained per-sample history.
+local rbcHourly = {
+	materials={"Smooth Dice","Field Dice","Purple Potion","Stinger","Loaded Dice"},
+	previous=nil, totals={}, started=nil,
+}
+function rbcHourly:Sample(snapshot,now)
+	if type(snapshot)~="table" then return end
+	if not self.started then self.started=now end
+	local names={"Glitched Drive","Red Drive","Blue Drive","White Drive","Ticket"}
+	for _,name in ipairs(self.materials) do table.insert(names,name) end
+	local previous=self.previous
+	local nextSnapshot={}
+	for _,name in ipairs(names) do
+		local amount=tonumber(snapshot[name]) or 0
+		nextSnapshot[name]=amount
+		local total=self.totals[name]
+		if not total then total={gain=0,used=0};self.totals[name]=total end
+		if previous then
+			local delta=amount-(previous[name] or 0)
+			if delta>0 then total.gain+=delta else total.used-=delta end
+		end
+	end
+	self.previous=nextSnapshot
+end
+function rbcHourly:Fields(now)
+	local seconds=self.started and now-self.started or 0
+	if seconds<60 then return {{name="RBC summary",value="Tracking started. Hourly estimates appear after 1 minute.",inline=false}} end
+	local hours=seconds/3600
+	local function total(name,key) local t=self.totals[name];return t and t[key] or 0 end
+	local glitched=total("Glitched Drive","gain")
+	local colored=total("Red Drive","gain")+total("Blue Drive","gain")+total("White Drive","gain")
+	local spent=total("Ticket","used")
+	local tickets=self.previous and self.previous.Ticket or 0
+	local summary=string.format("Glitched drives: **%.1f/hour**\nColored drives: **%.1f/hour**\nTickets spent: **%.1f/hour**\nTickets gained: **%.1f/hour**",glitched/hours,colored/hours,spent/hours,total("Ticket","gain")/hours)
+	local budget=string.format("Tickets left: **%.0f**",tickets)
+	if glitched>0 and spent>0 then
+		local cost=spent/glitched
+		budget..=string.format("\nAverage cost: **%.1f tickets per glitched drive**\nYour tickets could fund about **%.0f more glitched drives**",cost,math.floor(tickets/cost))
+	else budget..="\nDrive estimate: waiting for both ticket spending and a glitched drive gain." end
+	local materials={}
+	for _,name in ipairs(self.materials) do
+		local used,gained=total(name,"used"),total(name,"gain")
+		local line=string.format("%s: **%.1f used/hour** · %.1f gained/hour",name,used/hours,gained/hours)
+		if name=="Loaded Dice" then line..=string.format(" (%d used / %d gained this run)",used,gained) end
+		table.insert(materials,line)
+	end
+	return {
+		{name="RBC per hour",value=summary,inline=false},
+		{name="Ticket budget estimate",value=budget,inline=false},
+		{name="Materials per hour",value=table.concat(materials,"\n"),inline=false},
+		{name="Tracking",value=string.format("%.0f minutes this run. Colored = red + blue + white. Estimates use observed inventory changes and assume the same ticket cost; rewards and costs vary. Resets on rejoin.",seconds/60),inline=false},
+	}
 end
 
 inventory.Fetch = function(owner)
@@ -45641,6 +45709,10 @@ do
 			table.insert(fields2, { name = utf8.char(8203), value = utf8.char(8203), inline = true })
 		end
 
+		if rbcHourly.started then
+			for _,field in ipairs(rbcHourly:Fields(os.clock()))do table.insert(fields2,field)end
+		end
+
 		if cfg.webhook.items then
 			local ok, result = pcall(function()
 				local itemsText = v121.Items(true)
@@ -48282,6 +48354,82 @@ function gatheringPriorities:Precise(opts,upkeep)
 
 	if bestPrecise then return bestPrecise.name, bestPrecise.v end
 end
+		local function collectFastSmiley(object,opts)
+			-- Smiley tokens need sustained contact: proximity alone is not collection.
+			local deadline=os.clock()+math.min(4,distanceTo(object.Position,true)/math.max(1,getHumanoid().WalkSpeed)+.75)+6
+			local nextMove=0
+			while os.clock()<deadline do
+				if showerController.active or state.stop then return true end
+				if object.Name==true then
+					if tracked.dupedsmiley[object.ID]~=object then return true end
+				elseif not object.Parent then
+					tracked.dupedsmiley[object]=nil
+					return true
+				end
+				local humanoid=getHumanoid()
+				if humanoid.Health<=0 then return true end
+				local root=getRootPart().Position
+				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
+				if opts.avoid and isPathClear(point,opts.avoid) then break end
+				if os.clock()>=nextMove then
+					humanoid:MoveTo(point)
+					nextMove=os.clock()+.15
+				end
+				-- Keep this job owning movement while the server charges/collects it.
+				RunService.Heartbeat:Wait()
+			end
+			touchedMarks[object]=os.clock()+.4
+			return true
+		end
+
+		local precisionRefresh=false
+		local function pickRbcPrecision(opts)
+			if not (opts.rbc or opts.rbcprecision) or not cfg.rbc.enabled or not cfg.rbc.precise or state.precise then precisionRefresh=false;return end
+			local challenge=gameApi:Cache({"RoboChallenges","ActiveChallenge"})
+			if (tonumber(cfg.rbc.precisemin) or 1)>1 and (not challenge or (tonumber(challenge.Round) or 0)<cfg.rbc.precisemin) then precisionRefresh=false;return end
+			local precision=buffs.Precision
+			local remaining=precision and precision.Percent.Size.Y.Scale or 0
+			if not precision or precision.Text.Text~="x10" or remaining<.85 then precisionRefresh=true
+			elseif remaining>=.97 then precisionRefresh=false end
+			if not precisionRefresh then return end
+			local best,kind,bestDistance=nil,nil,math.huge
+			local function consider(object,targetKind)
+				if touchedMarks[object] or opts.area and not fieldPositionPolicy:TrackedAllowed(object,object,opts) then return end
+				local point=object.Position
+				if getFieldAt(point)~=currentField then return end
+				if opts.origin and opts.range and (point-opts.origin).Magnitude>=opts.range then return end
+				if opts.avoid and isPathClear(point,opts.avoid) then return end
+				local distance=distanceTo(point,true)
+				if distance<bestDistance then best,kind,bestDistance=object,targetKind,distance end
+			end
+			for object in pairs(tracked.precise) do
+				if object.Parent and object.BrickColor.Name~="Flint" and object.BrickColor.Name~="Alder" then consider(object,"Precise") end
+			end
+			for _,object in pairs(tracked.precise2) do
+				if not object.Mark and not object.Touched then consider(object,"Precise2") end
+			end
+			return kind,best
+		end
+
+		local function collectRbcPrecision(object,opts)
+			local deadline=os.clock()+3
+			local nextMove=0
+			while os.clock()<deadline do
+				if state.stop or showerController.active or not cfg.rbc.enabled or not cfg.rbc.precise then return true end
+				if object.Name==true then
+					if tracked.precise2[object.ID]~=object or object.Touched or object.Mark then return true end
+				elseif not object.Parent or object.BrickColor.Name=="Flint" or object.BrickColor.Name=="Alder" then return true end
+				if getHumanoid().Health<=0 then return true end
+				local root=getRootPart().Position
+				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
+				local liveAvoid=opts.rbc and rbcSafety:Hazards(currentField) or opts.avoid
+				if liveAvoid and isPathClear(point,liveAvoid) then return true end
+				if os.clock()>=nextMove then getHumanoid():MoveTo(point);nextMove=os.clock()+.1 end
+				RunService.Heartbeat:Wait()
+			end
+			-- Unconfirmed targets remain eligible rather than being removed at six studs.
+			return true
+		end
 
 		pickTarget = function(opts)
 			if fieldPositionPolicy:SmileyOnly() then
@@ -48292,6 +48440,8 @@ end
 			end
 			opts.area=fieldPositionPolicy:StrictArea() or opts.area
 			if showerController.active then return "Safeshower" end
+			local urgentKind,urgentTarget=pickRbcPrecision(opts)
+			if urgentTarget then return urgentKind,urgentTarget end
 			local comboKind, comboObject = gatheringPriorities:Candidate("Combo Coconuts", opts, getRootPart().Position)
 			if comboKind then return comboKind, comboObject end
 			if opts.rbc and gatheringPriorities:PrecisionReady() then
@@ -54483,6 +54633,7 @@ end
 			end
 
 			if targetKind == "Precise" then
+				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
 				return collectObject(targetObject, "precise", 6)
 			end
 
@@ -54495,6 +54646,7 @@ end
 			end
 
 			if targetKind == "Precise2" or targetKind == "Precise2All" then
+				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
 				return collectObject(targetObject, nil, 6, nil, nil, nil, nil, true)
 			end
 
@@ -54503,6 +54655,7 @@ end
 			end
 
 			if targetKind == "Duped Smiley" then
+				if options.rbc then return collectFastSmiley(targetObject,options) end
 				return walkOnto(targetObject, "dupedsmiley")
 			end
 
@@ -56415,53 +56568,24 @@ end
 				elseif useOptions.RBC then
 					local rbcMaterial = cfg.rbc.materials[materialName]
 
-					if not (materialName ~= "Stinger" or not rbcMaterial or not rbcMaterial[1] or not (not rbcMaterial[3] or not rbcMaterial[3][useOptions.Round])) then
-						local allowedMobs, hasDisallowedMob
-
-						if not cache.Materials[materialName] then
-							allowedMobs = rbcMaterial[4]
-							hasDisallowedMob = nil
-
-							if allowedMobs then
-								for k in pairs(useOptions.Mobs) do
-									if not allowedMobs[k] then
-										hasDisallowedMob = true
-										break
-									end
-								end
+					if materialName=="Stinger" and rbcMaterial and rbcMaterial[1]
+						and (not rbcMaterial[3] or not rbcMaterial[3][useOptions.Round]) then
+						-- Mob selections are stored as exclusions by the materials UI.
+						local excluded=rbcMaterial[4]
+						local shouldUse=type(excluded)~="table" or next(excluded)==nil
+						if not shouldUse then
+							for mob, active in pairs(useOptions.Mobs or {}) do
+								if active and not excluded[mob] then shouldUse=true;break end
 							end
-
-							if not hasDisallowedMob or not inventory:Use(materialName, true) then
-								continue
-							end
-							logger.log("Using material:", materialName)
-							cache.Materials[materialName] = os.time()
-							saveConfig(true)
-							continue
 						end
-
-						local lastUsed = cache.Materials[materialName]
-
-						if (rbcMaterial[5] and 10 or 29) < os.time() - lastUsed then
-							allowedMobs = rbcMaterial[4]
-							hasDisallowedMob = nil
-
-							if allowedMobs then
-								for k in pairs(useOptions.Mobs) do
-									if not allowedMobs[k] then
-										hasDisallowedMob = true
-										break
-									end
-								end
+						local interval=rbcMaterial[5] and 10 or math.max(10,tonumber(rbcMaterial[2]) or 29)
+						local lastUsed=cache.Materials[materialName]
+						if shouldUse and (not lastUsed or os.time()-lastUsed>=interval) then
+							if inventory:Use(materialName,true) then
+								logger.log("Using material:",materialName)
+								cache.Materials[materialName]=os.time()
+								saveConfig(true)
 							end
-
-							if not hasDisallowedMob or not inventory:Use(materialName, true) then
-								continue
-							end
-							logger.log("Using material:", materialName)
-							cache.Materials[materialName] = os.time()
-							saveConfig(true)
-							continue
 						end
 					end
 
@@ -63999,21 +64123,22 @@ end
 		redbees = {
 			Digital = 1,
 			Vicious = 2,
-			Bear = 3,
-			Tabby = 4,
-			Photon = 5,
-			Festive = 6,
-			Crimson = 7,
-			Basic = 8,
-			Riley = 9,
-			Rad = 10,
-			Brave = 11,
-			Commander = 12,
-			Carpenter = 13,
-			Precise = 14,
-			Spicy = 15,
-			Vector = 16,
-			Fuzzy = 17,
+			Precise = 3,
+			Bear = 4,
+			Windy = 5,
+			Tabby = 6,
+			Photon = 7,
+			Festive = 8,
+			Crimson = 9,
+			Basic = 10,
+			Riley = 11,
+			Rad = 12,
+			Brave = 13,
+			Commander = 14,
+			Carpenter = 15,
+			Spicy = 16,
+			Vector = 17,
+			Fuzzy = 18,
 		},
 		whitebees = { Digital = 1, Tabby = 2, Bear = 3, Photon = 4, Gummy = 5, Vector = 6 },
 		cogupgrades = { "Botnet", "Credit", "RAM", "Subscribe", "beeBay", "Stack Overflow" },
@@ -64192,6 +64317,32 @@ end
 
 	rbcBeePriorities.defaults={Blue=rbc.bluebees,Red=rbc.redbees,White=rbc.whitebees}
 
+	local function rbcBoostedField(color,fallback)
+		if not cfg.rbc.boostedfields then return fallback end
+		local candidates={White={"Dandelion Field","Sunflower Field"},Blue={"Blue Flower Field"},Red={"Pepper Patch","Mushroom Field"}}
+		local best,bestStacks,bestTime=nil,0,-1
+		for _,name in ipairs(candidates[color] or {}) do
+			local boost=buffs.Fields and buffs.Fields[name]
+			if boost and workspace.FlowerZones:FindFirstChild(name) then
+				local stacks=tonumber(string.match(boost.Text.Text,"[%d%.]+")) or 1
+				local remaining=boost.Percent and boost.Percent.Size.Y.Scale or 1
+				if remaining>0 and (stacks>bestStacks or stacks==bestStacks and remaining>bestTime) then
+					best,bestStacks,bestTime=name,stacks,remaining
+				end
+			end
+		end
+		return best or fallback
+	end
+
+	local function lateHiveConversion(round,tasks)
+		if round<14 then return false end
+		for _,taskText in ipairs(tasks) do
+			local text=string.lower(taskText)
+			if string.find(text,"convert",1,true) and (string.find(text,"hive",1,true) or string.find(text,"pollen",1,true)) then return true end
+		end
+		return false
+	end
+
 	local rbcAmuletCheck
 
 	local function rbcAmuletStep()
@@ -64278,6 +64429,25 @@ end
 						end
 					end
 
+					local selectionRound=tonumber(string.match(rbc.challenge.MainFrame.RoundLabel.Text,"%d+")) or 0
+					if selectionRound>=14 then
+						for i=#questButtons,1,-1 do
+							if lateHiveConversion(selectionRound,questButtons[i].tasks) then table.remove(questButtons,i) end
+						end
+						if #questButtons==0 then
+							if rbc.lateConvertReroll~=selectionRound and box.RerollButton.Visible and box.RerollButton.BackgroundTransparency==0 then
+								rbc.lateConvertReroll=selectionRound
+								logger.log("Rerolling late-round hive conversion quests")
+								gameApi:Event("RoboBearReroll")
+								task.wait(.75)
+							else
+								logger.log("Quitting RBC: round 14+ hive conversion quest")
+								gameApi:Event("RoboBearRoundEnd",true)
+								task.wait(.75)
+							end
+							error("return",0)
+						end
+					else rbc.lateConvertReroll=nil end
 					table.sort(questButtons, function(buttonA, buttonB)
 						if cfg.rbc.highestcog then
 							local highestcogmax = cfg.rbc.highestcogmax
@@ -64602,6 +64772,15 @@ end
 						end
 					end
 
+					if not visible then
+						local round=tonumber(string.match(rbc.challenge.MainFrame.RoundLabel.Text,"%d+")) or 1
+						if cfg.rbc.autoboosters and round>=cfg.rbc.boostersminround and os.clock()>=(rbc.nextBoostCheck or 0) then
+							rbc.nextBoostCheck=os.clock()+60
+							local booster=cfg.rbc.preset=="Red" and state.redhq and "Red Field Booster" or cfg.rbc.preset=="Blue" and state.bluehq and "Blue Field Booster" or cfg.rbc.preset=="White" and state.bees>=25 and "Field Booster"
+							if booster and not rbcBoostedField(cfg.rbc.preset,nil) then toyUse:Do(booster) end
+						end
+						if cfg.rbc.stacker and round>=cfg.rbc.stackerminround and not buffs["Sticker Stacker"] then useToyTimed("Sticker Stack") end
+					end
 					gameApi:Event(visible and "RoboBearClaimRewards" or "RoboBearRoundStart")
 
 					if visible then
@@ -64791,6 +64970,12 @@ end
 						local hasPollenQuest = nil
 
 						for _, convertTask in ipairs(convertTasks) do
+							if not string.find(convertTask.Text,"Complete") and lateHiveConversion(currentRound,{convertTask.Text}) then
+								logger.log("Quitting RBC: active late-round hive conversion quest")
+								gameApi:Event("RoboBearRoundEnd",true)
+								task.wait(.75)
+								error("return",0)
+							end
 							if not string.find(convertTask.Text, "Complete") then
 								if bagPercent() > 50 then
 									convertHoney()
@@ -64832,7 +65017,7 @@ end
 								for _, pollenTask in ipairs(pollenTasks) do
 									if not string.find(pollenTask.Text.Text, "Complete") then
 										if not (not pollenTask.Field and not pollenTask.Pollen) then
-											v140 = { Field = pollenTask.Field, Pollen = pollenTask.Pollen }
+											v140 = { Field = pollenTask.Field, Pollen = pollenTask.Pollen, RequiredField=pollenTask.Field }
 										end
 
 										hasPollenQuest = true
@@ -64914,6 +65099,7 @@ end
 								end
 
 								v140=v140 or {Pollen=cfg.rbc.preset}
+								if not v140.RequiredField then v140.Field=rbcBoostedField(v140.Pollen or cfg.rbc.preset,v140.Field) end
 								v140.Field=rbcSafety:ResolveField(v140.Field,v140.Pollen or cfg.rbc.preset)
 								if not v140.Field then
 									reportStatus(1,"Waiting for an available RBC field")
@@ -64955,6 +65141,22 @@ end
 								setField(v140.Field)
 								goToField()
 
+								-- Dice can refresh the current field without leaving a timed round.
+								local materials = cache.Materials
+								if cfg.rbc.loadeddice and not materials.rbcLoadedDiceEnabledAt then
+									materials.rbcLoadedDiceEnabledAt = os.time()
+									saveConfig(true)
+								end
+								if cfg.rbc.loadeddice and hasPollenQuest and os.clock() >= (rbc.nextLoadedDiceCheck or 0)
+									and os.time() - math.max(materials.loadeddice or 0, materials.loaded or 0, materials.rbcLoadedDiceEnabledAt or 0) >= 900 then
+									rbc.nextLoadedDiceCheck = os.clock() + 10
+									if inventory:Has({["Loaded Dice"] = 1}, true, true) and inventory:Use("Loaded Dice") then
+										rbc.nextLoadedDiceCheck = os.clock() + 900
+										materials.loadeddice = os.time()
+										logger.log("RBC: Used Loaded Dice in " .. v140.Field)
+										saveConfig(true)
+									end
+								end
 								if not (v140.Field ~= "Mountain Top Field" or not tracked.mondo) then
 									killMondo(true, true)
 								end
@@ -65150,12 +65352,12 @@ end
 				local activeChallenge = gameApi:Cache({ "RoboChallenges", "ActiveChallenge" })
 				local precision = buffs.Precision
 
-				if (cfg.rbc.precisemin == 1 or not (not activeChallenge or not (cfg.rbc.precisemin <= activeChallenge.Round))) and (not precision or precision.Text.Text ~= "x10" or precision.Percent.Size.Y.Scale < 0.5) then
+				if (cfg.rbc.precisemin == 1 or not (not activeChallenge or not (cfg.rbc.precisemin <= activeChallenge.Round))) and (not precision or precision.Text.Text ~= "x10" or precision.Percent.Size.Y.Scale < 0.85) then
 					logger.log("Maintaining 10x Precision")
 					setField("Rose Field")
 					local now = os.clock()
 
-					while cfg.rbc.enabled and not state.stop and not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.5)) do
+					while cfg.rbc.enabled and not state.stop and not (not (os.clock() - now < 90) or not (not buffs.Precision or buffs.Precision.Text.Text ~= "x10" or buffs.Precision.Percent.Size.Y.Scale < 0.97)) do
 						if not RunService.Heartbeat:Wait() then
 							break
 						end
@@ -65176,7 +65378,7 @@ end
 								input:handleShiftLock(true)
 							end
 
-							farmStep(rbcSafety:Options(currentField,{nowait=true}))
+							farmStep(rbcSafety:Options(currentField,{nowait=true,rbcprecision=true}))
 						elseif shouldConvert() then
 							convertHoney()
 						end
@@ -65229,6 +65431,16 @@ end
 			end
 
 			local dialog = gameGui.Dialog
+			-- Visit enabled boosters before opening the challenge, so travel does not cost round time.
+			if cfg.rbc.autoboosters and cfg.rbc.boostersminround<=1 and os.clock() >= (rbc.nextBoostCheck or 0) then
+				rbc.nextBoostCheck = os.clock() + 60
+				local preset = cfg.rbc.preset
+				local booster = preset == "Red" and state.redhq and "Red Field Booster"
+					or preset == "Blue" and state.bluehq and "Blue Field Booster"
+					or preset == "White" and state.bees >= 25 and "Field Booster"
+				if booster and not rbcBoostedField(preset, nil) then toyUse:Do(booster) end
+			end
+
 			local roboBear = workspace.NPCs["Robo Bear"]
 			goTo(roboBear.Platform.Position, "Robo Bear")
 
@@ -69951,7 +70163,7 @@ which bees and get all 3 targets if
 				rbcFolder.AddSlider("Maximum Round", nil, 4, 25, "rbc", "maxround", { Left = true })
 				rbcFolder.AddSwitch("Auto Buy Robo Pass", nil, "rbc", "buypass")
 				rbcFolder.AddSlider("Purchase Cooldown (mins)", nil, 0, 120, "rbc", "passcooldown", { Left = true })
-				local precisionSwitch=rbcFolder.AddSwitch("Maintain 10x Precision", nil, "rbc", "precise")
+				local precisionSwitch=rbcFolder.AddSwitch("Maintain 10x Precision", function(enabled)watchStations(enabled)end, "rbc", "precise")
 				local precisionRound=rbcFolder.AddSlider("Minimum Round", nil, 1, 15, "rbc", "precisemin", { Left = true })
 				rbcFolder.AddLabel("Precision requires Precise bees; set their ranking in Bee Pick Priorities.")
 				local buffSwitch=rbcFolder.AddSwitch("Prioritize Buff Upkeep",nil,"rbc","buffupkeep",{Tooltip="Safely collect nearby Token Links and missing or expiring Haste, Focus, Melody, Baby Love, color boosts, Inspire and Bear Morph. Precision and immediate hazard escape take precedence."})
@@ -69990,6 +70202,20 @@ which bees and get all 3 targets if
 				}, 135, "RBC Materials")
 
 				rbcFolder.Toggle(true)
+				rbcQuestFolder.AddSwitch("RBC Auto Boosters", nil, "rbc", "autoboosters")
+				rbcQuestFolder.AddSwitch("RBC Loaded Dice (15 min)", function(enabled)
+					local materials = cache.Materials
+					if enabled then
+						materials.rbcLoadedDiceEnabledAt = materials.rbcLoadedDiceEnabledAt or os.time()
+					else
+						materials.rbcLoadedDiceEnabledAt = nil
+					end
+					saveConfig(true)
+				end, "rbc", "loadeddice")
+				rbcQuestFolder.AddSwitch("Prefer Boosted Fields", nil, "rbc", "boostedfields")
+				rbcQuestFolder.AddSlider("Booster Minimum Round",nil,1,25,"rbc","boostersminround",{Left=true})
+				rbcQuestFolder.AddSwitch("RBC Sticker Stacker",nil,"rbc","stacker")
+				rbcQuestFolder.AddSlider("Stacker Minimum Round",nil,1,25,"rbc","stackerminround",{Left=true})
 				rbcQuestFolder.AddDropdown("Best Blue Field", state.bluefields, true, nil, "rbc", "bestbluefield", { Field = true, Width = 250 })
 				rbcQuestFolder.AddDropdown("Best Red Field", state.redfields, true, nil, "rbc", "bestredfield", { Field = true, Width = 250 })
 				rbcQuestFolder.AddDropdown("Best White Field", state.whitefields, true, nil, "rbc", "bestwhitefield", { Field = true, Width = 250 })
@@ -71299,6 +71525,15 @@ Are you sure you want to enable it?]])
 			comboController.atlasTargets=function()return atlasComboTargets end
 			comboController:BuildMenu(controls.farming)
 			showerController:Start()
+			threads:Add("rbcHourlyInventory",function()
+				while cfg and state do
+					if not state.disconnect then
+						local ok,snapshot=pcall(function()return inventory:Fetch()end)
+						if ok then rbcHourly:Sample(snapshot,os.clock()) end
+					end
+					task.wait(5)
+				end
+			end)
 			mondoHop:Start()
 			comboController:Start()
 			return
