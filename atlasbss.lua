@@ -1,8 +1,8 @@
 -- discord.gg/syncrypt
 
 if _G.loading then return end
-_G.loading = true
 if not getthreadidentity or getthreadidentity()<8 then return(cloneref and cloneref(game:GetService("StarterGui")) or game:GetService("StarterGui")):SetCore("SendNotification",{Title="Warning",Text="Your executor is not supported.",Duration=10})end
+_G.loading = true
 
 
 while not game:IsLoaded() do
@@ -1322,6 +1322,7 @@ end
 local mergeTable
 
 mergeTable = function(target, source)
+	if type(source) ~= "table" then return end
 	for k, value in pairs(target) do
 		if target == cfg.rbc and k == "beepriorities" and type(source[k]) == "table" then
 			target[k] = table.clone(source[k])
@@ -2752,7 +2753,7 @@ end
 -- Atlas integration for the supplied Safeshower engine.
 local showerController = {
 	active=false, paused={},
-	movementJobs={Autofarm=true,fasttween=true,face=true,walkspeed=true,autodig=true,
+	movementJobs={Autofarm=true,HiveClaimRetry=true,fasttween=true,face=true,walkspeed=true,autodig=true,
 		Lawnmower=true,stickbugfield=true,windyfield=true,
 		["Auto Moon Amulet"]=true,["Auto Star Amulet"]=true,["Auto Royal Jelly"]=true,
 		["Auto Gifted Basic"]=true,["Auto Mutations"]=true},
@@ -9353,6 +9354,12 @@ do
 		state.break1 = nil
 		local cannon = cfg.vars.cannon
 		local path = findPath(getRootPart().Position, to, cannon)
+
+		if not path and stepLabel=="Hive" then
+			-- The hive platform can be reachable even before the route graph has a node.
+			walkTo(to,5,4)
+			return
+		end
 
 		if not path and cfg.rbc.enabled then
 			-- Do not kill the character or abandon the challenge over a missing graph edge.
@@ -44852,74 +44859,49 @@ do
 	end
 
 	local function claimHiveSlot(slotIndex)
-		local hive = workspace.Honeycombs:FindFirstChild("Hive" .. slotIndex)
-
-		if not (not hive or hive.Owner.Value) then
-			for i = 1, 4 do
-				if pcall(goTo, hive.patharrow.Base.Position, "Hive") then
-					break
-				end
-
-				if i ~= 4 then
-					continue
-				end
-				return
-			end
-
-			if input:pressActivateButton() == "Claim Hive" then
-				input:pressActivateButton(true)
-				local now = os.clock()
-
-				while not localPlayer:FindFirstChild("Honeycomb") and os.clock() - now < 2 do
-					RunService.Heartbeat:Wait()
-				end
-			end
-		end
+		local hives=workspace:FindFirstChild("Honeycombs")
+		local hive=hives and hives:FindFirstChild("Hive"..slotIndex)
+		local owner=hive and hive:FindFirstChild("Owner")
+		local arrow=hive and hive:FindFirstChild("patharrow")
+		local base=arrow and arrow:FindFirstChild("Base")
+		if not owner or owner.Value or not base then return end
+		local ok=pcall(goTo,base.Position,"Hive")
+		if not ok or owner.Value then return end
+		if input:pressActivateButton()~="Claim Hive" then return end
+		input:pressActivateButton(true)
+		local deadline=os.clock()+2
+		repeat
+			local claimed=localPlayer:FindFirstChild("Honeycomb")
+			if claimed and claimed.Value then return end
+			RunService.Heartbeat:Wait()
+		until os.clock()>=deadline or not cfg
 	end
 
-	claimHive = function()
+	claimHive = function(refreshOnly)
 		if _G.disablehive then
-			state.bees = 35
-			return
+			state.bees=35
+			return true
 		end
 
-		while not localPlayer:FindFirstChild("Honeycomb") and cfg do
-			if not RunService.Heartbeat:Wait() then
-				break
+		local claimed=localPlayer:FindFirstChild("Honeycomb")
+		if not refreshOnly and not (claimed and claimed.Value) then
+			local preferred=tonumber(_G.hive)
+			if preferred and preferred%1==0 and preferred>=1 and preferred<=6 then
+				claimHiveSlot(preferred)
 			end
-
-			if not _G.hive then
-				for i = 6, 1, -1 do
-					if not localPlayer:FindFirstChild("Honeycomb") then
-						claimHiveSlot(i)
-						continue
-					end
-					break
-				end
-			else
-				claimHiveSlot(_G.hive)
-
-				if not localPlayer:FindFirstChild("Honeycomb") then
-					for i = 1, 6 do
-						if not localPlayer:FindFirstChild("Honeycomb") then
-							claimHiveSlot(i)
-							continue
-						end
-						break
-					end
-				end
+			for i=6,1,-1 do
+				if not cfg or state.stop then break end
+				claimed=localPlayer:FindFirstChild("Honeycomb")
+				if claimed and claimed.Value then break end
+				if i~=preferred then claimHiveSlot(i) end
 			end
+			claimed=localPlayer:FindFirstChild("Honeycomb")
 		end
 
-		while localPlayer.SpawnPos.Value.Position.Y < 0 do
-			RunService.Heartbeat:Wait()
-		end
-
-		if not cfg then
-			return
-		end
-		state.hive = localPlayer.Honeycomb.Value
-		local gates = workspace.Gates
+		if not cfg then return false end
+		state.hive=claimed and claimed.Value or nil
+		local gates = workspace:FindFirstChild("Gates")
+		if not gates then state.bees=state.bees or 0;return state.hive~=nil end
 		local gate35 = gates:FindFirstChild("35 Bee Gate")
 		local gate30 = gates:FindFirstChild("30 Bee Gate")
 		local gate25 = gates:FindFirstChild("25 Bee Gate")
@@ -44931,30 +44913,30 @@ do
 		local BlueHQGate = gates:FindFirstChild("Blue HQ Gate")
 		local RedHQGate = gates:FindFirstChild("Red HQ Gate")
 
-		if not (not DapperShop or DapperShop.Door.CanCollide) then
+		if not (not DapperShop or (not DapperShop:FindFirstChild("Door") or DapperShop.Door.CanCollide)) then
 			state.dapper = true
 		end
 
-		if not (not BlueHQGate or BlueHQGate.Door.CanCollide) then
+		if not (not BlueHQGate or (not BlueHQGate:FindFirstChild("Door") or BlueHQGate.Door.CanCollide)) then
 			state.bluehq = true
 		end
 
-		if not (not RedHQGate or RedHQGate.Door.CanCollide) then
+		if not (not RedHQGate or (not RedHQGate:FindFirstChild("Door") or RedHQGate.Door.CanCollide)) then
 			state.redhq = true
 		end
 
-		if not (not gate35 or gate35.Door.CanCollide) then
+		if not (not gate35 or (not gate35:FindFirstChild("Door") or gate35.Door.CanCollide)) then
 			state.bees = 35
-		elseif not (not gate30 or gate30.Door.CanCollide) then
+		elseif not (not gate30 or (not gate30:FindFirstChild("Door") or gate30.Door.CanCollide)) then
 			state.bees = 30
-		elseif not (not gate25 or gate25.Door.CanCollide) then
+		elseif not (not gate25 or (not gate25:FindFirstChild("Door") or gate25.Door.CanCollide)) then
 			state.bees = 25
-		elseif not (not gate20 or gate20.Door.CanCollide) then
+		elseif not (not gate20 or (not gate20:FindFirstChild("Door") or gate20.Door.CanCollide)) then
 			state.bees = 20
-		elseif not (not gate15 or gate15.Door.CanCollide) then
+		elseif not (not gate15 or (not gate15:FindFirstChild("Door") or gate15.Door.CanCollide)) then
 			state.bees = 15
-		elseif not gate10 or gate10.Door.CanCollide then
-			if not gate5 or gate5.Door.CanCollide then
+		elseif not gate10 or (not gate10:FindFirstChild("Door") or gate10.Door.CanCollide) then
+			if not gate5 or (not gate5:FindFirstChild("Door") or gate5.Door.CanCollide) then
 				state.bees = 0
 			else
 				state.bees = 5
@@ -44962,6 +44944,7 @@ do
 		else
 			state.bees = 10
 		end
+		return state.hive~=nil
 	end
 
 	autoGiftedBasic = function()
@@ -67118,6 +67101,7 @@ end
 
 	autofarmLoop = function()
 		while RunService.Heartbeat:Wait() do
+			if state.hivePending then continue end
 			if not state.stop and not state.fasttween then
 				if getHumanoid().Health == 0 then
 					localPlayer.CharacterAdded:Wait()
@@ -67988,8 +67972,7 @@ end
 if isfile("atlascache-" .. localPlayer.Name .. ".json") then
 	local ok, result = pcall(HttpService.JSONDecode, HttpService, readfile("atlascache-" .. localPlayer.Name .. ".json"))
 
-	if not ok then
-		warn(result)
+	if not ok or type(result) ~= "table" then
 		ui.Notify("Timers Error", "Failed to load timers")
 	else
 		cache = result
@@ -68008,20 +67991,23 @@ if isfile("atlasplanters-" .. localPlayer.Name .. ".json") then
 	end
 end
 
-local setupAttempts = 0
-
-while not (not (setupAttempts < 5) or not (not pcall(gameApi.SetupSecureCall) or not pcall(gameApi.Setup, gameApi))) do
-	task.wait(0.1)
-	setupAttempts += 1
+local setupOk, setupError
+for attempt=1,5 do
+	setupOk,setupError=pcall(function()
+		gameApi.SetupSecureCall()
+		gameApi:Setup()
+	end)
+	if setupOk then break end
+	task.wait(.2)
 end
-
-if setupAttempts == 5 then
-	local StarterGui = getService("StarterGui")
-	return StarterGui:SetCore("SendNotification", { Title = "Warning", Text = "Your executor is not supported.", Duration = 10 })
+if not setupOk then
+	_G.loading=nil
+	error("Atlas+ setup failed: "..tostring(setupError),0)
 end
 
 do
 	local playerStats = gameApi:Cache()
+	if type(playerStats)~="table" then error("Atlas+ startup: player stats are not ready",0) end
 	local userId = playerStats.UserId
 	local loadTime = playerStats.LoadTime
 	if not userId or tonumber(tostring(userId)) ~= userId or not (not (userId <= 0) and not (not loadTime or tonumber(tostring(loadTime)) ~= loadTime or not (not (loadTime < 1.7e9) and not (loadTime > 2e9 or not (not isfunctionhooked(os.time) and not isfunctionhooked(os.date) and not isfunctionhooked(gameApi.ClientStatCache.Get)))))) then
@@ -68221,8 +68207,7 @@ do
 				saveConfig()
 			end
 
-			_G.loading = nil
-			claimHive()
+			state.hivePending = not claimHive(true)
 			if not cfg then
 				return
 			end
@@ -71565,6 +71550,29 @@ Are you sure you want to enable it?]])
 				end
 			end)
 			mondoHop:Start()
+			_G.loading = nil
+			if state.hivePending then
+				threads:Add("HiveClaimRetry",function()
+					local warned=false
+					while cfg and state.hivePending do
+						if not state.stop then
+							local ok,ready=pcall(claimHive)
+							if not cfg then return end
+							if ok and ready then
+								updateAvailableFields()
+								state.hivePending=false
+								logger.log("Hive ready")
+								return
+							end
+							if not warned then
+								warned=true
+								logger.warn("Hive not ready; retrying",not ok and tostring(ready) or "")
+							end
+						end
+						task.wait(3)
+					end
+				end)
+			end
 			comboController:Start()
 			return
 		end
