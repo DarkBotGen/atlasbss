@@ -1635,6 +1635,7 @@ function visualOptimizer:Apply(object)
 	local cosmetic, protected, bees, flowers, balloons, otherPlayer, frog = false,false,false,false,false,false,false
 	local ancestor = object
 	while ancestor and ancestor ~= workspace do
+		if ancestor.Name == "WarningDisk" then return end
 		if self.decorative[ancestor.Name] then cosmetic=true end
 		if self.protected[ancestor.Name] then protected=true end
 		if string.find(ancestor.Name,"Sign",1,true) then protected=true end
@@ -44061,6 +44062,8 @@ do
 		list = {},
 		LocalFX = function(owner, effectName, effectData)
 			if not comboController.observesRemote then comboController:Observe(effectName, effectData) end
+			-- Keep the original landing markers for the disk-based trackers.
+			if effectName == "WarningDisk" or effectName == "FallingCoconut" or effectName == "MythicMeteor" then return true end
 			if effectName == "StarShowerGuide" or effectName == "FallingStar" or effectName == "BeesmasLightsFallingStar" then return true end
 			if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Make" or effectData.Player ~= localPlayer then
 				if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Touch" then
@@ -68524,7 +68527,7 @@ which bees and get all 3 targets if
 				convertFolder.AddSwitch("Convert Honey", nil, "convert", "convertHoney")
 				convertFolder.AddSlider("Convert Honey At", nil, 1, 100, "convert", "convertHoneyAt")
 				convertFolder.AddSwitch("Convert Hive Balloon", nil, "convert", "convertHiveBalloon")
-				convertFolder.AddSlider("Convert Balloon At (blessing minutes)", nil, 5, 55, "convert", "convertHiveBalloonAt")
+				convertFolder.AddSlider("Convert Balloon At (blessing minutes)", nil, 5, 59, "convert", "convertHiveBalloonAt")
 				convertFolder.AddSwitch("Wait Before Converting", nil, "convert", "waitBeforeConverting")
 				convertFolder.AddSlider("Time To Wait (seconds)", nil, 1, 60, "convert", "timeToWait")
 
