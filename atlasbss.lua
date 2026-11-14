@@ -604,6 +604,8 @@ local cfg = {
 	},
 	puffshrooms = {
 		enabled = false,
+		zonefield = "Off",
+		outsiderarity = "Legendary+",
 		blacklistedfields = false,
 		highlvlpriority = false,
 		priorityfields = false,
@@ -59058,6 +59060,14 @@ local function findPuffshroom(v118, v119, v120)
 		return
 	end
 	local bestPuffshroom = nil
+	local settings = cfg.puffshrooms
+	local home = settings.zonefield
+	local function isZoneField(name)
+		return name == "Cactus Field" or name == "Pine Tree Forest" or name == "Pumpkin Patch"
+	end
+	local zoneMode = isZoneField(home)
+	local zoneOccupied, feeder = false, nil
+	local homeZone = zoneMode and workspace.FlowerZones:FindFirstChild(home)
 
 	for k in pairs(tracked.puffshrooms) do
 		local PuffballTop = k:FindFirstChild("Puffball Top")
@@ -59113,11 +59123,29 @@ local function findPuffshroom(v118, v119, v120)
 		local text = PuffballTop.Attachment.Gui.NameRow.TextLabel.Text
 		local puffRarity = string.match(text, "(%a*)%s+Puffshroom") or "Common"
 		local puffLevel = tonumber(string.match(text, "Lvl (%d+)")) or 1
+		local stem = k:FindFirstChild("Puffball Stem")
+		local field = stem and getFieldAt(stem.Position)
+		if zoneMode and field and isZoneField(field.Name) then
+			zoneOccupied = true
+		end
 
-		if puffLevel <= cfg.puffshrooms.max and cfg.puffshrooms.min <= puffLevel and k:FindFirstChild("Puffball Stem") then
-			local field = getFieldAt(k["Puffball Stem"].Position)
+		if puffLevel <= cfg.puffshrooms.max and cfg.puffshrooms.min <= puffLevel and stem then
 			if not field or not availableFields[field.Name] or not ((not cfg.puffshrooms.blacklistedfields or not cfg.puffshrooms.blacklistedfields[field.Name]) and (field.Name ~= "Mountain Top Field" or not tracked.mondo)) then
 				continue
+			end
+
+			if zoneMode and field.Name ~= home then
+				local rareEnough = puffRarity == "Mythic" or puffRarity == "Legendary"
+					or (settings.outsiderarity == "Epic+" and puffRarity == "Epic")
+				if not rareEnough then
+					if homeZone and not v120 and not isZoneField(field.Name) then
+						local distance = (stem.Position - homeZone.Position).Magnitude
+						if not feeder or distance < feeder.d then
+							feeder = { d = distance, rarity = puffRarity, lvl = puffLevel, v = k }
+						end
+					end
+					continue
+				end
 			end
 
 			if not (not v120 and (cfg.puffshrooms.rarity == "Common" or not ((cfg.puffshrooms.rarity ~= "Rare" or puffRarity == "Common") and (cfg.puffshrooms.rarity ~= "Epic" or puffRarity == "Common" or puffRarity == "Rare")))) then
@@ -59151,6 +59179,9 @@ local function findPuffshroom(v118, v119, v120)
 		end
 	end
 
+	if not bestPuffshroom and not zoneOccupied then
+		bestPuffshroom = feeder
+	end
 	if not bestPuffshroom then
 		return
 	end
@@ -68773,6 +68804,8 @@ which bees and get all 3 targets if
 			Puffshrooms.AddSlider("Maximum Level", nil, 1, 30, "puffshrooms", "max", { Left = true })
 			Puffshrooms.AddSlider("Minimum Time (seconds)", nil, 1, 60, "puffshrooms", "mintime", { Left = true })
 			Puffshrooms.AddDropdown("Minimum Rarity", { "Common", "Rare", "Epic" }, nil, nil, "puffshrooms", "rarity")
+			Puffshrooms.AddDropdown("15 Bee Zone Field", { "Off", "Cactus Field", "Pine Tree Forest", "Pumpkin Patch" }, nil, nil, "puffshrooms", "zonefield")
+			Puffshrooms.AddDropdown("Outside Assigned Field", { "Legendary+", "Epic+" }, nil, nil, "puffshrooms", "outsiderarity")
 			Puffshrooms.AddDropdown("Allowed Fields", availableFields, true, nil, "puffshrooms", "blacklistedfields", { Field = true, Multiple = true, Blacklist = true })
 			Puffshrooms.AddDropdown("Priority Fields", availableFields, true, nil, "puffshrooms", "priorityfields", { Field = true, Multiple = true })
 			followFolder.AddLabel("This will not work if hide other players is enabled")
