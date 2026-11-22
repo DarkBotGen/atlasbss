@@ -5775,7 +5775,7 @@ do
 					end
 
 					v79 = measuredHeight
-					TweenService:Create(clone4, TweenInfo.new(0, Enum.EasingStyle.Linear, Enum.EasingDirection.In), { Size = v76 and UDim2.new(1, 0, 0, measuredHeight) or v }):Play()
+					TweenService:Create(clone4, TweenInfo.new(0, Enum.EasingStyle.Linear, Enum.EasingDirection.In), { Size = v76 and UDim2.new(1, 0, 0, measuredHeight) or UDim2.new(1, 0, 0, 23) }):Play()
 				end
 			end
 
@@ -6044,7 +6044,7 @@ do
 					switch2.Text = alwaysDelete and utf8.char(10003) or ""
 
 					if not itemConfig then
-						bqbuyconf[itemName] = { false, current, alwaysDelete }
+						bqbuyconf[itemName] = { false, 0, alwaysDelete }
 						itemConfig = bqbuyconf[itemName]
 					else
 						itemConfig[3] = alwaysDelete
@@ -47497,12 +47497,12 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 													nearestOverlap = { d = distance, v = item }
 												end
 											end
+
+											if nearestNew and nearestOverlap and nearestNew.d < nearestOverlap.d then
+												items = group
+											end
 										end
 									else
-										items = group
-									end
-
-									if not (not nearestnew or not nearestoverlap or not (nearestnew.d < nearestoverlap.d)) then
 										items = group
 									end
 								end
@@ -54384,8 +54384,8 @@ end
 					local best = nil
 					touchedMarks[mark] = os.clock() + 3
 
-					for _, candidate in pairs(tracked.precise2) do
-						if options.area and not fieldPositionPolicy:TrackedAllowed(_,candidate,options) then continue end
+					for markKey, candidate in pairs(tracked.precise2) do
+						if options.area and not fieldPositionPolicy:TrackedAllowed(markKey,candidate,options) then continue end
 						totalCount += 1
 
 						if not candidate.Touched and not touchedMarks[candidate] and not ((not options.ignorefield or getFieldAt(candidate.Position)) and not (not options.ignorefield and getFieldAt(candidate.Position) == currentField) or not (not options.avoid or not isPathClear(candidate.Position, options.avoid))) then
@@ -54992,7 +54992,7 @@ end
 			for i = 1, 4 do
 				succeeded = succeeded or pcall(function()
 					if label == "Bubble Mask" then
-						goTo(locations.BlueHQ, tool)
+						goTo(locations.BlueHQ, label)
 					elseif label == "Diamond Mask" then
 						goTo(locations.DiamondMaskShop, label)
 					elseif label == "Fire Mask" then
@@ -57224,7 +57224,7 @@ end
 						v156 = string.gsub(string.gsub(text, "%(%d+ royal jell", ""), "%(rank", "")
 						v157 = string.match(v156, "%(([^)]+)%)")
 						if not v157 then
-							logger.warn(v156, color)
+							logger.warn(v156)
 							return
 						end
 						v158 = string.gsub(v157, "s", "")
@@ -57652,7 +57652,7 @@ end
 							v156 = string.gsub(string.gsub(text, "%(%d+ royal jell", ""), "%(rank", "")
 							v157 = string.match(v156, "%(([^)]+)%)")
 							if not v157 then
-								logger.warn(v156, color)
+								logger.warn(v156)
 								return
 							end
 							v158 = string.gsub(v157, "s", "")
@@ -59252,11 +59252,7 @@ local function destroyTotems()
 							input:handleShiftLock(true)
 						end
 
-						if field.Name ~= "Mountain Top Field" or not tracked.mondo then
-							farmStep({ skipoverlap = true })
-						else
-							handleMondoChick(true)
-						end
+						farmStep({ skipoverlap = true })
 					elseif shouldConvert() then
 						convertHoney()
 					end
@@ -59420,7 +59416,7 @@ do
 							end
 
 							if exitTo ~= 1 then
-								logger.warn(text, color)
+								logger.warn(text)
 								return
 							end
 
@@ -62798,7 +62794,7 @@ end
 								end
 
 								if not v134.Progress then
-									questData:Status("Debug:", v138 .. " / " .. v139, desc)
+									questData:Status("Debug:", v138 .. " / " .. v139)
 								end
 
 								questData:Status("Auto Quest: Feeding x" .. v140, match, "to bee at", v141.Col, v141.Row)
@@ -62878,7 +62874,7 @@ end
 								end
 
 								if not v134.Progress or not v134.Level then
-									questData:Status("Debug:", "lvl", v139, v137 .. " / " .. v138, desc)
+									questData:Status("Debug:", "lvl", v139, v137 .. " / " .. v138)
 								end
 
 								local col = v140.Col
@@ -62965,7 +62961,7 @@ end
 								end
 
 								if not v134.Progress then
-									questData:Status("Debug:", v137 .. " / " .. v138, desc)
+									questData:Status("Debug:", v137 .. " / " .. v138)
 								end
 
 								questData:Status("Auto Quest: Using Royal Jelly on bee at", v139.Col, v139.Row)
@@ -63813,6 +63809,8 @@ end
 									end
 								end
 
+								local questCache = gameApi:Cache()
+								local gummylair = state.bees >= 15 and questCache.Badges and questCache.Badges.Goo and questCache.Badges.Goo >= 2
 								if not (not name or not (name == "BasicShop" or not ((name ~= "ProShop" or not (state.bees >= 10)) and (name ~= "Mountaintop" or not (state.bees >= 25)) and (name ~= "Petal Shop" or not (state.bees >= 35)) and (name ~= "BlueHQ" or not state.bluehq) and (name ~= "RedHQ" or not state.redhq) and (name ~= "GummyBearShop" or not gummylair)))) then
 									questData:Status("Auto Quest: Equipping", autoquest.oldtool, "(Last Tool)")
 									local ok = nil
@@ -70560,7 +70558,7 @@ which bees and get all 3 targets if
 				for _, configPath in ipairs(listfiles("atlas")) do
 					local normalizedPath = string.gsub(configPath, "\\", "/")
 
-					if not (normalizedPath == "atlas/default.json" or normalizedPath == "atlas/default.json" or not string.find(normalizedPath, ".json")) then
+					if not (normalizedPath == "atlas/default.json" or not string.find(normalizedPath, ".json")) then
 						local add = configDropdown.Add
 						local configName = string.gsub(string.gsub(normalizedPath, "atlas/", ""), ".json", "")
 						add(configName)
@@ -71130,7 +71128,7 @@ Are you sure you want to enable it?]])
 								break
 							end
 
-							if not ((wait and 5 or 3) < os.clock() - now3) then
+							if not (5 < os.clock() - now3) then
 								continue
 							end
 							break
