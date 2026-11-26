@@ -168,7 +168,7 @@ local function typeof(v)
  return type(v)
 end
 local home={Name="Pepper Patch",Position=vector(0,0,0),Size=vector(100,2,100)}
-local outside={Name="Mountain Top Field",Position=vector(120,0,0),Size=vector(100,2,100)}
+local outside={Name="Coconut Field",Position=vector(120,0,0),Size=vector(100,2,100)}
 local function inBox(p,f)return math.abs(p.X-f.Position.X)<=f.Size.X/2 and math.abs(p.Z-f.Position.Z)<=f.Size.Z/2 end
 local function getFieldAt(p) if inBox(p,home) then return home elseif inBox(p,outside) then return outside end end
 local currentField=home
@@ -205,9 +205,9 @@ local touchedMarks={}
 local tracked={combococonuts={},coconuts={}}
 local buffs={}
 local function saveConfig()end
-local availableFields={["Pepper Patch"]=true,["Mountain Top Field"]=true}
+local availableFields={["Pepper Patch"]=true,["Coconut Field"]=true}
 cfg.autofarm.field1="Pepper Patch"
-cfg.coconutcombo={enabled=false,main="None",maxspeed=180}
+cfg.coconutcombo={enabled=false,catchall=false,main="None",maxspeed=180}
 state.activityStatus=1
 local PhysicalProperties={new=function(d,f,e,fw,ew)return {Density=d,Friction=f,Elasticity=e,FrictionWeight=fw,ElasticityWeight=ew}end}
 root.CurrentPhysicalProperties=PhysicalProperties.new(.7,.5,.2,1,1)
@@ -417,8 +417,12 @@ function comboController:FieldAt(position)
 	if self.fieldFallback then return self.fieldFallback(position) end
 end
 
+function comboController:IsCatchAll()
+	return cfg.coconutcombo and cfg.coconutcombo.catchall==true
+end
+
 function comboController:Managed()
-	return cfg.coconutcombo and cfg.coconutcombo.enabled==true
+	return cfg.coconutcombo and (cfg.coconutcombo.enabled==true or cfg.coconutcombo.catchall==true)
 end
 
 function comboController:Owner(value)
@@ -635,7 +639,7 @@ end
 
 function comboController:UpdateMainPresence(combos)
 	table.clear(self.mainZones)
-	if self:IsMainAccount() then
+	if self:IsMainAccount() or self:IsCatchAll() then
 		for _,r in ipairs(combos) do r.mainInside=false end
 		return
 	end
@@ -662,7 +666,7 @@ function comboController:UpdateMainPresence(combos)
 end
 
 function comboController:IsRestrictedZone(position)
-	if not self:Managed() or self:IsMainAccount() or typeof(position)~="Vector3" then return false end
+	if not self:Managed() or self:IsMainAccount() or self:IsCatchAll() or typeof(position)~="Vector3" then return false end
 	local now=os.clock()
 	for _,z in ipairs(self.mainZones) do
 		if z.deadline+0.12>now and math.abs(position.Y-z.position.Y)<=14 then
@@ -675,7 +679,7 @@ function comboController:IsRestrictedZone(position)
 end
 
 function comboController:PathCrossesRestrictedZone(fromPos, toPos)
-	if not self:Managed() or self:IsMainAccount() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
+	if not self:Managed() or self:IsMainAccount() or self:IsCatchAll() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
 	local now=os.clock()
 	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
 	local lenSq=vx*vx+vz*vz
@@ -787,8 +791,30 @@ function comboController:MainComboLanding(root, combos, now)
 	return best
 end
 
+function comboController:AnyFieldComboLanding(root, combos, now)
+	local myField=self:FieldAt(root.Position)
+	local myFieldName=myField and myField.Name or ""
+	local best
+	for _,r in ipairs(combos) do
+		if r.deadline+0.12>now then
+			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
+			local dist=math.sqrt(dx*dx+dz*dz)
+			local sameField=(myFieldName~="" and r.field==myFieldName)
+			local airborneInMyField=(myFieldName~="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
+			local unmappedBoth=(myFieldName=="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
+			local nearPrivate=r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160
+			if sameField or airborneInMyField or unmappedBoth or nearPrivate then
+				if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
+					best=r
+				end
+			end
+		end
+	end
+	return best
+end
+
 function comboController:YieldLanding(root, now, ownCandidate)
-	if self:IsMainAccount() then return nil end
+	if self:IsMainAccount() or self:IsCatchAll() then return nil end
 	local breached
 	for _,z in ipairs(self.mainZones) do
 		if z.deadline+0.12>now and math.abs(root.Position.Y-z.position.Y)<=14 then
@@ -855,16 +881,16 @@ function comboController:WithTaskTravel(callback,...)
 	return table.unpack(result,2,result.n)
 end
 
-function comboController:Available(isYield)
+function comboController:Available(bypassActivity)
 	if self:TravelBlocked() then return false end
-	local yielding=(isYield==true) or (self.session~=nil and self.session.yieldJob~=nil)
-	local focused=yielding or self.comboPriority or self.ownPriority
+	local bypass=(bypassActivity==true) or (self.session~=nil and (self.session.yieldJob~=nil or self.session.catchAll==true))
+	local focused=bypass or self.comboPriority or self.ownPriority
 	if self.closed or state.stop or (showerController.active and not focused) then return false end
 	local char = localPlayer.Character
 	local h = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not h or not root or h.Health <= 0 then return false end
-	if not yielding and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
+	if not bypass and cfg.autofarm.enabled and (state.activityStatus ~= 1 or state.fasttween) then return false end
 	return true, h, root
 end
 
@@ -916,7 +942,7 @@ function comboController:Begin(job, h, root)
 	if showerController.active or self.closed or self:TravelBlocked() then return end
 	local env = type(getgenv)=="function" and getgenv() or _G
 	local key = "AtlasTemporaryPMS_" .. localPlayer.UserId
-	local s = {key=job.key,h=h,root=root,originalSpeed=h.WalkSpeed,leaseKey=key,lease={},previousLease=env[key],direction=Vector3.zero,speed=0,yieldJob=job.yielding and job or nil}
+	local s = {key=job.key,h=h,root=root,originalSpeed=h.WalkSpeed,leaseKey=key,lease={},previousLease=env[key],direction=Vector3.zero,speed=0,yieldJob=job.yielding and job or nil,catchAll=job.catchAll==true}
 	pcall(function()
 		local module=localPlayer.PlayerScripts:FindFirstChild("PlayerModule")
 		if module then s.controls=require(module):GetControls();s.restoreControls=s.controls.controlsEnabled~=false;s.controls:Disable() end
@@ -977,14 +1003,16 @@ function comboController:Tick()
 	self:SyncDisks(now)
 	local combos=self:ActiveCombos(now)
 	self:UpdateMainPresence(combos)
-	local catchJob=self:OwnComboLanding(root,combos,now) or self:MainComboLanding(root,combos,now)
-	local yieldJob=self:YieldLanding(root,now,catchJob)
+	local catchAll=self:IsCatchAll()
+	local catchJob=catchAll and self:AnyFieldComboLanding(root,combos,now) or (self:OwnComboLanding(root,combos,now) or self:MainComboLanding(root,combos,now))
+	local yieldJob=catchAll and nil or self:YieldLanding(root,now,catchJob)
 	local job=yieldJob or catchJob
+	if job and catchAll and not job.yielding then job.catchAll=true end
 	self.privatePriority=(job~=nil and job==catchJob and catchJob.private==true)
 	self.ownPriority=(job~=nil)
 	self.comboPriority=(job~=nil)
 	if job and showerController.active and showerController.cancel then showerController.cancel("Coconut Combo has priority") end
-	local available,h,activeRoot=self:Available(job and job.yielding==true)
+	local available,h,activeRoot=self:Available((job and job.yielding==true) or (catchAll and job~=nil))
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=activeRoot or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then
@@ -1018,7 +1046,7 @@ function comboController:Tick()
 	else
 		local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
 		local isOwn=job.ownerLower==string.lower(localPlayer.Name)
-		local label=isOwn and "own" or tostring(job.owner or cfg.coconutcombo.main)
+		local label=isOwn and "own" or tostring(job.owner or (catchAll and "field" or cfg.coconutcombo.main))
 		self.status=string.format("Catching %s combo (%s) | %.0f PMS",label,stackText,s.speed)
 	end
 end
@@ -1078,6 +1106,7 @@ end
 function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Combo")
 	folder.AddSwitch("Enable Coconut Combo",function()self:Configure()end,"coconutcombo","enabled")
+	folder.AddSwitch("Catch All Combos in Field",function()self:Configure()end,"coconutcombo","catchall",{Tooltip="Catches every combo in your current field regardless of owner and ignores Main Account exit rules (for Coconut Field alts)."})
 	local playersService=getService("Players")
 	local names,seen={"None"},{None=true}
 	local savedMain=cfg.coconutcombo.main
@@ -1119,6 +1148,7 @@ function comboController:BuildMenu(tab)
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
 	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
 	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
+	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
 end
 
@@ -1222,7 +1252,7 @@ local menuTab={AddFolder=function(name)
 end}
 comboController:BuildMenu(menuTab)
 assert(folders["Coconut Combo"] and not folders["Coconut Team"])
-assert(switches["Enable Coconut Combo"] and dropdowns["Main Account"] and textboxes["Main Account Username"] and sliders["Fast Combo Maximum Speed"])
+assert(switches["Enable Coconut Combo"] and switches["Catch All Combos in Field"] and dropdowns["Main Account"] and textboxes["Main Account Username"] and sliders["Fast Combo Maximum Speed"])
 textboxes["Main Account Username"]("  MainAccount  ")
 assert(cfg.coconutcombo.main=="MainAccount" and dropdowns["Main Account"].value=="MainAccount")
 Players.PlayerAdded:Fire({Name="JoinedLate"})
@@ -1440,6 +1470,60 @@ root.Position=vector(25,3,0)
 observe(25,0,"main-self",player,1,2)
 comboController:Tick()
 assert(comboController.active and not comboController.session.yieldJob and not comboController:IsRestrictedZone(vector(25,3,0)),"Main yielded to itself")
+
+-- 6b. Catch All Combos in Field (Coconut Field alts): catches everything in current field regardless of owner/Main/activity.
+comboController:Finish("catchall setup")
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+player.Name="CoconutAlt1"
+cfg.coconutcombo={enabled=false,catchall=true,main="MainAccount",maxspeed=180}
+cfg.autofarm.enabled=true
+state.activityStatus=3 -- works regardless of activityStatus (only stops for TravelBlocked / state.stop / mondoHop)
+root.Position=vector(100,3,0) -- inside Coconut Field [70, 170]
+mainRoot.Position=vector(135,3,0)
+
+-- Catches AltTwo's combo in Coconut Field with exact fast movement + 10x density.
+observe(130,0,"coco-alt2",alt2Player,2,2)
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob,"catchall missed AltTwo's combo in Coconut Field")
+for _,fn in pairs(RunService.bound)do fn()end
+assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"catchall did not use exact fast movement + 10x density")
+
+-- Catches MainAccount's combo in Coconut Field EVEN with MainAccount standing inside it (ignores Main exit/restricted rules).
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(130,3,0)})
+observe(135,0,"coco-main",mainPlayer,3,2)
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob,"catchall yielded or skipped Main's combo in Coconut Field")
+assert(not comboController:IsRestrictedZone(vector(135,3,0)) and not comboController:PathCrossesRestrictedZone(vector(100,3,0),vector(150,3,0)),"catchall applied restricted zones")
+
+-- Catches own 0x combo and unowned 3x WarningDisk in Coconut Field.
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(135,3,0)})
+fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(115,3,0),Dur=2,ID="coco-own0",Points=100,Radius=13})
+comboController:Tick()
+assert(comboController.active and comboController.privatePriority,"catchall missed own 0x in Coconut Field")
+
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(115,3,0)})
+local cocoDisk=Instance.new("Part",workspace);cocoDisk.Name="WarningDisk";cocoDisk.Position=vector(125,3,0);cocoDisk.Size=vector(26,0.5,26)
+local cAttach=Instance.new("Attachment",cocoDisk);cAttach.Name="GuiAttach"
+local cGui=Instance.new("BillboardGui",cAttach);cGui.Name="Gui"
+local cLabel=Instance.new("TextLabel",cGui);cLabel.Name="TextLabel";cLabel.Text="3"
+comboController:TrackDisk(cocoDisk)
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob,"catchall missed unowned 3x WarningDisk in Coconut Field")
+cocoDisk.Parent=nil;now+=0.3;comboController:Tick()
+
+-- Ignores Pepper Patch combo while standing in Coconut Field, and ignores Coconut Field combo while at hive (no field).
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+observe(10,0,"pepper-drop",alt2Player,1,2)
+comboController:Tick()
+assert(not comboController.active,"Coconut Field alt left Coconut Field for Pepper Patch combo")
+observe(125,0,"coco-only",alt2Player,1,2)
+root.Position=vector(-100,3,0) -- outside any field (e.g. at hive)
+comboController:Tick()
+assert(not comboController.active,"alt at hive pulled into Coconut Field combo")
+state.activityStatus=1
 
 -- 7. Live FX fixture replay (combo_live_trace.json).
 

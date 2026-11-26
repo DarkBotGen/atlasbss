@@ -3,7 +3,7 @@ local switches={}
 local dropdowns={}
 local textboxes={}
 local sliders={}
-local cfg={coconutcombo={enabled=false,main="None",maxspeed=180}}
+local cfg={coconutcombo={enabled=false,catchall=false,main="None",maxspeed=180}}
 local state={config="Preset 1"}
 local localPlayer={Name="AltOne"}
 local function saveConfig()end
@@ -35,6 +35,7 @@ local controls={farming=tab}
 function comboController:BuildMenu(tab)
 	local folder=tab.AddFolder("Coconut Combo")
 	folder.AddSwitch("Enable Coconut Combo",function()self:Configure()end,"coconutcombo","enabled")
+	folder.AddSwitch("Catch All Combos in Field",function()self:Configure()end,"coconutcombo","catchall",{Tooltip="Catches every combo in your current field regardless of owner and ignores Main Account exit rules (for Coconut Field alts)."})
 	local playersService=getService("Players")
 	local names,seen={"None"},{None=true}
 	local savedMain=cfg.coconutcombo.main
@@ -76,13 +77,14 @@ function comboController:BuildMenu(tab)
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
 	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
 	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
+	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
 end
 
 comboController:BuildMenu(controls.farming)
 
 assert(folders["Coconut Combo"] and not folders["Coconut Team"],"wrong folder name")
-assert(switches["Enable Coconut Combo"],"enable switch missing")
+assert(switches["Enable Coconut Combo"] and switches["Catch All Combos in Field"],"enable or catch-all switch missing")
 assert(dropdowns["Main Account"] and type(textboxes["Main Account Username"])=="function","main account controls missing")
 assert(sliders["Fast Combo Maximum Speed"],"speed slider missing")
 textboxes["Main Account Username"]("MainBee")
