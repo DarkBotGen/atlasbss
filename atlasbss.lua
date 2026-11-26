@@ -2801,6 +2801,12 @@ function comboController:IsMainAccount()
 	return type(main)=="string" and main~="" and main~="None" and string.lower(localPlayer.Name)==string.lower(main)
 end
 
+function comboController:MainOwned(owner)
+	local main=cfg.coconutcombo and cfg.coconutcombo.main
+	return type(owner)=="string" and type(main)=="string" and main~="" and main~="None"
+		and string.lower(owner)==string.lower(main)
+end
+
 function comboController:GetMainRoot()
 	if self:IsMainAccount() then return nil end
 	local main=cfg.coconutcombo and cfg.coconutcombo.main
@@ -3126,6 +3132,25 @@ function comboController:OwnComboLanding(root, combos, now)
 	return best
 end
 
+function comboController:MainComboLanding(root, combos, now)
+	if self:IsMainAccount() then return nil end
+	local myField=self:FieldAt(root.Position)
+	local myFieldName=myField and myField.Name or ""
+	local best
+	for _,r in ipairs(combos) do
+		if not r.private and self:MainOwned(r.owner) and not r.mainInside and r.deadline+0.12>now and not self:IsRestrictedZone(r.position) then
+			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
+			local dist=math.sqrt(dx*dx+dz*dz)
+			local sameField=(myFieldName~="" and r.field==myFieldName)
+			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
+			if sameField or nearSameElevation then
+				if not best or r.deadline<best.deadline then best=r end
+			end
+		end
+	end
+	return best
+end
+
 function comboController:YieldLanding(root, now, ownCandidate)
 	if self:IsMainAccount() then return nil end
 	local breached
@@ -3316,10 +3341,10 @@ function comboController:Tick()
 	self:SyncDisks(now)
 	local combos=self:ActiveCombos(now)
 	self:UpdateMainPresence(combos)
-	local own=self:OwnComboLanding(root,combos,now)
-	local yieldJob=self:YieldLanding(root,now,own)
-	local job=yieldJob or own
-	self.privatePriority=(job~=nil and job==own and own.private==true)
+	local catchJob=self:OwnComboLanding(root,combos,now) or self:MainComboLanding(root,combos,now)
+	local yieldJob=self:YieldLanding(root,now,catchJob)
+	local job=yieldJob or catchJob
+	self.privatePriority=(job~=nil and job==catchJob and catchJob.private==true)
 	self.ownPriority=(job~=nil)
 	self.comboPriority=(job~=nil)
 	if job and showerController.active and showerController.cancel then showerController.cancel("Coconut Combo has priority") end
@@ -3327,7 +3352,7 @@ function comboController:Tick()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=activeRoot or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then
-		local reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for own combo"
+		local reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for combo"
 		self:Finish(reason)
 		return
 	end
@@ -3356,7 +3381,9 @@ function comboController:Tick()
 		self.status=string.format("Exiting combo for %s | %.0f PMS",tostring(cfg.coconutcombo.main),s.speed)
 	else
 		local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
-		self.status=string.format("Catching own combo (%s) | %.0f PMS",stackText,s.speed)
+		local isOwn=job.ownerLower==string.lower(localPlayer.Name)
+		local label=isOwn and "own" or tostring(job.owner or cfg.coconutcombo.main)
+		self.status=string.format("Catching %s combo (%s) | %.0f PMS",label,stackText,s.speed)
 	end
 end
 
@@ -3454,8 +3481,8 @@ function comboController:BuildMenu(tab)
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
-	folder.AddLabel("Catches your own combo from drop 1 (0x) onward using fast movement.")
-	folder.AddLabel("Automatically exits any player's combo circle when Main Account steps inside.")
+	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
+	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
 	folder.Toggle(true,true)
 end
 

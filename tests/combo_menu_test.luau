@@ -74,8 +74,8 @@ function comboController:BuildMenu(tab)
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
-	folder.AddLabel("Catches your own combo from drop 1 (0x) onward using fast movement.")
-	folder.AddLabel("Automatically exits any player's combo circle when Main Account steps inside.")
+	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
+	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
 	folder.Toggle(true,true)
 end
 
