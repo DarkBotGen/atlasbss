@@ -727,14 +727,14 @@ function smoothMovement:Roam(makeGoal, allowed)
 		local dx, dz = route.goal.X - root.Position.X, route.goal.Z - root.Position.Z
 		local squared = dx*dx + dz*dz
 		if squared < route.best - 0.04 then route.best, route.progressAt = squared, now end
-		local restricted = self.comboController and self.comboController:IsRestrictedZone(route.goal)
+		local restricted = self.comboController and (self.comboController:IsRestrictedZone(route.goal) or self.comboController:PathCrossesRestrictedZone(root.Position, route.goal))
 		if squared <= 4 or not allowed(route.goal) or restricted or now - route.progressAt > 0.8 or now > route.deadline then
 			self.roam, route = nil, nil
 		end
 	end
 	if not route then
 		local goal = makeGoal()
-		if not goal or not allowed(goal) or (self.comboController and self.comboController:IsRestrictedZone(goal)) then return end
+		if not goal or not allowed(goal) or (self.comboController and (self.comboController:IsRestrictedZone(goal) or self.comboController:PathCrossesRestrictedZone(root.Position, goal))) then return end
 		local dx, dz = goal.X - root.Position.X, goal.Z - root.Position.Z
 		local squared = dx*dx + dz*dz
 		if squared <= 4 then return end
@@ -3032,6 +3032,23 @@ function comboController:IsRestrictedZone(position)
 	return false
 end
 
+function comboController:PathCrossesRestrictedZone(fromPos, toPos)
+	if not self:Managed() or self:IsMainAccount() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
+	local now=os.clock()
+	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
+	local lenSq=vx*vx+vz*vz
+	for _,z in ipairs(self.mainZones) do
+		if z.deadline+0.12>now and math.abs(toPos.Y-z.position.Y)<=14 then
+			local wx,wz=z.position.X-fromPos.X,z.position.Z-fromPos.Z
+			local t=lenSq>1e-6 and math.clamp((wx*vx+wz*vz)/lenSq,0,1) or 0
+			local cx,cz=fromPos.X+vx*t-z.position.X,fromPos.Z+vz*t-z.position.Z
+			local limit=(z.radius or 13)+2.0
+			if cx*cx+cz*cz<limit*limit then return true end
+		end
+	end
+	return false
+end
+
 function comboController:PointInField(position, field)
 	if field and field.Position and field.Size then
 		local margin=2
@@ -3139,7 +3156,11 @@ function comboController:YieldLanding(root, now, ownCandidate)
 	if not ownCandidate then
 		local held=self.session and self.session.yieldJob
 		if held and held.source and held.source.deadline+0.12>now and held.source.mainInside then
-			return held
+			local dx,dz=root.Position.X-held.source.position.X,root.Position.Z-held.source.position.Z
+			local clearDist=(held.source.radius or 13)+4.0
+			if dx*dx+dz*dz<clearDist*clearDist then
+				return held
+			end
 		end
 	end
 end
@@ -47737,7 +47758,7 @@ end
 
 function gatheringPriorities:Allowed(position, opts, rootPosition)
 	if not fieldPositionPolicy:StrictAllowed(position) then return false end
-	if comboController:IsRestrictedZone(position) then return false end
+	if comboController:IsRestrictedZone(position) or comboController:PathCrossesRestrictedZone(rootPosition, position) then return false end
 	if opts.area and not fieldPositionPolicy:Allowed(position,opts) then return false end
 	if opts.checkheight and math.abs(position.Y - rootPosition.Y) >= 6 then return false end
 	if opts.range and opts.origin then
@@ -53770,7 +53791,7 @@ end
 			while true do
 				local options=gatheringPriorities.activeOptions
 				if not comboSession and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
-				if not comboSession and comboController:IsRestrictedZone(object.Position) then return true end
+				if not comboSession and (comboController:IsRestrictedZone(object.Position) or comboController:PathCrossesRestrictedZone(getRootPart().Position, object.Position)) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end

@@ -668,6 +668,23 @@ function comboController:IsRestrictedZone(position)
 	return false
 end
 
+function comboController:PathCrossesRestrictedZone(fromPos, toPos)
+	if not self:Managed() or self:IsMainAccount() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
+	local now=os.clock()
+	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
+	local lenSq=vx*vx+vz*vz
+	for _,z in ipairs(self.mainZones) do
+		if z.deadline+0.12>now and math.abs(toPos.Y-z.position.Y)<=14 then
+			local wx,wz=z.position.X-fromPos.X,z.position.Z-fromPos.Z
+			local t=lenSq>1e-6 and math.clamp((wx*vx+wz*vz)/lenSq,0,1) or 0
+			local cx,cz=fromPos.X+vx*t-z.position.X,fromPos.Z+vz*t-z.position.Z
+			local limit=(z.radius or 13)+2.0
+			if cx*cx+cz*cz<limit*limit then return true end
+		end
+	end
+	return false
+end
+
 function comboController:PointInField(position, field)
 	if field and field.Position and field.Size then
 		local margin=2
@@ -775,7 +792,11 @@ function comboController:YieldLanding(root, now, ownCandidate)
 	if not ownCandidate then
 		local held=self.session and self.session.yieldJob
 		if held and held.source and held.source.deadline+0.12>now and held.source.mainInside then
-			return held
+			local dx,dz=root.Position.X-held.source.position.X,root.Position.Z-held.source.position.Z
+			local clearDist=(held.source.radius or 13)+4.0
+			if dx*dx+dz*dz<clearDist*clearDist then
+				return held
+			end
 		end
 	end
 end
@@ -1092,7 +1113,7 @@ end
 			while true do
 				local options=gatheringPriorities.activeOptions
 				if not comboSession and not fieldPositionPolicy:StrictAllowed(object.Position) then return true end
-				if not comboSession and comboController:IsRestrictedZone(object.Position) then return true end
+				if not comboSession and (comboController:IsRestrictedZone(object.Position) or comboController:PathCrossesRestrictedZone(getRootPart().Position, object.Position)) then return true end
 				if not comboSession and options and options.area and not fieldPositionPolicy:Allowed(object.Position,options) then return true end
 				if comboSession then
 					if comboController.session~=comboSession or state.stop or os.clock()>object.ExpiresAt+0.12 then return true end
@@ -1231,7 +1252,7 @@ fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=2,Pos2=vector(15,3,0),Duration
 comboController:Tick()
 assert(comboController.active and math.abs(comboController.session.target.Position.X-15)<0.1,"alt missed own 2x drop via chain ownership")
 
--- 2. Main steps into AltOne's own active combo (2x) -> AltOne leaves it immediately using fast movement!
+-- 2. Main steps into AltOne's own active combo (2x) -> AltOne leaves it immediately using fast movement and resumes farming once clear!
 root.Position=vector(16,3,0)
 mainRoot.Position=vector(14,3,0) -- 1 stud from (15,3,0), well inside radius 13
 comboController:Tick()
@@ -1243,17 +1264,29 @@ local exitTarget=comboController.session.yieldJob.position
 assert((vector(exitTarget.X,0,exitTarget.Z)-vector(15,0,0)).Magnitude>=18,"exit target too close to combo circle")
 for _=1,12 do step(0.03) end
 assert((vector(root.Position.X,0,root.Position.Z)-vector(15,0,0)).Magnitude>=17,"alt did not exit outside Main-occupied combo circle")
+assert(not comboController.active,"alt stayed frozen instead of releasing movement once clear")
+assert(threads:Get("Autofarm")~=nil,"autofarm did not resume immediately after exiting Main's combo")
+assert(h.WalkSpeed==40 and controls.controlsEnabled and root.CustomPhysicalProperties==nil,"movement/density not restored on resume")
 
--- Hysteresis: while Main stays inside/edge (15 studs <= 13+3), alt holds clear outside instead of stepping back in.
+-- While Main stays in/near the 2x circle (hysteresis <= 16), alt keeps farming safely without re-entering or crossing the circle.
 mainRoot.Position=vector(15+15,3,0)
 comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"alt stepped back in while Main was within hysteresis margin")
+assert(not comboController.active,"alt re-entered its 2x combo while Main stayed inside hysteresis")
+assert(comboController:PathCrossesRestrictedZone(root.Position,vector(-10,3,0)),"path crossing through Main's combo was not blocked")
+assert(not comboController:PathCrossesRestrictedZone(root.Position,root.Position+vector(10,0,5)),"safe same-side farm path was blocked")
+local crossAborted=false
+local crossTarget={Name=true,Position=vector(-10,3,0),Parent=workspace}
+local crossCo=coroutine.create(function()crossAborted=collectObject(crossTarget,nil,5,false,true,false)end)
+assert(coroutine.resume(crossCo) and crossAborted,"non-combo collectObject cut straight across Main-occupied combo circle")
 
--- Once Main leaves (> 16 studs), alt automatically resumes catching its own 2x drop!
-mainRoot.Position=vector(15+17,3,0)
-comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob,"alt did not resume own combo after Main left")
+-- Next drop (3x) lands elsewhere with Main NOT inside -> alt automatically continues catching its own combo!
+now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(15,3,0)})
+fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=3,Pos2=vector(-10,3,0),Duration=1.8,ID="own-chain",Points=100})
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-(-10))<0.1,"alt did not continue catching own 3x drop when Main stayed outside")
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-10,3,0)})
 now+=0.3
 comboController:Tick()
 assert(not comboController.active,"kicked record remained active")
