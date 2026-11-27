@@ -171,7 +171,7 @@ cfg.prioritization={enabled=false}
 state.activityStatus=1
 local buffs={}
 local touchedMarks={}
-local tracked={precise={},precise2={},precisegroup={},precisemark={}}
+local tracked={precise={},precise2={},precisegroup={},precisemark={},tokens={}}
 local comboController={active=false,blocked=false,TravelBlocked=function(self)return self.blocked end}
 local showerController={active=false}
 local gatheringPriorities={}
@@ -253,15 +253,47 @@ function gatheringPriorities:PrecisionMode()
 		self.precisionRefreshing = false
 		return "build", marks, stacks, bar
 	end
-	local refreshAt = marks < 3 and 0.35 or 0.65
+	local refreshAt = marks < 3 and 0.55 or 0.70
 	if self.precisionRefreshing then
-		if bar >= 0.9 then
+		if bar >= 0.90 then
 			self.precisionRefreshing = false
 		end
 	elseif bar <= refreshAt then
 		self.precisionRefreshing = true
 	end
 	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
+end
+
+function gatheringPriorities:FindTargetPracticeToken(opts)
+	if not (tracked and tracked.tokens) then return nil end
+	local rootPos = getRootPart().Position
+	local best, bestSq = nil, math.huge
+	for key, value in pairs(tracked.tokens) do
+		local token = type(key) == "number" and value or key
+		if type(token) ~= "table" and typeof(token) ~= "Instance" then continue end
+		local virtual = type(token) == "table"
+		if not virtual and not token.Parent then continue end
+		if touchedMarks and touchedMarks[token] then continue end
+		local icon = virtual and token.Icon or (token:FindFirstChild("FrontDecal") and token.FrontDecal.Texture)
+		if not icon or not string.find(tostring(icon), "8173559749", 1, true) then continue end
+		local pos = token.Position
+		if not pos then continue end
+		if opts.area and fieldPositionPolicy and fieldPositionPolicy.Allowed and not fieldPositionPolicy:Allowed(pos, opts) then continue end
+		local field = getFieldAt and getFieldAt(pos)
+		if not (opts.ignorefield and field or not opts.ignorefield and field == currentField) then continue end
+		if opts.range and opts.origin then
+			local off = pos - opts.origin
+			if off.X * off.X + off.Z * off.Z >= opts.range * opts.range then continue end
+		end
+		if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
+		if opts.avoid and isPathClear and isPathClear(pos, opts.avoid) then continue end
+		local dx, dz = pos.X - rootPos.X, pos.Z - rootPos.Z
+		local sq = dx * dx + dz * dz
+		if sq < bestSq then
+			best, bestSq = token, sq
+		end
+	end
+	return best
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -271,6 +303,7 @@ function gatheringPriorities:PrecisionOptions(opts)
 end
 
 function gatheringPriorities:PrecisionUpkeep(opts)
+	self.upkeepToken = nil
 	local farm=cfg.autofarm
 	if farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1
 		or opts.loot or opts.mondotokens then return end
@@ -287,7 +320,15 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 			copy.range = self.bloomRange
 		end
 	end
-	return self:Precise(copy,true)
+	local kind, target = self:Precise(copy, true)
+	if kind then return kind, target end
+	if (mode ~= "mark" or marks < 3) and not opts.rbc then
+		local tpToken = self:FindTargetPracticeToken(copy)
+		if tpToken then
+			self.upkeepToken = tpToken
+			return "Token", tpToken
+		end
+	end
 end
 
 function gatheringPriorities:Precise(opts,upkeep)
@@ -310,7 +351,16 @@ function gatheringPriorities:Precise(opts,upkeep)
 						end
 					end
 
-					if not state.precise then
+					local nowClock = os.clock()
+					for id, entry in pairs(tracked.precise2) do
+						if type(entry) ~= "table" or (type(entry.ExpiresAt) == "number" and nowClock > entry.ExpiresAt) then
+							tracked.precise2[id] = nil
+							tracked.precisegroup[id] = nil
+						end
+					end
+					local useTracked = state.precise or next(tracked.precise2) ~= nil
+
+					if not useTracked then
 						for k in pairs(tracked.precise) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							preciseCount += 1
@@ -342,6 +392,13 @@ function gatheringPriorities:Precise(opts,upkeep)
 							end
 						end
 					else
+						local groupTouched = {}
+						for k, pm in pairs(tracked.precise2) do
+							local gid = pm.Group or tracked.precisegroup[k]
+							if gid ~= nil and pm.Touched then
+								groupTouched[gid] = (groupTouched[gid] or 0) + 1
+							end
+						end
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							preciseCount += 1
@@ -351,7 +408,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 								precise2Kind = standInPrecise and "Precise2Convert" or preciseMark.Mark and preciseMarkActive and not scorchingStarAura and "Precise2Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise2"
 
 								if precise2Kind ~= "Precise2Convert" then
-									ownGroup = tracked.precisegroup[k]
+									ownGroup = preciseMark.Group or tracked.precisegroup[k]
 
 									for k2, groupValue in pairs(tracked.precisegroup) do
 										if ownGroup ~= groupValue then
@@ -388,7 +445,12 @@ function gatheringPriorities:Precise(opts,upkeep)
 									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
 										precise2Distance = distanceTo(preciseMark.Position, true)
 
-										local rank=upkeep and not preciseMarkActive and preciseMark.Mark and 1 or 0
+										local gid = preciseMark.Group or tracked.precisegroup[k]
+										local inProgress = gid ~= nil and (groupTouched[gid] or 0) > 0
+										local rank = 0
+										if upkeep and not preciseMarkActive then
+											rank = inProgress and -1 or (preciseMark.Mark and 1 or 0)
+										end
 										if not bestPrecise or rank<(bestPrecise.rank or 0) or (rank==(bestPrecise.rank or 0) and precise2Distance < bestPrecise.d) then
 											bestPrecise = { name = precise2Kind, d = precise2Distance, v = preciseMark,rank=rank }
 										end
@@ -420,6 +482,9 @@ function gatheringPriorities:ShouldPreempt()
 	if self.activeCategory == "Combo Coconuts" then return false end
 	if self.activeCategory ~= "Combo Coconuts" and self:Candidate("Combo Coconuts", self.activeOptions or {}, getRootPart().Position) then return true end
 	if self.precisionActive and cfg.autofarm.precisionupkeep~=false then return false end
+	if self.upkeepToken and self.activeTarget == self.upkeepToken and cfg.autofarm.precisionupkeep~=false then
+		return self:Precise(self:PrecisionOptions(self.activeOptions or {}), true) ~= nil
+	end
 	if not self.precisionActive and self.activeCategory~="Precise Targets" and self:PrecisionUpkeep(self.activeOptions or {}) then return true end
     if bearCombat.active then return false end
     local now = os.clock()
@@ -455,22 +520,49 @@ assert(kind=="Precise" and target==normal,"refresh with 3 marks at 0.64 did not 
 assert(not gatheringPriorities:PrecisionUpkeep({avoid={wall=true}}),"upkeep ignored a real path hazard")
 assert(not gatheringPriorities:PrecisionUpkeep({range=3,origin=root.Position}),"upkeep exceeded gathering range")
 -- New 3-mark upkeep checks:
-tracked.precisemark={} -- < 3 marks -> prioritize purple down to >0.35
+tracked.precisemark={} -- < 3 marks -> prioritize purple down to >0.55
 gatheringPriorities.precisionRefreshing=false
-buff("x10",.5)
+buff("x10",.60)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
-assert(kind=="Precise Purple" and target==purple,"marks<3 at bar 0.5 did not pursue purple mark")
-tracked.precisemark={{},{},{}} -- >= 3 marks -> refresh below 0.65, with hysteresis until 0.9
+assert(kind=="Precise Purple" and target==purple,"marks<3 at bar 0.60 did not pursue purple mark")
+buff("x10",.50)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Precise" and target==normal,"marks<3 at bar 0.50 did not refresh precision")
+tracked.precisemark={{},{},{}} -- >= 3 marks -> refresh below 0.70, with hysteresis until 0.90
 gatheringPriorities.precisionRefreshing=false
-buff("x10",.5)
+buff("x10",.65)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
-assert(kind=="Precise" and target==normal,"marks>=3 at bar 0.5 did not refresh precision")
+assert(kind=="Precise" and target==normal,"marks>=3 at bar 0.65 did not refresh precision")
 buff("x10",.85)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
-assert(kind=="Precise" and target==normal,"hysteresis did not hold refresh until 0.9")
-buff("x10",.9)
+assert(kind=="Precise" and target==normal,"hysteresis did not hold refresh until 0.90")
+buff("x10",.90)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
-assert(kind=="Precise Purple" and target==purple,"marks>=3 at bar 0.9 did not continue farming precise marks")
+assert(kind=="Precise Purple" and target==purple,"marks>=3 at bar 0.90 did not continue farming precise marks")
+-- Target Practice token priority when no crosshairs active and <10x / <3 marks / refreshing:
+local savedPrecise=tracked.precise; tracked.precise={}
+local tpTok={Name=true,Position=vector(12,3,0),Icon="rbxassetid://8173559749"}
+tracked.tokens={[tpTok]=true}
+tracked.precisemark={{},{},{}}
+buff("x9",1.0)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Token" and target==tpTok and gatheringPriorities.upkeepToken==tpTok,"did not fetch Target Practice token while <10x")
+gatheringPriorities.activeTarget=tpTok; gatheringPriorities.precisionActive=false; gatheringPriorities.activeCategory="Precise Targets"
+assert(not gatheringPriorities:ShouldPreempt(),"ordinary gathering preempted active Target Practice token")
+gatheringPriorities.upkeepToken=nil
+tracked.tokens={}
+tracked.precise=savedPrecise
+-- Automatic tracked.precise2 usage without hookfunction (`state.precise=false`) + in-progress FEID group priority:
+state.precise=false
+local g1_touched={ID=11,Position=vector(2,3,0),Mark=false,Group="g1",Touched=true}
+local g1_purple={ID=12,Position=vector(35,3,0),Mark=true,Group="g1",Touched=false}
+local g2_red={ID=21,Position=vector(8,3,0),Mark=false,Group="g2",Touched=false}
+tracked.precise2={[11]=g1_touched,[12]=g1_purple,[21]=g2_red}
+tracked.precisegroup={[11]="g1",[12]="g1",[21]="g2"}
+buff("x9",1.0)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(target==g1_purple,"in-progress FEID group did not prioritize its remaining purple target")
+tracked.precise2={}; tracked.precisegroup={}
 state.precise=true
 local normal2={ID=1,Position=vector(20,3,0),Mark=false}
 local purple2={ID=2,Position=vector(5,3,0),Mark=true}

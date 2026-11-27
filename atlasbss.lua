@@ -106,6 +106,7 @@ local cfg = {
 		precisionupkeep = true,
 		farmprecisemark = true,
 		trackprecise = false,
+		precisionmigrated = false,
 		precisemin = 30,
 		farmpuppyball = true,
 		farmshowers = true,
@@ -1826,7 +1827,7 @@ end
 
 local ScreenGui = Instance.new("ScreenGui")
 local mobileToggleButton, controls, currentField, position, currentFieldName, vector, availableFields, setField, getFieldAt, isPathClear
-local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchAlerts, watchFlames, watchFlowers
+local randomFieldPosition, updateAvailableFields, tracked, watchBalloons, watchClouds, watchDupedTokens, watchStations, watchPreciseFX, watchAlerts, watchFlames, watchFlowers
 local watchBlooms, watchNpcBees, watchRbcMobs, findMeteor
 
 -- RBC runtime: bounded hazard snapshots, with live-model fallback when internals change.
@@ -8251,6 +8252,44 @@ do
 			end
 		end))
 		for _, child in ipairs(folder:GetChildren()) do added(child) end
+		if type(watchPreciseFX) == "function" then watchPreciseFX(true) end
+	end
+
+	watchPreciseFX = function(enable)
+		if not enable then
+			if cfg.autofarm.precisionupkeep ~= false or cfg.convert.standInPrecise or cfg.rbc.precise then return end
+			connections:Cancel("preciseFX")
+			return
+		end
+		if connections:Get("preciseFX") then return end
+		local fx = gameApi.Events and gameApi.Events:FindFirstChild("LocalFX")
+		if not (fx and fx:IsA("RemoteEvent")) then return end
+		connections:Add("preciseFX", fx.OnClientEvent:Connect(function(effectName, effectData)
+			if effectName ~= "LocalTargetPracticeBeam" or type(effectData) ~= "table" then return end
+			local action = effectData.Action
+			local id = effectData.ID
+			if action == "Make" and effectData.Player == localPlayer and id ~= nil and typeof(effectData.Pos) == "Vector3" then
+				tracked.precise2[id] = {
+					Name = true,
+					ID = id,
+					Position = effectData.Pos,
+					Mark = effectData.Mark == true,
+					Group = effectData.FEID,
+					Touched = false,
+					ExpiresAt = os.clock() + 5.0,
+				}
+				tracked.precisegroup[id] = effectData.FEID
+			elseif action == "Touch" and id ~= nil then
+				local entry = tracked.precise2[id]
+				if entry then entry.Touched = true end
+			elseif action == "TurnPurple" and id ~= nil then
+				local entry = tracked.precise2[id]
+				if entry then entry.Mark = true end
+			elseif (action == "Destroy" or action == "Remove" or action == "Shoot") and id ~= nil then
+				tracked.precise2[id] = nil
+				tracked.precisegroup[id] = nil
+			end
+		end))
 	end
 
 	watchAlerts = function(enable)
@@ -44146,6 +44185,10 @@ do
 			-- Keep the original landing markers for the disk-based trackers.
 			if effectName == "WarningDisk" or effectName == "FallingCoconut" or effectName == "MythicMeteor" then return true end
 			if effectName == "StarShowerGuide" or effectName == "FallingStar" or effectName == "BeesmasLightsFallingStar" then return true end
+			if effectName == "LocalTargetPracticeBeam" and effectData.Action == "TurnPurple" and effectData.ID ~= nil then
+				local entry = tracked.precise2[effectData.ID]
+				if entry then entry.Mark = true end
+			end
 			if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Make" or effectData.Player ~= localPlayer then
 				if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Touch" then
 					if not ((effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "TurnPurple") and (effectName ~= "PrecisionPopUp" or effectData.Player ~= localPlayer) or cfg.antilag.precise) then
@@ -44236,10 +44279,10 @@ do
 					end
 				end
 			else
-				tracked.precise2[effectData.ID] = { Name = true, ID = effectData.ID, Position = effectData.Pos, Mark = effectData.Mark }
+				tracked.precise2[effectData.ID] = { Name = true, ID = effectData.ID, Position = effectData.Pos, Mark = effectData.Mark == true, Group = effectData.FEID, Touched = false }
 				tracked.precisegroup[effectData.ID] = effectData.FEID
 
-				tracked.precise2[effectData.ID].ExpiresAt = os.clock() + 2.5
+				tracked.precise2[effectData.ID].ExpiresAt = os.clock() + 5.0
 
 				if not cfg.antilag.precise then
 					return true
@@ -47946,6 +47989,7 @@ end
 				["2652364563"] = true,
 				["2652424740"] = true,
 				["6077288982"] = true,
+				["8173559749"] = true,
 			},
 			duped = { ["2000457501"] = true, ["1104415222"] = true, ["6077288982"] = true },
 			sprout = {
@@ -48260,6 +48304,9 @@ function gatheringPriorities:ShouldPreempt()
 	if showerController.active then return true end
 	if self.precisionActive and active and active.rbc and self:PrecisionReady() and rbcSafety:BuffTarget(active) then return true end
 	if self.precisionActive and cfg.autofarm.precisionupkeep~=false then return false end
+	if self.upkeepToken and self.activeTarget == self.upkeepToken and cfg.autofarm.precisionupkeep~=false then
+		return self:Precise(self:PrecisionOptions(self.activeOptions or {}), true) ~= nil
+	end
 	if not self.precisionActive and self.activeCategory~="Precise Targets" and self:PrecisionUpkeep(self.activeOptions or {}) then return true end
     if bearCombat.active then return false end
     local now = os.clock()
@@ -48388,15 +48435,47 @@ function gatheringPriorities:PrecisionMode()
 		self.precisionRefreshing = false
 		return "build", marks, stacks, bar
 	end
-	local refreshAt = marks < 3 and 0.35 or 0.65
+	local refreshAt = marks < 3 and 0.55 or 0.70
 	if self.precisionRefreshing then
-		if bar >= 0.9 then
+		if bar >= 0.90 then
 			self.precisionRefreshing = false
 		end
 	elseif bar <= refreshAt then
 		self.precisionRefreshing = true
 	end
 	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
+end
+
+function gatheringPriorities:FindTargetPracticeToken(opts)
+	if not (tracked and tracked.tokens) then return nil end
+	local rootPos = getRootPart().Position
+	local best, bestSq = nil, math.huge
+	for key, value in pairs(tracked.tokens) do
+		local token = type(key) == "number" and value or key
+		if type(token) ~= "table" and typeof(token) ~= "Instance" then continue end
+		local virtual = type(token) == "table"
+		if not virtual and not token.Parent then continue end
+		if touchedMarks and touchedMarks[token] then continue end
+		local icon = virtual and token.Icon or (token:FindFirstChild("FrontDecal") and token.FrontDecal.Texture)
+		if not icon or not string.find(tostring(icon), "8173559749", 1, true) then continue end
+		local pos = token.Position
+		if not pos then continue end
+		if opts.area and fieldPositionPolicy and fieldPositionPolicy.Allowed and not fieldPositionPolicy:Allowed(pos, opts) then continue end
+		local field = getFieldAt and getFieldAt(pos)
+		if not (opts.ignorefield and field or not opts.ignorefield and field == currentField) then continue end
+		if opts.range and opts.origin then
+			local off = pos - opts.origin
+			if off.X * off.X + off.Z * off.Z >= opts.range * opts.range then continue end
+		end
+		if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
+		if opts.avoid and isPathClear and isPathClear(pos, opts.avoid) then continue end
+		local dx, dz = pos.X - rootPos.X, pos.Z - rootPos.Z
+		local sq = dx * dx + dz * dz
+		if sq < bestSq then
+			best, bestSq = token, sq
+		end
+	end
+	return best
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -48406,6 +48485,7 @@ function gatheringPriorities:PrecisionOptions(opts)
 end
 
 function gatheringPriorities:PrecisionUpkeep(opts)
+	self.upkeepToken = nil
 	local farm=cfg.autofarm
 	local rbcUpkeep=opts.rbc and cfg.rbc.precise
 	if (not rbcUpkeep and (farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1))
@@ -48428,7 +48508,15 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 			copy.range = self.bloomRange
 		end
 	end
-	return self:Precise(copy,true)
+	local kind, target = self:Precise(copy, true)
+	if kind then return kind, target end
+	if (mode ~= "mark" or marks < 3) and not opts.rbc then
+		local tpToken = self:FindTargetPracticeToken(copy)
+		if tpToken then
+			self.upkeepToken = tpToken
+			return "Token", tpToken
+		end
+	end
 end
 
 function gatheringPriorities:Precise(opts,upkeep)
@@ -48451,7 +48539,16 @@ function gatheringPriorities:Precise(opts,upkeep)
 						end
 					end
 
-					if not state.precise then
+					local nowClock = os.clock()
+					for id, entry in pairs(tracked.precise2) do
+						if type(entry) ~= "table" or (type(entry.ExpiresAt) == "number" and nowClock > entry.ExpiresAt) then
+							tracked.precise2[id] = nil
+							tracked.precisegroup[id] = nil
+						end
+					end
+					local useTracked = state.precise or next(tracked.precise2) ~= nil
+
+					if not useTracked then
 						for k in pairs(tracked.precise) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position) then continue end
@@ -48484,6 +48581,13 @@ function gatheringPriorities:Precise(opts,upkeep)
 							end
 						end
 					else
+						local groupTouched = {}
+						for k, pm in pairs(tracked.precise2) do
+							local gid = pm.Group or tracked.precisegroup[k]
+							if gid ~= nil and pm.Touched then
+								groupTouched[gid] = (groupTouched[gid] or 0) + 1
+							end
+						end
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(preciseMark.Position) then continue end
@@ -48494,7 +48598,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 								precise2Kind = standInPrecise and "Precise2Convert" or preciseMark.Mark and preciseMarkActive and not scorchingStarAura and "Precise2Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise2"
 
 								if precise2Kind ~= "Precise2Convert" then
-									ownGroup = tracked.precisegroup[k]
+									ownGroup = preciseMark.Group or tracked.precisegroup[k]
 
 									for k2, groupValue in pairs(tracked.precisegroup) do
 										if ownGroup ~= groupValue then
@@ -48531,7 +48635,12 @@ function gatheringPriorities:Precise(opts,upkeep)
 									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and not opts.rbc and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
 										precise2Distance = distanceTo(preciseMark.Position, true)
 
-										local rank=upkeep and not preciseMarkActive and preciseMark.Mark and 1 or 0
+										local gid = preciseMark.Group or tracked.precisegroup[k]
+										local inProgress = gid ~= nil and (groupTouched[gid] or 0) > 0
+										local rank = 0
+										if upkeep and not preciseMarkActive then
+											rank = inProgress and -1 or (preciseMark.Mark and 1 or 0)
+										end
 										if not bestPrecise or rank<(bestPrecise.rank or 0) or (rank==(bestPrecise.rank or 0) and precise2Distance < bestPrecise.d) then
 											bestPrecise = { name = precise2Kind, d = precise2Distance, v = preciseMark,rank=rank }
 										end
@@ -54487,15 +54596,22 @@ end
 				return true
 			end
 
-			for _, waypoint in ipairs(path) do
+			for i, waypoint in ipairs(path) do
 				if not (not state.break1 and getHumanoid().Health ~= 0) then
 					break
 				end
+				local arriveDist = (i == #path) and 2.5 or 5
+				local nextMove = 0
 				gatheringPriorities.activeWaypoint=waypoint.Position
-				smoothMovement:MoveTo(waypoint.Position)
+				if i < #path then smoothMovement:MoveTo(waypoint.Position) end
 
-				while distanceTo(waypoint.Position, true) > 6 do
+				while distanceTo(waypoint.Position, true) > arriveDist do
 					if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
+					if state.stop or comboController.active or showerController.active or comboController:BlocksMove(waypoint.Position) then return true end
+					if i == #path and os.clock() >= nextMove then
+						getHumanoid():MoveTo(waypoint.Position)
+						nextMove = os.clock() + 0.12
+					end
 					if not RunService.Heartbeat:Wait() then
 						break
 					end
@@ -54503,15 +54619,44 @@ end
 					if cfg.autofarm.precisionupkeep~=false and state.activityStatus==1 and not gatheringPriorities:PrecisionReady() then
 						touchedMarks[preciseMark]=os.clock()+0.25;return true
 					end
-					if not preciseMark.Parent or os.clock() - now > 4 then
+					if not preciseMark.Parent or preciseMark.BrickColor.Name == "Flint" then
 						touchedMarks[preciseMark] = os.clock() + 3
+						smoothMovement.goal = nil
+						return true
+					end
+					if os.clock() - now > 4 then
+						touchedMarks[preciseMark] = os.clock() + 3
+						smoothMovement.goal = nil
 
 						return true
 					end
 				end
 			end
 
+			local landDeadline = os.clock() + 1.2
+			local nextLandMove = 0
+			while preciseMark.Parent and preciseMark.BrickColor.Name ~= "Flint" and os.clock() < landDeadline do
+				if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then break end
+				if options.rbc and gatheringPriorities:ShouldPreempt() then break end
+				if cfg.autofarm.precisionupkeep ~= false and state.activityStatus == 1 and not gatheringPriorities:PrecisionReady() then
+					touchedMarks[preciseMark] = os.clock() + 0.25
+					smoothMovement.goal = nil
+					return true
+				end
+				local rootPos = getRootPart().Position
+				local targetPt = Vector3.new(preciseMark.Position.X, rootPos.Y, preciseMark.Position.Z)
+				if comboController:BlocksMove(targetPt) then break end
+				if os.clock() >= nextLandMove then
+					if distanceTo(targetPt, true) > 1.5 then
+						getHumanoid():MoveTo(targetPt)
+					end
+					nextLandMove = os.clock() + 0.12
+				end
+				if not RunService.Heartbeat:Wait() then break end
+			end
+
 			touchedMarks[preciseMark] = os.clock() + 3
+			smoothMovement.goal = nil
 
 			return true
 		end
@@ -54599,15 +54744,22 @@ end
 				return true
 			end
 
-			for _, waypoint in ipairs(path) do
+			for i, waypoint in ipairs(path) do
 				if not (not state.break1 and getHumanoid().Health ~= 0) then
 					break
 				end
+				local arriveDist = (i == #path) and 2.5 or 5
+				local nextMove = 0
 				gatheringPriorities.activeWaypoint=waypoint.Position
-				smoothMovement:MoveTo(waypoint.Position)
+				if i < #path then smoothMovement:MoveTo(waypoint.Position) end
 
-				while distanceTo(waypoint.Position, true) > 6 do
+				while distanceTo(waypoint.Position, true) > arriveDist do
 					if options.rbc and gatheringPriorities:ShouldPreempt() then return true end
+					if state.stop or comboController.active or showerController.active or comboController:BlocksMove(waypoint.Position) then return true end
+					if i == #path and os.clock() >= nextMove then
+						getHumanoid():MoveTo(waypoint.Position)
+						nextMove = os.clock() + 0.12
+					end
 					if not RunService.Heartbeat:Wait() then
 						break
 					end
@@ -54615,15 +54767,44 @@ end
 					if cfg.autofarm.precisionupkeep~=false and state.activityStatus==1 and not gatheringPriorities:PrecisionReady() then
 						touchedMarks[mark]=os.clock()+0.25;return true
 					end
-					if not tracked.precise2[mark.ID] or os.clock() - now > 4 then
+					if tracked.precise2[mark.ID] ~= mark or mark.Touched then
 						touchedMarks[mark] = os.clock() + 3
+						smoothMovement.goal = nil
+						return true
+					end
+					if os.clock() - now > 4 then
+						touchedMarks[mark] = os.clock() + 3
+						smoothMovement.goal = nil
 
 						return true
 					end
 				end
 			end
 
+			local landDeadline = os.clock() + 1.2
+			local nextLandMove = 0
+			while tracked.precise2[mark.ID] == mark and not mark.Touched and os.clock() < landDeadline do
+				if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then break end
+				if options.rbc and gatheringPriorities:ShouldPreempt() then break end
+				if cfg.autofarm.precisionupkeep ~= false and state.activityStatus == 1 and not gatheringPriorities:PrecisionReady() then
+					touchedMarks[mark] = os.clock() + 0.25
+					smoothMovement.goal = nil
+					return true
+				end
+				local rootPos = getRootPart().Position
+				local targetPt = Vector3.new(mark.Position.X, rootPos.Y, mark.Position.Z)
+				if comboController:BlocksMove(targetPt) then break end
+				if os.clock() >= nextLandMove then
+					if distanceTo(targetPt, true) > 1.5 then
+						getHumanoid():MoveTo(targetPt)
+					end
+					nextLandMove = os.clock() + 0.12
+				end
+				if not RunService.Heartbeat:Wait() then break end
+			end
+
 			touchedMarks[mark] = os.clock() + 3
+			smoothMovement.goal = nil
 
 			return true
 		end
@@ -54781,6 +54962,116 @@ end
 			return true
 		end
 
+		local function collectPreciseSet(firstTarget, options, isTracked)
+			options = options or {}
+			local sweepDeadline = os.clock() + 5.5
+			local activeGroup = isTracked and (firstTarget.Group or tracked.precisegroup[firstTarget.ID]) or nil
+			local function isDone(target)
+				if isTracked then
+					return tracked.precise2[target.ID] ~= target or target.Touched == true
+						or (type(target.ExpiresAt) == "number" and os.clock() > target.ExpiresAt)
+				end
+				return not target.Parent or target.BrickColor.Name == "Flint"
+			end
+			local function pickNext(groupId)
+				if not options.rbc and groupId == nil and gatheringPriorities:PrecisionMode() == "mark" then
+					return nil
+				end
+				local mode = gatheringPriorities:PrecisionMode()
+				local best, bestRank, bestDist = nil, math.huge, math.huge
+				if isTracked then
+					local hasSameGroup = false
+					if groupId ~= nil then
+						for id, entry in pairs(tracked.precise2) do
+							local gid = entry.Group or tracked.precisegroup[id]
+							if gid == groupId and not isDone(entry) and not touchedMarks[entry] then
+								hasSameGroup = true
+								break
+							end
+						end
+					end
+					if not hasSameGroup and not options.rbc and mode == "mark" then
+						return nil
+					end
+					for id, entry in pairs(tracked.precise2) do
+						if not isDone(entry) and not touchedMarks[entry] then
+							if options.area and not fieldPositionPolicy:TrackedAllowed(id, entry, options) then continue end
+							local pos = entry.Position
+							if not pos then continue end
+							if not (options.ignorefield and getFieldAt(pos) or not options.ignorefield and getFieldAt(pos) == currentField) then continue end
+							if options.range and options.origin and (options.origin - pos).Magnitude >= options.range then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
+							if options.avoid and isPathClear(pos, options.avoid) then continue end
+							local gid = entry.Group or tracked.precisegroup[id]
+							local rank = (groupId ~= nil and gid == groupId) and 0 or (entry.Mark and 2 or 1)
+							local dist = distanceTo(pos, true)
+							if rank < bestRank or (rank == bestRank and dist < bestDist) then
+								best, bestRank, bestDist = entry, rank, dist
+							end
+						end
+					end
+				else
+					if not options.rbc and mode == "mark" then
+						return nil
+					end
+					for entry in pairs(tracked.precise) do
+						if not isDone(entry) and not touchedMarks[entry] then
+							if options.area and not fieldPositionPolicy:TrackedAllowed(entry, nil, options) then continue end
+							local pos = entry.Position
+							if not pos then continue end
+							if not (options.ignorefield and getFieldAt(pos) or not options.ignorefield and getFieldAt(pos) == currentField) then continue end
+							if options.range and options.origin and (options.origin - pos).Magnitude >= options.range then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
+							if options.avoid and isPathClear(pos, options.avoid) then continue end
+							local rank = (entry.BrickColor.Name == "Alder") and 1 or 0
+							local dist = distanceTo(pos, true)
+							if rank < bestRank or (rank == bestRank and dist < bestDist) then
+								best, bestRank, bestDist = entry, rank, dist
+							end
+						end
+					end
+				end
+				return best
+			end
+
+			local current = firstTarget
+			local steps = 0
+			while current and steps < 6 and os.clock() < sweepDeadline do
+				steps += 1
+				gatheringPriorities.activeTarget = current
+				local currentGroup = isTracked and (current.Group or tracked.precisegroup[current.ID]) or nil
+				if currentGroup ~= nil then activeGroup = currentGroup end
+				local targetDeadline = os.clock() + 2.5
+				local nextMove = 0
+				while os.clock() < targetDeadline and os.clock() < sweepDeadline do
+					if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then
+						smoothMovement.goal = nil
+						return true
+					end
+					if isDone(current) then break end
+					local root = getRootPart().Position
+					local point = Vector3.new(current.Position.X, root.Y, current.Position.Z)
+					if comboController:BlocksMove(point) or (options.rbc and isPathClear(point, rbcSafety:Hazards(currentField), true, true)) then
+						touchedMarks[current] = os.clock() + 0.5
+						break
+					end
+					if os.clock() >= nextMove then
+						getHumanoid():MoveTo(point)
+						nextMove = os.clock() + 0.10
+					end
+					if not RunService.Heartbeat:Wait() then break end
+				end
+				if not isDone(current) then
+					touchedMarks[current] = os.clock() + 0.5
+				else
+					touchedMarks[current] = os.clock() + 3
+				end
+				current = pickNext(activeGroup)
+			end
+			smoothMovement.goal = nil
+			return true
+		end
+
 		local function collectTargetImpl(options)
 			options.area=fieldPositionPolicy:StrictArea() or options.area
 			local targetKind, targetObject = pickTarget(options)
@@ -54828,7 +55119,7 @@ end
 
 			if targetKind == "Precise" then
 				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
-				return collectObject(targetObject, "precise", 6)
+				return collectPreciseSet(targetObject, options, false)
 			end
 
 			if targetKind == "Precise2Convert" then
@@ -54841,7 +55132,7 @@ end
 
 			if targetKind == "Precise2" or targetKind == "Precise2All" then
 				if (options.rbc or options.rbcprecision) and cfg.rbc.precise then return collectRbcPrecision(targetObject,options) end
-				return collectObject(targetObject, nil, 6, nil, nil, nil, nil, true)
+				return collectPreciseSet(targetObject, options, true)
 			end
 
 			if targetKind == "Puppy Ball" then
@@ -54896,6 +55187,7 @@ end
 			bearCombat.active = false
 			gatheringPriorities.activeCategory = nil
 			gatheringPriorities.precisionActive = false
+			gatheringPriorities.upkeepToken = nil
 			gatheringPriorities.bloomFocused = false
 			gatheringPriorities.activeOptions = nil
 			gatheringPriorities.activeTarget = nil
@@ -68885,50 +69177,23 @@ do
 				farmFolder.AddSwitch("Farm Meteor Showers", function()meteorMovement:Release()end, "autofarm", "farmmeteorshowers")
 				farmFolder.AddSwitch("Dynamic Meteor Speed", function()meteorMovement:Release()end, "autofarm", "dynamicmeteors")
 
-				farmFolder.AddSwitch("Farm Precise", function(n)
-					watchStations(n)
-				end, "autofarm", "farmprecise")
+				if cfg.autofarm.precisionmigrated ~= true then
+					local enabled = (cfg.autofarm.precisionupkeep ~= false) or (cfg.autofarm.farmprecise == true) or (cfg.autofarm.farmprecisemark == true)
+					cfg.autofarm.precisionupkeep = enabled
+					cfg.autofarm.farmprecise = enabled
+					cfg.autofarm.farmprecisemark = enabled
+					cfg.autofarm.trackprecise = false
+					cfg.autofarm.precisionmigrated = true
+					saveConfig()
+				end
 
-				farmFolder.AddSwitch("Farm Precise Mark", function(n)
-					watchStations(n)
-				end, "autofarm", "farmprecisemark")
-
-				farmFolder.AddSwitch("Maintain Precision / Spam Marks", function(n)
-					watchStations(n)
-				end, "autofarm", "precisionupkeep", {Tooltip="Keeps 10x Precision and 3 Precise Marks up in the field, then continues farming purple marks whenever Precision is healthy."})
-				farmFolder.AddSwitch("Track Precise", function(n)
-					if n then
-						local n, q = pcall(function()
-							local P = require(ReplicatedStorage.LocalFX).ClientRun
-
-							if not isfunctionhooked(P) then
-								local u
-
-								u = hookfunction(P, newcclosure(function(...)
-									local O = { ... }
-									local o, Z = O[1], O[2]
-									if not o or not Z or not tracked or tokenFilter:LocalFX(o, Z) then
-										return u(...)
-									end
-								end))
-
-								tokenFilter.list[P] = true
-								state.precise = true
-							end
-						end)
-
-						if not n then
-							ui.Notify("Track Precise", "Failed to hook function:\n" .. tostring(q))
-						end
-					end
-				end, "autofarm", "trackprecise", {
-					Hook = true,
-					Tooltip = [[This will detect which targets are from
-which bees and get all 3 targets if
-2 were hit by mistake while getting mark]],
-				})
-
-				farmFolder.AddSlider("Minimum Time Left To Farm Precise (secs)", nil, 0, 60, "autofarm", "precisemin", { Left = true })
+				farmFolder.AddSwitch("Auto Precision (10x + 3 Marks)", function(enabled)
+					cfg.autofarm.farmprecise = enabled
+					cfg.autofarm.farmprecisemark = enabled
+					cfg.autofarm.trackprecise = false
+					watchStations(enabled)
+					watchPreciseFX(enabled)
+				end, "autofarm", "precisionupkeep", { Tooltip = "Automatically tracks Target Practice groups, collects Target Practice tokens, chains all 3 crosshairs to build & maintain 10x Precision, keeps 3 Precise Marks up, and continues farming purple marks whenever Precision is healthy." })
 
 				farmFolder.AddSwitch("Farm Puppy Ball", function(n)
 					if n and not connections:Get("puppyball") then

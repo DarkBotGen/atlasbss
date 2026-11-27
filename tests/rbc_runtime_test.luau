@@ -615,15 +615,47 @@ function gatheringPriorities:PrecisionMode()
 		self.precisionRefreshing = false
 		return "build", marks, stacks, bar
 	end
-	local refreshAt = marks < 3 and 0.35 or 0.65
+	local refreshAt = marks < 3 and 0.55 or 0.70
 	if self.precisionRefreshing then
-		if bar >= 0.9 then
+		if bar >= 0.90 then
 			self.precisionRefreshing = false
 		end
 	elseif bar <= refreshAt then
 		self.precisionRefreshing = true
 	end
 	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
+end
+
+function gatheringPriorities:FindTargetPracticeToken(opts)
+	if not (tracked and tracked.tokens) then return nil end
+	local rootPos = getRootPart().Position
+	local best, bestSq = nil, math.huge
+	for key, value in pairs(tracked.tokens) do
+		local token = type(key) == "number" and value or key
+		if type(token) ~= "table" and typeof(token) ~= "Instance" then continue end
+		local virtual = type(token) == "table"
+		if not virtual and not token.Parent then continue end
+		if touchedMarks and touchedMarks[token] then continue end
+		local icon = virtual and token.Icon or (token:FindFirstChild("FrontDecal") and token.FrontDecal.Texture)
+		if not icon or not string.find(tostring(icon), "8173559749", 1, true) then continue end
+		local pos = token.Position
+		if not pos then continue end
+		if opts.area and fieldPositionPolicy and fieldPositionPolicy.Allowed and not fieldPositionPolicy:Allowed(pos, opts) then continue end
+		local field = getFieldAt and getFieldAt(pos)
+		if not (opts.ignorefield and field or not opts.ignorefield and field == currentField) then continue end
+		if opts.range and opts.origin then
+			local off = pos - opts.origin
+			if off.X * off.X + off.Z * off.Z >= opts.range * opts.range then continue end
+		end
+		if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
+		if opts.avoid and isPathClear and isPathClear(pos, opts.avoid) then continue end
+		local dx, dz = pos.X - rootPos.X, pos.Z - rootPos.Z
+		local sq = dx * dx + dz * dz
+		if sq < bestSq then
+			best, bestSq = token, sq
+		end
+	end
+	return best
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -633,6 +665,7 @@ function gatheringPriorities:PrecisionOptions(opts)
 end
 
 function gatheringPriorities:PrecisionUpkeep(opts)
+	self.upkeepToken = nil
 	local farm=cfg.autofarm
 	local rbcUpkeep=opts.rbc and cfg.rbc.precise
 	if (not rbcUpkeep and (farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1))
@@ -655,7 +688,15 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 			copy.range = self.bloomRange
 		end
 	end
-	return self:Precise(copy,true)
+	local kind, target = self:Precise(copy, true)
+	if kind then return kind, target end
+	if (mode ~= "mark" or marks < 3) and not opts.rbc then
+		local tpToken = self:FindTargetPracticeToken(copy)
+		if tpToken then
+			self.upkeepToken = tpToken
+			return "Token", tpToken
+		end
+	end
 end
 
 function gatheringPriorities:Precise(opts,upkeep)
@@ -678,7 +719,16 @@ function gatheringPriorities:Precise(opts,upkeep)
 						end
 					end
 
-					if not state.precise then
+					local nowClock = os.clock()
+					for id, entry in pairs(tracked.precise2) do
+						if type(entry) ~= "table" or (type(entry.ExpiresAt) == "number" and nowClock > entry.ExpiresAt) then
+							tracked.precise2[id] = nil
+							tracked.precisegroup[id] = nil
+						end
+					end
+					local useTracked = state.precise or next(tracked.precise2) ~= nil
+
+					if not useTracked then
 						for k in pairs(tracked.precise) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position) then continue end
@@ -711,6 +761,13 @@ function gatheringPriorities:Precise(opts,upkeep)
 							end
 						end
 					else
+						local groupTouched = {}
+						for k, pm in pairs(tracked.precise2) do
+							local gid = pm.Group or tracked.precisegroup[k]
+							if gid ~= nil and pm.Touched then
+								groupTouched[gid] = (groupTouched[gid] or 0) + 1
+							end
+						end
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(preciseMark.Position) then continue end
@@ -721,7 +778,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 								precise2Kind = standInPrecise and "Precise2Convert" or preciseMark.Mark and preciseMarkActive and not scorchingStarAura and "Precise2Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise2"
 
 								if precise2Kind ~= "Precise2Convert" then
-									ownGroup = tracked.precisegroup[k]
+									ownGroup = preciseMark.Group or tracked.precisegroup[k]
 
 									for k2, groupValue in pairs(tracked.precisegroup) do
 										if ownGroup ~= groupValue then
@@ -758,7 +815,12 @@ function gatheringPriorities:Precise(opts,upkeep)
 									if not ((not opts.ignorefield or getFieldAt(preciseMark.Position)) and not (not opts.ignorefield and getFieldAt(preciseMark.Position) == currentField) or (not (upkeep and not opts.rbc and precise2Kind=="Precise2Purple") and not (not opts.avoid or not isPathClear(preciseMark.Position, opts.avoid)))) then
 										precise2Distance = distanceTo(preciseMark.Position, true)
 
-										local rank=upkeep and not preciseMarkActive and preciseMark.Mark and 1 or 0
+										local gid = preciseMark.Group or tracked.precisegroup[k]
+										local inProgress = gid ~= nil and (groupTouched[gid] or 0) > 0
+										local rank = 0
+										if upkeep and not preciseMarkActive then
+											rank = inProgress and -1 or (preciseMark.Mark and 1 or 0)
+										end
 										if not bestPrecise or rank<(bestPrecise.rank or 0) or (rank==(bestPrecise.rank or 0) and precise2Distance < bestPrecise.d) then
 											bestPrecise = { name = precise2Kind, d = precise2Distance, v = preciseMark,rank=rank }
 										end
