@@ -78,11 +78,12 @@ function comboController:BuildMenu(tab)
 	self.mainLabel=folder.AddLabel(self.mainDebug or "Main: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
 	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
-	folder.AddLabel("Main: catches 0x + every (N+1)th drop (lets alts catch N drops in between).")
+	folder.AddLabel("Main: catches own (0x + every N+1) and intercepts alts' combos every N drops (e.g. 3x, 6x, 9x).")
 	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
 	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
 end
+
 
 comboController:BuildMenu(controls.farming)
 
