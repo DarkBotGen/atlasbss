@@ -57,7 +57,7 @@ end
 
 local cfg = {
 	prioritization = { enabled = true, order = {} },
-	coconutcombo = { enabled = false, catchall = false, main = "None", maxspeed = 180 },
+	coconutcombo = { enabled = false, catchall = false, main = "None", mainevery = 3, maxspeed = 180 },
 	vars = {
 		walkspeedenabled = false,
 		walkspeed = 45,
@@ -178,6 +178,8 @@ local cfg = {
 		polarbear = false,
 	},
 	antilag = {
+		ultra = false,
+		migrated = false,
 		aggressivevisuals = false,
 		visualeffects = false,
 		tokens = false,
@@ -705,6 +707,7 @@ function smoothMovement:Reset()
 end
 
 function smoothMovement:MoveTo(goal)
+	if self.comboController and self.comboController:BlocksMove(goal) then self.goal=nil; return false end
 	local humanoid, root = getHumanoid(), getRootPart()
 	local now = os.clock()
 	local old = self.goal
@@ -1620,10 +1623,7 @@ function visualOptimizer:Apply(object)
 	end
 end
 
-function visualOptimizer:Set(mode, enabled)
-	enabled=enabled==true
-	if (self.modes[mode]==true)==enabled then return end
-	self.modes[mode]=enabled
+function visualOptimizer:Refresh()
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
 	connections:Cancel("visualOptimizerLighting")
@@ -1657,6 +1657,25 @@ function visualOptimizer:Set(mode, enabled)
 	end)
 end
 
+function visualOptimizer:Set(mode, enabled)
+	enabled=enabled==true
+	if (self.modes[mode]==true)==enabled then return end
+	self.modes[mode]=enabled
+	self:Refresh()
+end
+
+function visualOptimizer:SetMany(modes)
+	local changed=false
+	for mode, enabled in pairs(modes) do
+		local flag=enabled==true
+		if (self.modes[mode]==true)~=flag then
+			self.modes[mode]=flag
+			changed=true
+		end
+	end
+	if changed then self:Refresh() end
+end
+
 function visualOptimizer:Shutdown()
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
@@ -1665,6 +1684,34 @@ function visualOptimizer:Shutdown()
 	connections:Cancel("visualOptimizerLightingRemoving")
 	self:Restore()
 	table.clear(self.modes)
+end
+
+local ultraAntiLag = {
+	modes = {"main", "aggressive", "effects", "textures", "decorations", "bees", "frogs", "flowers", "balloons", "players"},
+}
+
+function ultraAntiLag:Set(enabled)
+	enabled = enabled == true
+	local batch = {}
+	for _, mode in ipairs(self.modes) do batch[mode] = enabled end
+	if enabled then
+		pcall(function()
+			local gameSettings = UserSettings():GetService("UserGameSettings")
+			if self.savedQuality == nil then self.savedQuality = gameSettings.SavedQualityLevel end
+			gameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+		end)
+	elseif self.savedQuality ~= nil then
+		local prev = self.savedQuality
+		self.savedQuality = nil
+		pcall(function()
+			UserSettings():GetService("UserGameSettings").SavedQualityLevel = prev
+		end)
+	end
+	visualOptimizer:SetMany(batch)
+end
+
+function ultraAntiLag:Shutdown()
+	self:Set(false)
 end
 
 local crabPlatformSupport = {saved={}}
@@ -2153,7 +2200,7 @@ function fieldPositionPolicy:DriveIdle()
 	if not drive or state.stop or not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.activityStatus~=1 then return end
 	local goal=drive.makeGoal()
 	local h=getHumanoid()
-	if not goal or not drive.allowed(goal) then h:Move(Vector3.zero,false);return end
+	if not goal or not drive.allowed(goal) or (self.comboController and self.comboController:BlocksMove(goal)) then h:Move(Vector3.zero,false);return end
 	local root=getRootPart()
 	self:ApplyIdlePhysics(drive,h,root)
 	local delta=goal-root.Position
@@ -2772,8 +2819,9 @@ end
 smoothMovement.showerController = showerController
 
 -- Atlas+ Coconut Combo controller: catches own combo from drop 1 (0x) onward and auto-exits when Main enters any combo.
-local comboController = {records={}, byKey={}, chains={}, chainCount=0, disks={}, mainZones={}, serial=0, active=false, comboPriority=false, ownPriority=false, privatePriority=false, status="Disabled"}
+local comboController = {records={}, byKey={}, chains={}, chainCount=0, disks={}, mainZones={}, skipZones={}, serial=0, active=false, comboPriority=false, ownPriority=false, privatePriority=false, status="Disabled", mainDebug="Main: Disabled"}
 smoothMovement.comboController = comboController
+fieldPositionPolicy.comboController = comboController
 
 function comboController:FieldAt(position)
 	local field=getFieldAt(position)
@@ -2787,6 +2835,12 @@ end
 
 function comboController:Managed()
 	return cfg.coconutcombo and (cfg.coconutcombo.enabled==true or cfg.coconutcombo.catchall==true)
+end
+
+function comboController:MainChimeInterval()
+	local n=tonumber(cfg.coconutcombo and cfg.coconutcombo.mainevery)
+	if n==nil or n~=n then return 3 end
+	return math.clamp(math.floor(n),0,10)
 end
 
 function comboController:Owner(value)
@@ -2816,15 +2870,22 @@ function comboController:GetMainRoot()
 	local main=cfg.coconutcombo and cfg.coconutcombo.main
 	if type(main)~="string" or main=="" or main=="None" then return nil end
 	local mainLower=string.lower(main)
+	local matched
 	for _,p in ipairs(getService("Players"):GetPlayers()) do
-		if string.lower(p.Name)==mainLower then
-			local char=p.Character
-			local root=char and char:FindFirstChild("HumanoidRootPart")
-			local h=char and char:FindFirstChildOfClass("Humanoid")
-			if root and h and h.Health>0 then return root end
-			return nil
+		if string.lower(p.Name)==mainLower then matched=p;break end
+	end
+	if not matched then
+		for _,p in ipairs(getService("Players"):GetPlayers()) do
+			if type(p.DisplayName)=="string" and string.lower(p.DisplayName)==mainLower then matched=p;break end
 		end
 	end
+	if matched then
+		local char=matched.Character
+		local root=char and char:FindFirstChild("HumanoidRootPart")
+		local h=char and char:FindFirstChildOfClass("Humanoid")
+		if root and h and h.Health>0 then return root end
+	end
+	return nil
 end
 
 function comboController:Observe(effectName, data)
@@ -3003,36 +3064,146 @@ end
 
 function comboController:UpdateMainPresence(combos)
 	table.clear(self.mainZones)
-	if self:IsMainAccount() or self:IsCatchAll() then
+	if self:IsCatchAll() then
 		for _,r in ipairs(combos) do r.mainInside=false end
+		self.mainDebug="Catch All ON: Main rules ignored"
+		return
+	end
+	if self:IsMainAccount() then
+		for _,r in ipairs(combos) do r.mainInside=false end
+		self.mainDebug=string.format("Main: this account (chime-in every %d)",self:MainChimeInterval())
+		return
+	end
+	local main=cfg.coconutcombo and cfg.coconutcombo.main
+	if type(main)~="string" or main=="" or main=="None" then
+		for _,r in ipairs(combos) do r.mainInside=false end
+		self.mainDebug="Main: NOT SET (set Main Account!)"
 		return
 	end
 	local mainRoot=self:GetMainRoot()
+	if not mainRoot then
+		for _,r in ipairs(combos) do r.mainInside=false end
+		self.mainDebug="Main: "..main.." not in server/dead"
+		return
+	end
+	local vel=Vector3.zero
+	pcall(function()
+		local v=mainRoot.AssemblyLinearVelocity
+		if typeof(v)=="Vector3" then vel=v end
+	end)
+	local lead=Vector3.new(vel.X,0,vel.Z)*0.25
+	if lead.Magnitude>12 then lead=lead.Unit*12 end
+	local leadPos=mainRoot.Position+lead
+	local nearest,anyInside
 	for _,r in ipairs(combos) do
 		if r.private then
 			r.mainInside=false
-		elseif mainRoot and math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
-			local dx,dz=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
+		elseif math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
+			local dx1,dz1=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
+			local dx2,dz2=leadPos.X-r.position.X,leadPos.Z-r.position.Z
+			local dist=math.min(math.sqrt(dx1*dx1+dz1*dz1),math.sqrt(dx2*dx2+dz2*dz2))
+			if not nearest or dist<nearest then nearest=dist end
 			local rad=r.radius or 13
-			if dist<=rad+1.0 then
+			if dist<=rad+2.0 then
 				r.mainInside=true
-			elseif dist>rad+3.0 then
+			elseif dist>rad+4.0 then
 				r.mainInside=false
 			end
 		else
 			r.mainInside=false
 		end
 		if r.mainInside then
+			anyInside=true
 			self.mainZones[#self.mainZones+1]=r
+		end
+	end
+	if anyInside then
+		self.mainDebug="Main: "..main.." INSIDE combo"
+	elseif nearest then
+		self.mainDebug=string.format("Main: %s | nearest combo %d studs",main,math.floor(nearest+0.5))
+	else
+		self.mainDebug="Main: "..main.." (no active combo)"
+	end
+end
+
+function comboController:HelperNear(r)
+	local playersService=getService("Players")
+	if not playersService then return false end
+	local rField=type(r.field)=="string" and r.field or ""
+	for _,p in ipairs(playersService:GetPlayers()) do
+		if p~=localPlayer then
+			local char=p.Character
+			local pRoot=char and char:FindFirstChild("HumanoidRootPart")
+			local h=char and char:FindFirstChildOfClass("Humanoid")
+			if pRoot and h and h.Health>0 then
+				if rField~="" then
+					local pf=self:FieldAt(pRoot.Position)
+					if pf and pf.Name==rField then return true end
+				elseif math.abs(pRoot.Position.Y-r.position.Y)<=25 then
+					local dx,dz=pRoot.Position.X-r.position.X,pRoot.Position.Z-r.position.Z
+					if dx*dx+dz*dz<=120*120 then return true end
+				end
+			end
+		end
+	end
+	return false
+end
+
+function comboController:AnyOtherInside(r)
+	local playersService=getService("Players")
+	if not playersService then return false end
+	local limit=(r.radius or 13)+1.0
+	local limitSq=limit*limit
+	for _,p in ipairs(playersService:GetPlayers()) do
+		if p~=localPlayer then
+			local char=p.Character
+			local pRoot=char and char:FindFirstChild("HumanoidRootPart")
+			local h=char and char:FindFirstChildOfClass("Humanoid")
+			if pRoot and h and h.Health>0 and math.abs(pRoot.Position.Y-r.position.Y)<=14 then
+				local dx,dz=pRoot.Position.X-r.position.X,pRoot.Position.Z-r.position.Z
+				if dx*dx+dz*dz<=limitSq then return true end
+			end
+		end
+	end
+	return false
+end
+
+function comboController:MainShouldCatch(r,now)
+	local every=self:MainChimeInterval()
+	if every<=0 or r.private or r.stack==nil then return true end
+	if r.stack%(every+1)==0 then return true end
+	if not self:HelperNear(r) then return true end
+	if r.deadline-now<=0.35 and not self:AnyOtherInside(r) then return true end
+	return false
+end
+
+function comboController:UpdateSkipZones(combos,now)
+	table.clear(self.skipZones)
+	if not self:IsMainAccount() or self:IsCatchAll() then
+		for _,r in ipairs(combos) do r.skipped=false end
+		return
+	end
+	local localLower=string.lower(localPlayer.Name)
+	for _,r in ipairs(combos) do
+		if r.ownerLower==localLower and not r.private and r.deadline+0.12>now then
+			r.skipped=not self:MainShouldCatch(r,now)
+			if r.skipped then
+				self.skipZones[#self.skipZones+1]=r
+			end
+		else
+			r.skipped=false
 		end
 	end
 end
 
+function comboController:RestrictedZones()
+	return self:IsMainAccount() and self.skipZones or self.mainZones
+end
+
 function comboController:IsRestrictedZone(position)
-	if not self:Managed() or self:IsMainAccount() or self:IsCatchAll() or typeof(position)~="Vector3" then return false end
+	if not self:Managed() or self:IsCatchAll() or typeof(position)~="Vector3" then return false end
 	local now=os.clock()
-	for _,z in ipairs(self.mainZones) do
+	for _,z in ipairs(self:RestrictedZones()) do
 		if z.deadline+0.12>now and math.abs(position.Y-z.position.Y)<=14 then
 			local dx,dz=position.X-z.position.X,position.Z-z.position.Z
 			local limit=(z.radius or 13)+3.0
@@ -3043,11 +3214,11 @@ function comboController:IsRestrictedZone(position)
 end
 
 function comboController:PathCrossesRestrictedZone(fromPos, toPos)
-	if not self:Managed() or self:IsMainAccount() or self:IsCatchAll() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
+	if not self:Managed() or self:IsCatchAll() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
 	local now=os.clock()
 	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
 	local lenSq=vx*vx+vz*vz
-	for _,z in ipairs(self.mainZones) do
+	for _,z in ipairs(self:RestrictedZones()) do
 		if z.deadline+0.12>now and math.abs(toPos.Y-z.position.Y)<=14 then
 			local wx,wz=z.position.X-fromPos.X,z.position.Z-fromPos.Z
 			local t=lenSq>1e-6 and math.clamp((wx*vx+wz*vz)/lenSq,0,1) or 0
@@ -3057,6 +3228,14 @@ function comboController:PathCrossesRestrictedZone(fromPos, toPos)
 		end
 	end
 	return false
+end
+
+function comboController:BlocksMove(goal)
+	if self.active or not self:Managed() or typeof(goal)~="Vector3" then return false end
+	if self:IsRestrictedZone(goal) then return true end
+	local char=localPlayer and localPlayer.Character
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	return root and self:PathCrossesRestrictedZone(root.Position,goal) or false
 end
 
 function comboController:PointInField(position, field)
@@ -3093,7 +3272,7 @@ function comboController:ComputeExitPosition(root, record, zones)
 		return true
 	end
 	local bestAny,bestAnyDist
-	for _,exitRadius in ipairs({rad+5,rad+9}) do
+	for _,exitRadius in ipairs({rad+6,rad+10}) do
 		local bestInField,bestInFieldDist
 		for i=0,11 do
 			local angle=baseAngle+i*(math.pi/6)
@@ -3111,7 +3290,7 @@ function comboController:ComputeExitPosition(root, record, zones)
 		if bestInField then return bestInField end
 	end
 	if bestAny then return bestAny end
-	return center+Vector3.new(math.cos(baseAngle)*(rad+5),0,math.sin(baseAngle)*(rad+5))
+	return center+Vector3.new(math.cos(baseAngle)*(rad+6),0,math.sin(baseAngle)*(rad+6))
 end
 
 function comboController:OwnComboLanding(root, combos, now)
@@ -3178,12 +3357,13 @@ function comboController:AnyFieldComboLanding(root, combos, now)
 end
 
 function comboController:YieldLanding(root, now, ownCandidate)
-	if self:IsMainAccount() or self:IsCatchAll() then return nil end
+	if self:IsCatchAll() then return nil end
+	local zones=self:RestrictedZones()
 	local breached
-	for _,z in ipairs(self.mainZones) do
+	for _,z in ipairs(zones) do
 		if z.deadline+0.12>now and math.abs(root.Position.Y-z.position.Y)<=14 then
 			local dx,dz=root.Position.X-z.position.X,root.Position.Z-z.position.Z
-			if math.sqrt(dx*dx+dz*dz)<(z.radius or 13)+2.5 then
+			if math.sqrt(dx*dx+dz*dz)<(z.radius or 13)+3.0 then
 				if not breached or z.deadline<breached.deadline then breached=z end
 			end
 		end
@@ -3193,7 +3373,7 @@ function comboController:YieldLanding(root, now, ownCandidate)
 		if held and held.source==breached and not self:IsRestrictedZone(held.position) then
 			return held
 		end
-		local exitPos=self:ComputeExitPosition(root,breached,self.mainZones)
+		local exitPos=self:ComputeExitPosition(root,breached,zones)
 		return {
 			key="yield:"..breached.key,
 			owner=breached.owner,
@@ -3206,9 +3386,9 @@ function comboController:YieldLanding(root, now, ownCandidate)
 	end
 	if not ownCandidate then
 		local held=self.session and self.session.yieldJob
-		if held and held.source and held.source.deadline+0.12>now and held.source.mainInside then
+		if held and held.source and held.source.deadline+0.12>now and (held.source.mainInside or held.source.skipped) then
 			local dx,dz=root.Position.X-held.source.position.X,root.Position.Z-held.source.position.Z
-			local clearDist=(held.source.radius or 13)+4.0
+			local clearDist=(held.source.radius or 13)+5.0
 			if dx*dx+dz*dz<clearDist*clearDist then
 				return held
 			end
@@ -3294,6 +3474,7 @@ function comboController:Finish(reason)
 		session.root.AssemblyLinearVelocity=Vector3.zero
 	end)
 	if session.controls and session.restoreControls then pcall(function()session.controls:Enable()end) end
+	if smoothMovement then smoothMovement.goal=nil end
 	self.status=reason or "Waiting for combo"
 	showerController:ResumeOthers()
 end
@@ -3328,7 +3509,7 @@ function comboController:Drive(s)
 	s.lease.speed,s.lease.expires=s.speed,os.clock()+0.3
 	env[s.leaseKey]=s.lease
 	s.h.WalkSpeed=s.speed
-	if not self.atlasCatch or s.speed==0 then s.h:Move(s.direction,false) end
+	if not self.atlasCatch or s.speed==0 or s.yieldJob then s.h:Move(s.direction,false) end
 end
 
 function comboController:Tick()
@@ -3346,12 +3527,15 @@ function comboController:Tick()
 	end
 	if not self:Managed() then
 		table.clear(self.mainZones)
+		table.clear(self.skipZones)
+		self.mainDebug="Main: Disabled"
 		self.ownPriority,self.comboPriority,self.privatePriority=false,false,false
 		self:Finish("Disabled")
 		return
 	end
 	if self:TravelBlocked() then
 		table.clear(self.mainZones)
+		table.clear(self.skipZones)
 		self.ownPriority,self.comboPriority,self.privatePriority=false,false,false
 		self:Finish("Task travel protected; combo movement deferred")
 		return
@@ -3360,6 +3544,7 @@ function comboController:Tick()
 	local root=character and character:FindFirstChild("HumanoidRootPart")
 	if not root then
 		table.clear(self.mainZones)
+		table.clear(self.skipZones)
 		self.ownPriority,self.comboPriority,self.privatePriority=false,false,false
 		self:Finish("No character")
 		return
@@ -3367,6 +3552,7 @@ function comboController:Tick()
 	self:SyncDisks(now)
 	local combos=self:ActiveCombos(now)
 	self:UpdateMainPresence(combos)
+	self:UpdateSkipZones(combos,now)
 	local catchAll=self:IsCatchAll()
 	local catchJob=catchAll and self:AnyFieldComboLanding(root,combos,now) or (self:OwnComboLanding(root,combos,now) or self:MainComboLanding(root,combos,now))
 	local yieldJob=catchAll and nil or self:YieldLanding(root,now,catchJob)
@@ -3380,7 +3566,17 @@ function comboController:Tick()
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=activeRoot or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then
-		local reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for combo"
+		local reason
+		if #self.skipZones>0 then
+			local firstSkip
+			for _,z in ipairs(self.skipZones) do
+				if not firstSkip or z.deadline<firstSkip.deadline then firstSkip=z end
+			end
+			local sText=firstSkip and firstSkip.stack~=nil and tostring(firstSkip.stack) or "?"
+			reason=string.format("Letting alts catch own combo (%sx) | chime-in every %d",sText,self:MainChimeInterval())
+		else
+			reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for combo"
+		end
 		self:Finish(reason)
 		return
 	end
@@ -3402,11 +3598,15 @@ function comboController:Tick()
 	s.target=s.target or {Name=true}
 	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
-	if self.atlasCatch and not threads:Get("comboAtlasCatch") then
+	if self.atlasCatch and not job.yielding and not threads:Get("comboAtlasCatch") then
 		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
 	end
 	if job.yielding then
-		self.status=string.format("Exiting combo for %s | %.0f PMS",tostring(cfg.coconutcombo.main),s.speed)
+		if self:IsMainAccount() or (job.source and job.source.skipped) then
+			self.status=string.format("Leaving own combo for alts | %.0f PMS",s.speed)
+		else
+			self.status=string.format("Exiting combo for %s | %.0f PMS",tostring(cfg.coconutcombo.main),s.speed)
+		end
 	else
 		local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
 		local isOwn=job.ownerLower==string.lower(localPlayer.Name)
@@ -3418,6 +3618,8 @@ end
 function comboController:Configure()
 	self:Finish("Settings changed")
 	table.clear(self.mainZones)
+	table.clear(self.skipZones)
+	if not self:Managed() then self.mainDebug="Main: Disabled" end
 	if self:Managed() and self.installObserver then self:installObserver() end
 end
 
@@ -3443,6 +3645,7 @@ function comboController:Start()
 		if uiElapsed>=0.1 then
 			uiElapsed=0
 			if self.statusLabel then self.statusLabel.Text="Combo: "..self.status end
+			if self.mainLabel then self.mainLabel.Text=self.mainDebug end
 			if self.effectLabel then self.effectLabel.Text="Tracking: "..(self.effectStatus or "waiting for combo") end
 		end
 	end))
@@ -3464,7 +3667,8 @@ function comboController:Shutdown()
 	if self.disks then table.clear(self.disks) end
 	self.atlasTargets=nil
 	self.taskTravel=nil
-	table.clear(self.records);table.clear(self.byKey);table.clear(self.chains);table.clear(self.mainZones);self.chainCount=0
+	table.clear(self.records);table.clear(self.byKey);table.clear(self.chains);table.clear(self.mainZones);table.clear(self.skipZones);self.chainCount=0
+	self.mainDebug="Main: Disabled"
 end
 
 function comboController:BuildMenu(tab)
@@ -3508,9 +3712,12 @@ function comboController:BuildMenu(tab)
 		end))
 	end
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
+	folder.AddSlider("Main: Alt Catches Between Chime-Ins",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
+	self.mainLabel=folder.AddLabel(self.mainDebug or "Main: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
 	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
+	folder.AddLabel("Main: catches 0x + every (N+1)th drop (lets alts catch N drops in between).")
 	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
 	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
@@ -3578,6 +3785,7 @@ function bloomController:Select(opts)
 		if not stem or not stem.Parent or not tracked.blooms[stem.Parent] or (opts.area and not fieldPositionPolicy:Allowed(stem.Position,opts)) then return false end
 		local field = getFieldAt(stem.Position)
 		if not (opts.ignorefield and field or not opts.ignorefield and field == currentField) then return false end
+		if comboController and comboController:BlocksMove(stem.Position) then return false end
 		return not opts.avoid or isPathClear(stem.Position, opts.avoid)
 	end
 	if eligible(self.target) then
@@ -8008,7 +8216,7 @@ do
 
 	watchStations = function(enable)
 		if not enable then
-			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.rbc.precise then return end
+			if cfg.autofarm.farmprecise or cfg.autofarm.farmprecisemark or cfg.convert.standInPrecise or cfg.rbc.precise or cfg.autofarm.precisionupkeep~=false then return end
 			connections:Cancel("stations")
 			connections:Cancel("stations2")
 			connections:Cancel("stationPending")
@@ -8976,6 +9184,11 @@ local function walkTo(target, timeout, range)
 		error("return", 0)
 	end
 
+	local inCurrentField = currentField and getFieldAt(target) == currentField and getFieldAt(getRootPart().Position) == currentField
+	if inCurrentField and comboController and comboController:BlocksMove(target) then
+		return
+	end
+
 	if range ~= 0 then
 		if distanceTo(target, true) < (range or 5) then
 			return
@@ -8995,6 +9208,11 @@ local function walkTo(target, timeout, range)
 	end
 
 	while not finished do
+		if inCurrentField and comboController and comboController:BlocksMove(target) then
+			pcall(function() getHumanoid():Move(Vector3.zero, false) end)
+			connections:Cancel("movetofinished")
+			return
+		end
 		if not (not (os.clock() - now < (timeout or 5)) or not (getHumanoid().Health > 0)) then
 			if range == 0 then
 				RunService.Heartbeat:Wait()
@@ -42842,6 +43060,27 @@ do
 					topBoostField, remainingBoost = getBoostedFields()
 				end
 
+				if type(cfg.boosters.allowed) == "table" and cfg.boosters.allowed["Smooth Dice"] and remainingBoost > 0
+					and (not cfg.boosters.required or remainingBoost < cfg.boosters.wanted) then
+					local hasStrongerLoaded = loadedDice and inventory:Has({ ["Loaded Dice"] = 1 }, true, true)
+					local lastDiceUse = math.max(cache.Materials.smoothdice or 0, cache.Materials.usedice or 0, cache.Materials.loaded or 0)
+					local smoothActive = cache.Materials.smoothdice and os.time() - cache.Materials.smoothdice < 900
+					local fieldDiceActive = cache.Materials.dice1field and os.time() - cache.Materials.dice1field.time < 720
+					if not hasStrongerLoaded and os.time() - lastDiceUse > 2 and not smoothActive and not fieldDiceActive then
+						if inventory:Has({ ["Smooth Dice"] = 1 }, true, true) then
+							logger.log("Using item:", "Smooth Dice")
+							if inventory:Use("Smooth Dice") then
+								local now = os.time()
+								cache.Materials.usedice = now
+								cache.Materials.smoothdice = now
+								saveConfig(true)
+								task.wait(1)
+								topBoostField, remainingBoost = getBoostedFields()
+							end
+						end
+					end
+				end
+
 				if not (not loadedDice and not fieldDice and not glitter) then
 					local glitter2 = cache.Materials.glitter
 					local usedice = cache.Materials.usedice
@@ -43797,6 +44036,10 @@ do
 						else
 							chosenBooster = "Loaded Dice"
 						end
+					end
+
+					if chosenBooster == "Field Dice" and cache.Materials.smoothdice and os.time() - cache.Materials.smoothdice < 720 then
+						chosenBooster = nil
 					end
 
 					if chosenBooster == "Loaded Dice" or not (not chosenBooster or not inventory:Has({ Glitter = 1, ["Field Dice"] = 1 }, true, true)) then
@@ -47610,6 +47853,7 @@ function petalCollector:Eligible(petal, opts)
 	end
 	if self.passed[petal] or touchedMarks[petal] or (self.retryAt[petal] or 0) > os.clock() then return false end
 	local goal = petal.Position
+	if comboController and comboController:BlocksMove(goal) then return false end
 	if opts.area and not fieldPositionPolicy:Allowed(goal,opts) then return false end
 	if petal.Name == true then
 		if not opts.ignorefield and petal.ZoneName ~= currentFieldName then return false end
@@ -47654,6 +47898,7 @@ function petalCollector:Collect(first, opts)
 			while tracked.petals[petal] and (petal.Name == true or petal.Parent) do
 				if state.stop or humanoid.Health <= 0 or localPlayer.Character ~= character or not self:Enabled(opts) then return false end
 				local now, goal, p = os.clock(), petal.Position, root.Position
+				if comboController and comboController:BlocksMove(goal) then break end
 				if opts.avoid and not isPathClear(goal, opts.avoid) then break end
 				local dx, dz = goal.X - p.X, goal.Z - p.Z
 				local squared = dx * dx + dz * dz
@@ -47773,10 +48018,19 @@ end
 		}
 
 gatheringPriorities.petals = petalCollector
+gatheringPriorities.bloomRange = 25
+gatheringPriorities.bloomFocusCategories = {
+	"Token Links", "Priority Tokens", "Duped Smiley", "Duped Bear",
+	"Duped Tokens", "Puppy Ball", "Coconuts", "Bubbles", "Flames",
+	"Clouds", "Fuzz Bombs", "Tokens", "Leaves",
+}
+gatheringPriorities.bloomSkip = {
+	Blooms = true, Petals = true, Showers = true, ["Precise Targets"] = true, Triangulate = true,
+}
 gatheringPriorities.defaults = {
-	"Petals", "Showers", "Precise Targets", "Duped Smiley", "Duped Bear",
+	"Petals", "Blooms", "Showers", "Precise Targets", "Duped Smiley", "Duped Bear",
 	"Duped Tokens", "Puppy Ball", "Coconuts", "Token Links",
-	"Priority Tokens", "Clouds", "Fuzz Bombs", "Bubbles", "Flames", "Triangulate", "Tokens", "Leaves", "Blooms",
+	"Priority Tokens", "Clouds", "Fuzz Bombs", "Bubbles", "Flames", "Triangulate", "Tokens", "Leaves",
 }
 gatheringPriorities.flags = {
 	["Showers"] = "farmshowers", ["Duped Smiley"] = "farmdupedtokens", ["Duped Bear"] = "farmdupedtokens",
@@ -47794,9 +48048,55 @@ gatheringPriorities.catalog = {
 	["Bubbles"] = {key="bubbles", kind="Bubble"}, ["Flames"] = {key="flames", kind="Flame"},
 	["Leaves"] = {key="leaves", kind="Leaf"},
 }
-gatheringPriorities.kindCategories = {Petal="Petals", Shower="Showers", Coconut="Coconuts",
+gatheringPriorities.kindCategories = {Petal="Petals", Bloom="Blooms", Shower="Showers", Coconut="Coconuts",
 	["Duped Smiley"]="Duped Smiley", ["Duped Bear"]="Duped Bear", Duped="Duped Tokens", ["Puppy Ball"]="Puppy Ball",
 	Cloud="Clouds", Fuzz="Fuzz Bombs", Bubble="Bubbles", Flame="Flames", Triangulate="Triangulate", Leaf="Leaves", Token="Tokens"}
+
+function gatheringPriorities:BloomTarget(opts)
+	if not opts or opts.loot or opts.mondotokens or opts.ignoreflower or not opts.blooms or not cfg.autofarm.farmblooms or fieldPositionPolicy:SmileyOnly() then
+		return nil
+	end
+	local bloom = bloomController:Select(opts)
+	return bloom and bloom.v or nil
+end
+
+function gatheringPriorities:BloomFocus(opts, stem)
+	local root = getRootPart().Position
+	if self.petals and self.petals:Enabled(opts) then
+		local petal = self.petals:Select(opts, root, stem.Position)
+		if petal then
+			self.last = "Petals"
+			self.bloomFocused = true
+			if self.currentLabel then self.currentLabel.Text = "Current target: Petals (Bloom)" end
+			return "Petal", petal
+		end
+	end
+	local focus = table.clone(opts)
+	focus.origin = stem.Position
+	focus.range = self.bloomRange
+	local order
+	if cfg.prioritization.enabled then
+		self:Rebuild()
+		order = cfg.prioritization.order
+	else
+		order = self.bloomFocusCategories
+	end
+	for _, category in ipairs(order) do
+		if not self.bloomSkip[category] then
+			local kind, object = self:Candidate(category, focus, root)
+			if kind then
+				self.last = category
+				self.bloomFocused = true
+				if self.currentLabel then self.currentLabel.Text = "Current target: " .. category .. " (Bloom)" end
+				return kind, object
+			end
+		end
+	end
+	self.last = "Blooms"
+	self.bloomFocused = true
+	if self.currentLabel then self.currentLabel.Text = "Current target: Blooms" end
+	return "Bloom", stem
+end
 
 function gatheringPriorities:Rebuild()
 	local settings = cfg.prioritization
@@ -47954,6 +48254,8 @@ function gatheringPriorities:ShouldPreempt()
 		local point=fieldPositionPolicy:TargetPosition(self.activeWaypoint or self.activeTarget)
 		if point and isPathClear(point,active.avoid,true,true) then return true end
 	end
+	local targetPoint=fieldPositionPolicy:TargetPosition(self.activeWaypoint or self.activeTarget)
+	if targetPoint and comboController:BlocksMove(targetPoint) then return true end
 	if fieldPositionPolicy:SmileyOnly() and self.activeCategory~="Duped Smiley" then return true end
 	if showerController.active then return true end
 	if self.precisionActive and active and active.rbc and self:PrecisionReady() and rbcSafety:BuffTarget(active) then return true end
@@ -47964,7 +48266,8 @@ function gatheringPriorities:ShouldPreempt()
     if self.nextPreemptCheck and now < self.nextPreemptCheck then return false end
     self.nextPreemptCheck = now + 0.08
     if bearCombat:Pick(self.activeOptions or {}) then return true end
-    if not cfg.prioritization.enabled or not self.activeCategory then return false end
+    if not self.bloomFocused and self.activeOptions and self:BloomTarget(self.activeOptions) then return true end
+    if self.bloomFocused or not cfg.prioritization.enabled or not self.activeCategory then return false end
     return self:Pick(self.activeOptions or {}, self.activeCategory) ~= nil
 end
 
@@ -48030,6 +48333,7 @@ function gatheringPriorities:BuildMenu(tab)
 	edit.Toggle(true, true)
 	local list = tab.AddFolder("Gathering Order", true)
 	self.currentLabel = list.AddLabel("Current target: " .. (self.last or "waiting"))
+	self.precisionLabel = list.AddLabel("Precision: waiting")
 	self.orderLabels = {}
 	for index, category in ipairs(cfg.prioritization.order) do self.orderLabels[index] = list.AddLabel(tostring(index) .. ". " .. category) end
 	list.AddLabel("Custom off = petals first, then script order")
@@ -48037,10 +48341,62 @@ function gatheringPriorities:BuildMenu(tab)
 end
 
 function gatheringPriorities:PrecisionReady()
-	local precision=buffs.Precision
-	if not precision then return false end
-	local stacks=tonumber(string.match(precision.Text.Text,"%d+")) or 0
-	return stacks>=10 and precision.Percent.Size.Y.Scale>0.65
+	return self:PrecisionMode() == "mark"
+end
+
+function gatheringPriorities:PrecisionState()
+	local precision = buffs.Precision
+	if not precision then return 0, 0 end
+	local stacks = tonumber(string.match(precision.Text.Text, "%d+")) or 0
+	local bar = precision.Percent and precision.Percent.Size and precision.Percent.Size.Y and precision.Percent.Size.Y.Scale or 0
+	return stacks, bar
+end
+
+function gatheringPriorities:PreciseMarkCount()
+	if type(watchStations) == "function" and connections and connections.Get and not connections:Get("stations") then
+		pcall(watchStations, true)
+	end
+	local count = 0
+	for key in pairs(tracked.precisemark) do
+		if typeof(key) == "Instance" then
+			if not key.Parent then
+				tracked.precisemark[key] = nil
+			else
+				local base = key:FindFirstChild("Base") or key:FindFirstChild("Plane")
+				if base and (not currentField or not getFieldAt or getFieldAt(base.Position) == currentField) then
+					count += 1
+				end
+			end
+		else
+			local mark = tracked.marks and tracked.marks[key]
+			if type(mark) == "table" and typeof(mark.Position) == "Vector3" then
+				if not currentField or not getFieldAt or getFieldAt(mark.Position) == currentField then
+					count += 1
+				end
+			elseif not tracked.marks then
+				count += 1
+			end
+		end
+	end
+	return count
+end
+
+function gatheringPriorities:PrecisionMode()
+	local stacks, bar = self:PrecisionState()
+	local marks = self:PreciseMarkCount()
+	if stacks < 10 then
+		self.precisionRefreshing = false
+		return "build", marks, stacks, bar
+	end
+	local refreshAt = marks < 3 and 0.35 or 0.65
+	if self.precisionRefreshing then
+		if bar >= 0.9 then
+			self.precisionRefreshing = false
+		end
+	elseif bar <= refreshAt then
+		self.precisionRefreshing = true
+	end
+	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -48055,10 +48411,22 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 	if (not rbcUpkeep and (farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1))
 		or opts.loot or opts.mondotokens then return end
 	if comboController.active or showerController.active or comboController:TravelBlocked() then return end
+	local mode, marks, stacks, bar = self:PrecisionMode()
+	local now = os.clock()
+	if self.precisionLabel and (not self.nextPrecisionUi or now >= self.nextPrecisionUi) then
+		self.nextPrecisionUi = now + 0.25
+		self.precisionLabel.Text = string.format("Precision: %dx %d%% | Marks %d/3 | %s", stacks, math.floor(bar * 100 + 0.5), marks, mode)
+	end
 	local copy=self:PrecisionOptions(opts)
-	if not self:PrecisionReady() then
+	if mode ~= "mark" then
 		for target in pairs(tracked.precise)do copy.avoid[target]=nil end
-		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil end
+		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil; copy.avoid[target.Position]=nil end
+	elseif marks >= 3 and self.BloomTarget then
+		local stem = self:BloomTarget(opts)
+		if stem then
+			copy.origin = stem.Position
+			copy.range = self.bloomRange
+		end
 	end
 	return self:Precise(copy,true)
 end
@@ -48072,13 +48440,11 @@ function gatheringPriorities:Precise(opts,upkeep)
 				if upkeep or not (not standInPrecise and not autofarm.farmprecise and not autofarm.farmprecisemark) then
 					precision = buffs.Precision
 					if upkeep then preciseMarkActive=self:PrecisionReady()
-					else preciseMarkActive = autofarm.farmprecisemark and precision and precision.Text.Text == "x10" and precision.Percent.Size.Y.Scale > 0.5 end
+					else preciseMarkActive = autofarm.farmprecisemark and self:PrecisionReady() end
 					preciseMarkCount = 0
 
 					if scorchingStarAura then
-						for k in pairs(tracked.precisemark) do
-							preciseMarkCount += 1
-						end
+						preciseMarkCount = self:PreciseMarkCount()
 
 						if preciseMarkCount < 3 then
 							scorchingStarAura = false
@@ -48088,6 +48454,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 					if not state.precise then
 						for k in pairs(tracked.precise) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
@@ -48119,6 +48486,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(preciseMark.Position) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-preciseMark.Position).Magnitude>=opts.range then continue end
 
@@ -48192,7 +48560,7 @@ end
 				if humanoid.Health<=0 then return true end
 				local root=getRootPart().Position
 				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
-				if opts.avoid and isPathClear(point,opts.avoid) then break end
+				if (opts.avoid and isPathClear(point,opts.avoid)) or comboController:BlocksMove(point) then break end
 				if os.clock()>=nextMove then
 					humanoid:MoveTo(point)
 					nextMove=os.clock()+.15
@@ -48245,7 +48613,7 @@ end
 				local root=getRootPart().Position
 				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
 				local liveAvoid=opts.rbc and rbcSafety:Hazards(currentField) or opts.avoid
-				if liveAvoid and isPathClear(point,liveAvoid) then return true end
+				if (liveAvoid and isPathClear(point,liveAvoid)) or comboController:BlocksMove(point) then return true end
 				if os.clock()>=nextMove then getHumanoid():MoveTo(point);nextMove=os.clock()+.1 end
 				RunService.Heartbeat:Wait()
 			end
@@ -48254,6 +48622,7 @@ end
 		end
 
 		pickTarget = function(opts)
+			gatheringPriorities.bloomFocused = false
 			if fieldPositionPolicy:SmileyOnly() then
 				opts.area=fieldPositionPolicy:StrictArea() or opts.area
 				return gatheringPriorities:Candidate("Duped Smiley",opts,getRootPart().Position)
@@ -48285,6 +48654,8 @@ end
 				end
 				return
 			end
+			local bloomStem = gatheringPriorities:BloomTarget(opts)
+			if bloomStem then return gatheringPriorities:BloomFocus(opts, bloomStem) end
 			if cfg.prioritization.enabled then
 				local kind, object = gatheringPriorities:Pick(opts)
 				if kind then return kind, object end
@@ -49604,6 +49975,7 @@ end
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(preciseMark.Position) then continue end
 							preciseCount += 1
 
 							if not preciseMark.Touched and not touchedMarks[preciseMark] then
@@ -54412,6 +54784,13 @@ end
 		local function collectTargetImpl(options)
 			options.area=fieldPositionPolicy:StrictArea() or options.area
 			local targetKind, targetObject = pickTarget(options)
+			if targetKind and targetKind ~= "Safeshower" and targetKind ~= "Triangulate" then
+				local goal = fieldPositionPolicy:TargetPosition(targetObject)
+				if goal and comboController:BlocksMove(goal) then
+					touchedMarks[targetObject] = os.clock() + 0.5
+					return
+				end
+			end
 			if options.area then
 				local goal=fieldPositionPolicy:TargetPosition(targetObject)
 				if goal and not fieldPositionPolicy:Allowed(goal,options) then return end
@@ -54517,6 +54896,7 @@ end
 			bearCombat.active = false
 			gatheringPriorities.activeCategory = nil
 			gatheringPriorities.precisionActive = false
+			gatheringPriorities.bloomFocused = false
 			gatheringPriorities.activeOptions = nil
 			gatheringPriorities.activeTarget = nil
 			gatheringPriorities.activeWaypoint = nil
@@ -54547,6 +54927,7 @@ end
 			if not options.ignoreflower then
 				local makeGoal=function()return randomFieldPosition(options)end
 				local allowed=function(goal)
+					if comboController:BlocksMove(goal) then return false end
 					if options.rbc then options.avoid=rbcSafety:Hazards(currentField) end
 					if options.area and not fieldPositionPolicy:Allowed(goal,options) then return false end
 					if getFieldAt(goal) ~= currentField and not options.ignorefield then return false end
@@ -68082,6 +68463,7 @@ ScreenGui.Destroying:Connect(function()
 	fieldPositionPolicy:StopPreview()
 	fieldPositionPolicy:RemoveGuards()
 	showerController:Shutdown()
+	ultraAntiLag:Shutdown()
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
 	smoothMovement:Reset()
@@ -68511,7 +68893,9 @@ do
 					watchStations(n)
 				end, "autofarm", "farmprecisemark")
 
-				farmFolder.AddSwitch("Maintain Precision / Spam Marks", nil, "autofarm", "precisionupkeep", {Tooltip="Prioritize Precision to 10x, refresh below 65% duration, then prioritize purple marks. Overrides ordinary gathering order."})
+				farmFolder.AddSwitch("Maintain Precision / Spam Marks", function(n)
+					watchStations(n)
+				end, "autofarm", "precisionupkeep", {Tooltip="Keeps 10x Precision and 3 Precise Marks up in the field, then continues farming purple marks whenever Precision is healthy."})
 				farmFolder.AddSwitch("Track Precise", function(n)
 					if n then
 						local n, q = pcall(function()
@@ -69696,6 +70080,7 @@ which bees and get all 3 targets if
 					"Blue Field Booster",
 					"Red Field Booster",
 					"Loaded Dice",
+					"Smooth Dice",
 					"Field Dice",
 					"Glitter",
 				}, nil, nil, "boosters", "allowed", { Multiple = true })
@@ -71207,255 +71592,27 @@ Are you sure you want to enable it?]])
 
 				Debug.Toggle(true)
 
-				antiLagFolder.AddSwitch("Hide Tokens", function(n)
-					if n then
-						local n, p = pcall(function()
-							local u = require(ReplicatedStorage.CollectiblesAnimator)
-
-							if not isfunctionhooked(u.Spawn) then
-								local P
-
-								P = hookfunction(u.Spawn, function(...)
-									if not ... or not tracked then
-										return P(...)
-									else
-										tokenFilter.TokenSpawn(...)
-									end
-								end)
-
-								hookfunction(u.AnimateCollect, function()
-								end)
-
-								hookfunction(u.Destroy, function()
-								end)
-
-								hookfunction(u.Update, function()
-								end)
-
-								tokenFilter.list[u.AnimateCollect] = true
-								tokenFilter.list[u.Destroy] = true
-								tokenFilter.list[u.Update] = true
-								tokenFilter.list[u.Spawn] = true
-								local P = workspace:FindFirstChild("Collectibles")
-
-								if P then
-									P:Destroy()
-									tracked.tokenlink = {}
-									tracked.tokens = {}
-								end
-							end
-						end)
-
-						if not n then
-							ui.Notify("Hide Tokens", "Failed to hook function:\n" .. tostring(p))
-						end
+				if not cfg.antilag.migrated then
+					local legacyVisual = cfg.antilag.main or cfg.antilag.aggressivevisuals or cfg.antilag.visualeffects
+						or cfg.antilag.textures or cfg.antilag.decorations or cfg.antilag.bees or cfg.antilag.frogs
+						or cfg.antilag.flowers or cfg.antilag.balloons or cfg.antilag.players
+					if legacyVisual then cfg.antilag.ultra = true end
+					for _, k in ipairs({
+						"tokens", "particles", "precise", "dupedtokens", "stations", "bssui", "main",
+						"aggressivevisuals", "visualeffects", "textures", "decorations", "bees", "frogs",
+						"flowers", "balloons", "players",
+					}) do
+						cfg.antilag[k] = false
 					end
-				end, "antilag", "tokens", { Hook = true })
-
-				antiLagFolder.AddSwitch("Hide Particles", function(n)
-					if n then
-						local n, p = pcall(function()
-							local o = require(ReplicatedStorage.LocalAmulets).CreatePlayerAmulets
-
-							if not isfunctionhooked(o) then
-								hookfunction(o, function()
-								end)
-
-								tokenFilter.list[o] = true
-							end
-
-							local o = require(ReplicatedStorage.LocalFX).ClientRun
-
-							if not isfunctionhooked(o) then
-								local l
-
-								l = hookfunction(o, function(...)
-									local G = { ... }
-									local u, y = G[1], G[2]
-									if not u or not y or not tracked or tokenFilter:LocalFX(u, y) then
-										return l(...)
-									end
-								end)
-
-								tokenFilter.list[o] = true
-								state.precise = true
-							end
-						end)
-
-						if not n then
-							ui.Notify("Hide Particles", "Failed to hook function:\n" .. tostring(p))
-						end
-					end
-				end, "antilag", "particles", { Hook = true })
-
-				antiLagFolder.AddSwitch("Hide Precise Targets", function(n)
-					if n then
-						local n, p = pcall(function()
-							local O = require(ReplicatedStorage.LocalFX).ClientRun
-
-							if not isfunctionhooked(O) then
-								local P
-
-								P = hookfunction(O, function(...)
-									local H = { ... }
-									local G, L = H[1], H[2]
-									if not G or not L or not tracked or tokenFilter:LocalFX(G, L) then
-										return P(...)
-									end
-								end)
-
-								tokenFilter.list[O] = true
-								state.precise = true
-							end
-						end)
-
-						if not n then
-							ui.Notify("Hide Precise Targets", "Failed to hook function:\n" .. tostring(p))
-						end
-					end
-				end, "antilag", "precise", { Hook = true })
-
-				antiLagFolder.AddSwitch("Hide Duped Tokens", function(n)
-					if n then
-						local n, p = pcall(function()
-							local y = require(ReplicatedStorage.DupedTokensAnimator)
-
-							if not isfunctionhooked(y.Spawn) then
-								local P
-
-								P = hookfunction(y.Spawn, function(H)
-									if not H or not tracked then
-										return P(H)
-									else
-										tokenFilter:DupedTokenSpawn(H)
-									end
-								end)
-
-								tokenFilter.list[y.Spawn] = true
-								local P
-
-								P = hookfunction(y.Destroy, function(H, Z)
-									if not H or not tracked then
-										return P(H, Z)
-									else
-										tokenFilter.DupedTokenDestroy(H)
-									end
-								end)
-
-								tokenFilter.list[y.Destroy] = true
-								local P
-
-								P = hookfunction(y.Charge, function(H)
-									if not H or not tracked then
-										return P(H)
-									else
-										tokenFilter.DupedTokenCharge(H)
-									end
-								end)
-
-								tokenFilter.list[y.Charge] = true
-								local P
-
-								P = hookfunction(y.Uncharge, function(O)
-									if not O or not tracked then
-										return P(O)
-									else
-										tokenFilter.DupedTokenUncharge(O)
-									end
-								end)
-
-								tokenFilter.list[y.Uncharge] = true
-								local P = workspace.Camera:FindFirstChild("DupedTokens")
-
-								if P then
-									P:Destroy()
-									tracked.dupedbear = {}
-									tracked.dupedsmiley = {}
-									tracked.dupedtokens = {}
-								end
-							end
-						end)
-
-						if not n then
-							ui.Notify("Hide Duped Tokens", "Failed to hook function:\n" .. tostring(p))
-						end
-					end
-				end, "antilag", "dupedtokens", { Hook = true })
-
-				antiLagFolder.AddSwitch("Hide Marks", function(n)
-					if n then
-						local n, p = pcall(function()
-							local L = require(ReplicatedStorage.ClientScripts.Listeners.StationsListener).Actions
-
-							if not isfunctionhooked(L.Spawn) then
-								local l
-
-								l = hookfunction(L.Spawn, function(u)
-									if tracked then
-										tokenFilter.StationSpawn(u)
-									else
-										return l(l)
-									end
-								end)
-
-								local l
-
-								l = hookfunction(L.AnimDestroy, function(u)
-									if tracked then
-										tracked.precisemark[u.Id] = nil
-										tracked.marks[u.Id] = nil
-									else
-										return l(l)
-									end
-								end)
-
-								tokenFilter.list[L.AnimDestroy] = true
-								tokenFilter.list[L.Spawn] = true
-								local l = workspace:FindFirstChild("Stations")
-
-								if l then
-									l:Destroy()
-									tracked.precisemark = {}
-									tracked.marks = {}
-								end
-							end
-						end)
-
-						if not n then
-							ui.Notify("Hide Marks", "Failed to hook function:\n" .. tostring(p))
-						end
-					end
-				end, "antilag", "stations", { Hook = true })
-
-				antiLagFolder.AddSwitch("Hide Bees", function(enabled) visualOptimizer:Set("bees",enabled) end, "antilag", "bees")
-				antiLagFolder.AddSwitch("Hide Frogs", function(enabled) visualOptimizer:Set("frogs",enabled) end, "antilag", "frogs")
-
-				antiLagFolder.AddSwitch("Hide Flowers", function(enabled) visualOptimizer:Set("flowers",enabled) end, "antilag", "flowers")
-
-				antiLagFolder.AddSwitch("Hide Balloons",function(enabled)
-                    visualOptimizer:Set("balloons",enabled)
-                end,"antilag","balloons")
-
-				local destroyTexturesSwitch = antiLagFolder.AddSwitch("Strip Decorative Textures", function(enabled)
-					cfg.antilag.textures=enabled
-					visualOptimizer:Set("textures",enabled)
+					cfg.antilag.migrated = true
 					saveConfig()
-				end)
-				antiLagFolder.AddSwitch("Hide Decorations (Keep Game Objects)",function(enabled)
-					visualOptimizer:Set("decorations",enabled)
-				end,"antilag","decorations")
-				antiLagFolder.AddSwitch("Disable Visual Effects",function(enabled)
-					visualOptimizer:Set("effects",enabled)
-				end,"antilag","visualeffects")
-				antiLagFolder.AddSwitch("Aggressive Visual Optimization",function(enabled)
-					visualOptimizer:Set("aggressive",enabled)
-				end,"antilag","aggressivevisuals")
-				antiLagFolder.AddLabel("Preserves tokens, marks, hitboxes, collision and game folders")
-				antiLagFolder.AddLabel("Visual changes do not block asset downloads or enforce a RAM cap")
+				end
 
-				destroyTexturesSwitch.Set(cfg.antilag.textures)
+				antiLagFolder.AddSwitch("Ultra Anti-Lag", function(enabled)
+					ultraAntiLag:Set(enabled)
+				end, "antilag", "ultra", { Tooltip = "One-click maximum visual anti-lag. Never hides or hooks tokens, marks, crosshairs, combos, blooms, petals, or player positions." })
 
-				antiLagFolder.AddSwitch("Disable 3D Rendering", function(n)
+				antiLagFolder.AddSwitch("Disable 3D Rendering (AFK black screen)", function(n)
 					RunService:Set3dRenderingEnabled(not n)
 
 					if n then
@@ -71474,17 +71631,7 @@ Are you sure you want to enable it?]])
 					end
 				end, "antilag", "norender")
 
-				antiLagFolder.AddSwitch("Hide Other Players",function(enabled)
-					visualOptimizer:Set("players",enabled)
-				end,"antilag","players")
-
-				antiLagFolder.AddSwitch("Hide BSS UI", function(n)
-					localPlayer.PlayerGui.ScreenGui.Enabled = not n
-				end, "antilag", "bssui")
-
-				antiLagFolder.AddSwitch("Anti Lag",function(enabled)
-					visualOptimizer:Set("main",enabled)
-				end,"antilag","main")
+				antiLagFolder.AddLabel("Visual-only: never hides/hooks tokens, marks, crosshairs, combos, blooms, petals or players' positions")
 
 				antiLagFolder.Toggle(true, true)
 				detectedFolder.AddLabel("Use this at your own risk")

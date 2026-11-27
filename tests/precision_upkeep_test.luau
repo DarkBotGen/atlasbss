@@ -209,10 +209,59 @@ function fieldPositionPolicy:TrackedAllowed(key,value,opts)
 	return not goal or self:Allowed(goal,opts)
 end
 function gatheringPriorities:PrecisionReady()
-	local precision=buffs.Precision
-	if not precision then return false end
-	local stacks=tonumber(string.match(precision.Text.Text,"%d+")) or 0
-	return stacks>=10 and precision.Percent.Size.Y.Scale>0.65
+	return self:PrecisionMode() == "mark"
+end
+
+function gatheringPriorities:PrecisionState()
+	local precision = buffs.Precision
+	if not precision then return 0, 0 end
+	local stacks = tonumber(string.match(precision.Text.Text, "%d+")) or 0
+	local bar = precision.Percent and precision.Percent.Size and precision.Percent.Size.Y and precision.Percent.Size.Y.Scale or 0
+	return stacks, bar
+end
+
+function gatheringPriorities:PreciseMarkCount()
+	local count = 0
+	for key in pairs(tracked.precisemark) do
+		if typeof(key) == "Instance" then
+			if not key.Parent then
+				tracked.precisemark[key] = nil
+			else
+				local base = key:FindFirstChild("Base") or key:FindFirstChild("Plane")
+				if base and (not currentField or not getFieldAt or getFieldAt(base.Position) == currentField) then
+					count += 1
+				end
+			end
+		else
+			local mark = tracked.marks and tracked.marks[key]
+			if type(mark) == "table" and typeof(mark.Position) == "Vector3" then
+				if not currentField or not getFieldAt or getFieldAt(mark.Position) == currentField then
+					count += 1
+				end
+			elseif not tracked.marks then
+				count += 1
+			end
+		end
+	end
+	return count
+end
+
+function gatheringPriorities:PrecisionMode()
+	local stacks, bar = self:PrecisionState()
+	local marks = self:PreciseMarkCount()
+	if stacks < 10 then
+		self.precisionRefreshing = false
+		return "build", marks, stacks, bar
+	end
+	local refreshAt = marks < 3 and 0.35 or 0.65
+	if self.precisionRefreshing then
+		if bar >= 0.9 then
+			self.precisionRefreshing = false
+		end
+	elseif bar <= refreshAt then
+		self.precisionRefreshing = true
+	end
+	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -226,11 +275,19 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 	if farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1
 		or opts.loot or opts.mondotokens then return end
 	if comboController.active or showerController.active or comboController:TravelBlocked() then return end
-	if not self:PrecisionReady() and opts.avoid then
-		for target in pairs(tracked.precise)do opts.avoid[target]=nil end
-		for _,target in pairs(tracked.precise2)do opts.avoid[target]=nil;opts.avoid[target.Position]=nil end
+	local mode, marks = self:PrecisionMode()
+	local copy=self:PrecisionOptions(opts)
+	if mode ~= "mark" then
+		for target in pairs(tracked.precise)do copy.avoid[target]=nil end
+		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil;copy.avoid[target.Position]=nil end
+	elseif marks >= 3 and self.BloomTarget then
+		local stem = self:BloomTarget(opts)
+		if stem then
+			copy.origin = stem.Position
+			copy.range = self.bloomRange
+		end
 	end
-	return self:Precise(self:PrecisionOptions(opts),true)
+	return self:Precise(copy,true)
 end
 
 function gatheringPriorities:Precise(opts,upkeep)
@@ -242,13 +299,11 @@ function gatheringPriorities:Precise(opts,upkeep)
 				if upkeep or not (not standInPrecise and not autofarm.farmprecise and not autofarm.farmprecisemark) then
 					precision = buffs.Precision
 					if upkeep then preciseMarkActive=self:PrecisionReady()
-					else preciseMarkActive = autofarm.farmprecisemark and precision and precision.Text.Text == "x10" and precision.Percent.Size.Y.Scale > 0.5 end
+					else preciseMarkActive = autofarm.farmprecisemark and self:PrecisionReady() end
 					preciseMarkCount = 0
 
 					if scorchingStarAura then
-						for k in pairs(tracked.precisemark) do
-							preciseMarkCount += 1
-						end
+						preciseMarkCount = self:PreciseMarkCount()
 
 						if preciseMarkCount < 3 then
 							scorchingStarAura = false
@@ -390,16 +445,38 @@ local markOptions={}
 assert(gatheringPriorities:PrecisionUpkeep(markOptions)=="Precise Purple" and markOptions.avoid==nil,"mark selection retained crosshair avoidance in gathering options")
 buff("10x",.9)
 assert(gatheringPriorities:PrecisionReady(),"alternate buff label was not read")
+-- Seed 3 active precise marks to verify 0.65 refresh threshold + hysteresis, plus <3 mark priority.
+tracked.precisemark={{},{},{}}
+gatheringPriorities.precisionRefreshing=false
 buff("x10",.64)
 local avoid={[normal]=7,[purple]=7}
 kind,target=gatheringPriorities:PrecisionUpkeep({avoid=avoid})
-assert(kind=="Precise" and target==normal and avoid[normal]==nil,"refresh was blocked by old mark avoidance")
+assert(kind=="Precise" and target==normal,"refresh with 3 marks at 0.64 did not target normal")
 assert(not gatheringPriorities:PrecisionUpkeep({avoid={wall=true}}),"upkeep ignored a real path hazard")
 assert(not gatheringPriorities:PrecisionUpkeep({range=3,origin=root.Position}),"upkeep exceeded gathering range")
+-- New 3-mark upkeep checks:
+tracked.precisemark={} -- < 3 marks -> prioritize purple down to >0.35
+gatheringPriorities.precisionRefreshing=false
+buff("x10",.5)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Precise Purple" and target==purple,"marks<3 at bar 0.5 did not pursue purple mark")
+tracked.precisemark={{},{},{}} -- >= 3 marks -> refresh below 0.65, with hysteresis until 0.9
+gatheringPriorities.precisionRefreshing=false
+buff("x10",.5)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Precise" and target==normal,"marks>=3 at bar 0.5 did not refresh precision")
+buff("x10",.85)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Precise" and target==normal,"hysteresis did not hold refresh until 0.9")
+buff("x10",.9)
+kind,target=gatheringPriorities:PrecisionUpkeep({})
+assert(kind=="Precise Purple" and target==purple,"marks>=3 at bar 0.9 did not continue farming precise marks")
 state.precise=true
 local normal2={ID=1,Position=vector(20,3,0),Mark=false}
 local purple2={ID=2,Position=vector(5,3,0),Mark=true}
 tracked.precise2={[1]=normal2,[2]=purple2};tracked.precisegroup={[1]="g",[2]="g"}
+gatheringPriorities.precisionRefreshing=false
+buff("x10",.5)
 kind,target=gatheringPriorities:PrecisionUpkeep({})
 assert(kind=="Precise2" and target==normal2,"tracked-target refresh did not prefer normal target")
 buff("x10",.9)

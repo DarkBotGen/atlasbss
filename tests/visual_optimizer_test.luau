@@ -1,7 +1,9 @@
 
-local Enum={Material={SmoothPlastic="Plastic"},QualityLevel={Level01=1}}
+local Enum={Material={SmoothPlastic="Plastic"},QualityLevel={Level01=1},SavedQualitySetting={QualityLevel1=1,Automatic=0}}
 local renders={QualityLevel=5}
 local function settings() return {Rendering=renders} end
+local gameSettings={SavedQualityLevel=Enum.SavedQualitySetting.Automatic}
+local function UserSettings() return {GetService=function(_,n) if n=="UserGameSettings" then return gameSettings end end} end
 local task={wait=function()end}
 local localPlayer={}
 local function getService() return {GetPlayerFromCharacter=function() return nil end} end
@@ -125,10 +127,7 @@ function visualOptimizer:Apply(object)
 	end
 end
 
-function visualOptimizer:Set(mode, enabled)
-	enabled=enabled==true
-	if (self.modes[mode]==true)==enabled then return end
-	self.modes[mode]=enabled
+function visualOptimizer:Refresh()
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
 	connections:Cancel("visualOptimizerLighting")
@@ -162,6 +161,25 @@ function visualOptimizer:Set(mode, enabled)
 	end)
 end
 
+function visualOptimizer:Set(mode, enabled)
+	enabled=enabled==true
+	if (self.modes[mode]==true)==enabled then return end
+	self.modes[mode]=enabled
+	self:Refresh()
+end
+
+function visualOptimizer:SetMany(modes)
+	local changed=false
+	for mode, enabled in pairs(modes) do
+		local flag=enabled==true
+		if (self.modes[mode]==true)~=flag then
+			self.modes[mode]=flag
+			changed=true
+		end
+	end
+	if changed then self:Refresh() end
+end
+
 function visualOptimizer:Shutdown()
 	threads:Cancel("visualOptimizerScan")
 	connections:Cancel("visualOptimizerWorkspace")
@@ -170,6 +188,34 @@ function visualOptimizer:Shutdown()
 	connections:Cancel("visualOptimizerLightingRemoving")
 	self:Restore()
 	table.clear(self.modes)
+end
+
+local ultraAntiLag = {
+	modes = {"main", "aggressive", "effects", "textures", "decorations", "bees", "frogs", "flowers", "balloons", "players"},
+}
+
+function ultraAntiLag:Set(enabled)
+	enabled = enabled == true
+	local batch = {}
+	for _, mode in ipairs(self.modes) do batch[mode] = enabled end
+	if enabled then
+		pcall(function()
+			local gs = UserSettings():GetService("UserGameSettings")
+			if self.savedQuality == nil then self.savedQuality = gs.SavedQualityLevel end
+			gs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+		end)
+	elseif self.savedQuality ~= nil then
+		local prev = self.savedQuality
+		self.savedQuality = nil
+		pcall(function()
+			UserSettings():GetService("UserGameSettings").SavedQualityLevel = prev
+		end)
+	end
+	visualOptimizer:SetMany(batch)
+end
+
+function ultraAntiLag:Shutdown()
+	self:Set(false)
 end
 
 local amulets=object("Folder","Amulets",workspace)
@@ -216,4 +262,10 @@ for i=1,10000 do
 end
 visualOptimizer:Shutdown()
 assert(next(connections.list)==nil and next(visualOptimizer.originals)==nil)
-print("PASS: folders/trails retained, functional textures and collision preserved, decorative stripping, new effects, four listeners, disable/unload restoration")
+ultraAntiLag:Set(true)
+assert(not Lighting.GlobalShadows and renders.QualityLevel==1 and gameSettings.SavedQualityLevel==Enum.SavedQualitySetting.QualityLevel1,"Ultra Anti-Lag did not apply maximum settings")
+assert(icon.Texture=="icon" and markIcon.Texture=="icon","Ultra Anti-Lag stripped functional token/mark icons")
+ultraAntiLag:Shutdown()
+assert(Lighting.GlobalShadows and renders.QualityLevel==5 and gameSettings.SavedQualityLevel==Enum.SavedQualitySetting.Automatic,"Ultra Anti-Lag Shutdown did not restore settings")
+assert(next(connections.list)==nil and next(visualOptimizer.originals)==nil)
+print("PASS: folders/trails retained, functional textures and collision preserved, decorative stripping, new effects, four listeners, disable/unload restoration, and Ultra Anti-Lag")

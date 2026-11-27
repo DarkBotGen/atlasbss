@@ -3,7 +3,7 @@ local switches={}
 local dropdowns={}
 local textboxes={}
 local sliders={}
-local cfg={coconutcombo={enabled=false,catchall=false,main="None",maxspeed=180}}
+local cfg={coconutcombo={enabled=false,catchall=false,main="None",mainevery=3,maxspeed=180}}
 local state={config="Preset 1"}
 local localPlayer={Name="AltOne"}
 local function saveConfig()end
@@ -73,9 +73,12 @@ function comboController:BuildMenu(tab)
 		end))
 	end
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
+	folder.AddSlider("Main: Alt Catches Between Chime-Ins",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
+	self.mainLabel=folder.AddLabel(self.mainDebug or "Main: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
 	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
+	folder.AddLabel("Main: catches 0x + every (N+1)th drop (lets alts catch N drops in between).")
 	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
 	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
@@ -86,7 +89,8 @@ comboController:BuildMenu(controls.farming)
 assert(folders["Coconut Combo"] and not folders["Coconut Team"],"wrong folder name")
 assert(switches["Enable Coconut Combo"] and switches["Catch All Combos in Field"],"enable or catch-all switch missing")
 assert(dropdowns["Main Account"] and type(textboxes["Main Account Username"])=="function","main account controls missing")
-assert(sliders["Fast Combo Maximum Speed"],"speed slider missing")
+assert(sliders["Fast Combo Maximum Speed"] and sliders["Main: Alt Catches Between Chime-Ins"],"speed or cadence slider missing")
+assert(comboController.mainLabel~=nil,"main debug label missing")
 textboxes["Main Account Username"]("MainBee")
 assert(cfg.coconutcombo.main=="MainBee","textbox did not set main account")
 print("PASS: Coconut Combo menu created in controls.farming with Main Account dropdown/textbox, enable switch, and max speed slider")

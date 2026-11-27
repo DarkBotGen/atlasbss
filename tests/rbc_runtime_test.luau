@@ -568,10 +568,62 @@ function rbcSafety:BuffTarget(options)
 	return kind,best
 end
 function gatheringPriorities:PrecisionReady()
-	local precision=buffs.Precision
-	if not precision then return false end
-	local stacks=tonumber(string.match(precision.Text.Text,"%d+")) or 0
-	return stacks>=10 and precision.Percent.Size.Y.Scale>0.65
+	return self:PrecisionMode() == "mark"
+end
+
+function gatheringPriorities:PrecisionState()
+	local precision = buffs.Precision
+	if not precision then return 0, 0 end
+	local stacks = tonumber(string.match(precision.Text.Text, "%d+")) or 0
+	local bar = precision.Percent and precision.Percent.Size and precision.Percent.Size.Y and precision.Percent.Size.Y.Scale or 0
+	return stacks, bar
+end
+
+function gatheringPriorities:PreciseMarkCount()
+	if type(watchStations) == "function" and connections and connections.Get and not connections:Get("stations") then
+		pcall(watchStations, true)
+	end
+	local count = 0
+	for key in pairs(tracked.precisemark) do
+		if typeof(key) == "Instance" then
+			if not key.Parent then
+				tracked.precisemark[key] = nil
+			else
+				local base = key:FindFirstChild("Base") or key:FindFirstChild("Plane")
+				if base and (not currentField or not getFieldAt or getFieldAt(base.Position) == currentField) then
+					count += 1
+				end
+			end
+		else
+			local mark = tracked.marks and tracked.marks[key]
+			if type(mark) == "table" and typeof(mark.Position) == "Vector3" then
+				if not currentField or not getFieldAt or getFieldAt(mark.Position) == currentField then
+					count += 1
+				end
+			elseif not tracked.marks then
+				count += 1
+			end
+		end
+	end
+	return count
+end
+
+function gatheringPriorities:PrecisionMode()
+	local stacks, bar = self:PrecisionState()
+	local marks = self:PreciseMarkCount()
+	if stacks < 10 then
+		self.precisionRefreshing = false
+		return "build", marks, stacks, bar
+	end
+	local refreshAt = marks < 3 and 0.35 or 0.65
+	if self.precisionRefreshing then
+		if bar >= 0.9 then
+			self.precisionRefreshing = false
+		end
+	elseif bar <= refreshAt then
+		self.precisionRefreshing = true
+	end
+	return self.precisionRefreshing and "refresh" or "mark", marks, stacks, bar
 end
 
 function gatheringPriorities:PrecisionOptions(opts)
@@ -586,10 +638,22 @@ function gatheringPriorities:PrecisionUpkeep(opts)
 	if (not rbcUpkeep and (farm.precisionupkeep==false or not farm.enabled or state.activityStatus~=1))
 		or opts.loot or opts.mondotokens then return end
 	if comboController.active or showerController.active or comboController:TravelBlocked() then return end
+	local mode, marks, stacks, bar = self:PrecisionMode()
+	local now = os.clock()
+	if self.precisionLabel and (not self.nextPrecisionUi or now >= self.nextPrecisionUi) then
+		self.nextPrecisionUi = now + 0.25
+		self.precisionLabel.Text = string.format("Precision: %dx %d%% | Marks %d/3 | %s", stacks, math.floor(bar * 100 + 0.5), marks, mode)
+	end
 	local copy=self:PrecisionOptions(opts)
-	if not self:PrecisionReady() then
+	if mode ~= "mark" then
 		for target in pairs(tracked.precise)do copy.avoid[target]=nil end
-		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil end
+		for _,target in pairs(tracked.precise2)do copy.avoid[target]=nil; copy.avoid[target.Position]=nil end
+	elseif marks >= 3 and self.BloomTarget then
+		local stem = self:BloomTarget(opts)
+		if stem then
+			copy.origin = stem.Position
+			copy.range = self.bloomRange
+		end
 	end
 	return self:Precise(copy,true)
 end
@@ -603,13 +667,11 @@ function gatheringPriorities:Precise(opts,upkeep)
 				if upkeep or not (not standInPrecise and not autofarm.farmprecise and not autofarm.farmprecisemark) then
 					precision = buffs.Precision
 					if upkeep then preciseMarkActive=self:PrecisionReady()
-					else preciseMarkActive = autofarm.farmprecisemark and precision and precision.Text.Text == "x10" and precision.Percent.Size.Y.Scale > 0.5 end
+					else preciseMarkActive = autofarm.farmprecisemark and self:PrecisionReady() end
 					preciseMarkCount = 0
 
 					if scorchingStarAura then
-						for k in pairs(tracked.precisemark) do
-							preciseMarkCount += 1
-						end
+						preciseMarkCount = self:PreciseMarkCount()
 
 						if preciseMarkCount < 3 then
 							scorchingStarAura = false
@@ -619,6 +681,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 					if not state.precise then
 						for k in pairs(tracked.precise) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,nil,opts) then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
@@ -650,6 +713,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 					else
 						for k, preciseMark in pairs(tracked.precise2) do
 							if opts.area and not fieldPositionPolicy:TrackedAllowed(k,preciseMark,opts) then continue end
+							if comboController and comboController.BlocksMove and comboController:BlocksMove(preciseMark.Position) then continue end
 							preciseCount += 1
 							if upkeep and opts.range and opts.origin and (opts.origin-preciseMark.Position).Magnitude>=opts.range then continue end
 
@@ -707,6 +771,82 @@ function gatheringPriorities:Precise(opts,upkeep)
 
 	if bestPrecise then return bestPrecise.name, bestPrecise.v end
 end
+		local function collectFastSmiley(object,opts)
+			-- Smiley tokens need sustained contact: proximity alone is not collection.
+			local deadline=os.clock()+math.min(4,distanceTo(object.Position,true)/math.max(1,getHumanoid().WalkSpeed)+.75)+6
+			local nextMove=0
+			while os.clock()<deadline do
+				if showerController.active or state.stop then return true end
+				if object.Name==true then
+					if tracked.dupedsmiley[object.ID]~=object then return true end
+				elseif not object.Parent then
+					tracked.dupedsmiley[object]=nil
+					return true
+				end
+				local humanoid=getHumanoid()
+				if humanoid.Health<=0 then return true end
+				local root=getRootPart().Position
+				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
+				if (opts.avoid and isPathClear(point,opts.avoid)) or comboController:BlocksMove(point) then break end
+				if os.clock()>=nextMove then
+					humanoid:MoveTo(point)
+					nextMove=os.clock()+.15
+				end
+				-- Keep this job owning movement while the server charges/collects it.
+				RunService.Heartbeat:Wait()
+			end
+			touchedMarks[object]=os.clock()+.4
+			return true
+		end
+
+		local precisionRefresh=false
+		local function pickRbcPrecision(opts)
+			if not (opts.rbc or opts.rbcprecision) or not cfg.rbc.enabled or not cfg.rbc.precise or state.precise then precisionRefresh=false;return end
+			local challenge=gameApi:Cache({"RoboChallenges","ActiveChallenge"})
+			if (tonumber(cfg.rbc.precisemin) or 1)>1 and (not challenge or (tonumber(challenge.Round) or 0)<cfg.rbc.precisemin) then precisionRefresh=false;return end
+			local precision=buffs.Precision
+			local remaining=precision and precision.Percent.Size.Y.Scale or 0
+			if not precision or precision.Text.Text~="x10" or remaining<.85 then precisionRefresh=true
+			elseif remaining>=.97 then precisionRefresh=false end
+			if not precisionRefresh then return end
+			local best,kind,bestDistance=nil,nil,math.huge
+			local function consider(object,targetKind)
+				if touchedMarks[object] or opts.area and not fieldPositionPolicy:TrackedAllowed(object,object,opts) then return end
+				local point=object.Position
+				if getFieldAt(point)~=currentField then return end
+				if opts.origin and opts.range and (point-opts.origin).Magnitude>=opts.range then return end
+				if opts.avoid and isPathClear(point,opts.avoid) then return end
+				local distance=distanceTo(point,true)
+				if distance<bestDistance then best,kind,bestDistance=object,targetKind,distance end
+			end
+			for object in pairs(tracked.precise) do
+				if object.Parent and object.BrickColor.Name~="Flint" and object.BrickColor.Name~="Alder" then consider(object,"Precise") end
+			end
+			for _,object in pairs(tracked.precise2) do
+				if not object.Mark and not object.Touched then consider(object,"Precise2") end
+			end
+			return kind,best
+		end
+
+		local function collectRbcPrecision(object,opts)
+			local deadline=os.clock()+3
+			local nextMove=0
+			while os.clock()<deadline do
+				if state.stop or showerController.active or not cfg.rbc.enabled or not cfg.rbc.precise then return true end
+				if object.Name==true then
+					if tracked.precise2[object.ID]~=object or object.Touched or object.Mark then return true end
+				elseif not object.Parent or object.BrickColor.Name=="Flint" or object.BrickColor.Name=="Alder" then return true end
+				if getHumanoid().Health<=0 then return true end
+				local root=getRootPart().Position
+				local point=Vector3.new(object.Position.X,root.Y,object.Position.Z)
+				local liveAvoid=opts.rbc and rbcSafety:Hazards(currentField) or opts.avoid
+				if (liveAvoid and isPathClear(point,liveAvoid)) or comboController:BlocksMove(point) then return true end
+				if os.clock()>=nextMove then getHumanoid():MoveTo(point);nextMove=os.clock()+.1 end
+				RunService.Heartbeat:Wait()
+			end
+			-- Unconfirmed targets remain eligible rather than being removed at six studs.
+			return true
+		end
 
 local blue=Instance.new("Part",zones);blue.Name="Pine Tree Forest";blue.Position=makeVector(400,20,200);blue.Size=field.Size
 local white=Instance.new("Part",zones);white.Name="Spider Field";white.Position=makeVector(700,20,200);white.Size=field.Size
@@ -1246,7 +1386,8 @@ stopMovement = function()
 		if wasTween then humanoid:ChangeState(Enum.HumanoidStateType.Freefall) end
 	end
 end
-	tweenTo = function(position2, gentle, skipCaveCheck)
+
+local mondoHop	tweenTo = function(position2, gentle, skipCaveCheck)
 		if showerController.active then error("return",0) end
 		if getHumanoid().Health == 0 then
 			error("return", 0)
@@ -1299,8 +1440,6 @@ end
 		AlignOrientation.CFrame = rootPart.CFrame
 		AlignOrientation.Parent = rootPart
 		state.travelAlignOrientation=AlignOrientation
-		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-
 		local parts={}
 		state.tweenParts=parts
 		local function rememberPart(part)
@@ -1311,6 +1450,7 @@ end
 		end
 		for _,part in ipairs(character:GetDescendants()) do rememberPart(part) end
 		state.tweenPartsAdded=character.DescendantAdded:Connect(rememberPart)
+		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 		local ownerThread=coroutine.running()
 		state.tweennoclip=RunService.PreSimulation:Connect(function()
 			if localPlayer.Character~=character or humanoid.Health<=0 or not rootPart.Parent or coroutine.status(ownerThread)=="dead" then stopMovement();return end
