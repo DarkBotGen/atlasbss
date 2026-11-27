@@ -9252,6 +9252,12 @@ local function walkTo(target, timeout, range)
 			connections:Cancel("movetofinished")
 			return
 		end
+		if inCurrentField and range == 0 and state.activityStatus == 1 and cfg and cfg.autofarm and cfg.autofarm.precisionupkeep ~= false
+			and gatheringPriorities and gatheringPriorities.HasActivePrecisionTargets and gatheringPriorities:HasActivePrecisionTargets() then
+			pcall(function() getHumanoid():Move(Vector3.zero, false) end)
+			connections:Cancel("movetofinished")
+			return
+		end
 		if not (not (os.clock() - now < (timeout or 5)) or not (getHumanoid().Health > 0)) then
 			if range == 0 then
 				RunService.Heartbeat:Wait()
@@ -47936,11 +47942,15 @@ function petalCollector:Collect(first, opts)
 	while petal and count < 12 and os.clock() - batchStarted < 2 do
 		if state.stop or humanoid.Health <= 0 or localPlayer.Character ~= character or not self:Enabled(opts) then return false end
 		if self:Eligible(petal, opts) then
-			local started, progressAt, commandAt = os.clock(), os.clock(), -math.huge
+			local started, progressAt, commandAt, precCheck = os.clock(), os.clock(), -math.huge, 0
 			local bestSquared, contactAt = math.huge, nil
 			while tracked.petals[petal] and (petal.Name == true or petal.Parent) do
 				if state.stop or humanoid.Health <= 0 or localPlayer.Character ~= character or not self:Enabled(opts) then return false end
 				local now, goal, p = os.clock(), petal.Position, root.Position
+				if cfg.autofarm.precisionupkeep ~= false and now >= precCheck then
+					precCheck = now + 0.10
+					if gatheringPriorities:PrecisionUpkeep(opts) then return true end
+				end
 				if comboController and comboController:BlocksMove(goal) then break end
 				if opts.avoid and not isPathClear(goal, opts.avoid) then break end
 				local dx, dz = goal.X - p.X, goal.Z - p.Z
@@ -48391,6 +48401,46 @@ function gatheringPriorities:PrecisionReady()
 	return self:PrecisionMode() == "mark"
 end
 
+function gatheringPriorities:IsCrosshairIgnoredOrDone(part)
+	if not part or (typeof(part) == "Instance" and not part.Parent) then return true end
+	local name = part.BrickColor and part.BrickColor.Name or ""
+	if name == "Flint" then return true end
+	if name == "Red flip/flop" or name == "Alder" then return false end
+	if string.find(string.lower(name), "green", 1, true) or name == "Shamrock" or name == "Mint" or name == "Camo" then
+		return true
+	end
+	local col = part.Color
+	if col and type(col.G) == "number" and type(col.R) == "number" and col.G > col.R + 0.15 and col.G > 0.45 then
+		return true
+	end
+	return false
+end
+
+function gatheringPriorities:HasActivePrecisionTargets()
+	if not cfg or not cfg.autofarm or cfg.autofarm.precisionupkeep == false or not currentField then return false end
+	local nowClock = os.clock()
+	for id, entry in pairs(tracked.precise2) do
+		if type(entry) ~= "table" or (type(entry.ExpiresAt) == "number" and nowClock > entry.ExpiresAt) then
+			tracked.precise2[id] = nil
+			tracked.precisegroup[id] = nil
+		elseif not entry.Touched and not (touchedMarks and touchedMarks[entry]) and entry.Position then
+			if (not getFieldAt or getFieldAt(entry.Position) == currentField)
+				and not (comboController and comboController.BlocksMove and comboController:BlocksMove(entry.Position)) then
+				return true
+			end
+		end
+	end
+	for k in pairs(tracked.precise) do
+		if not self:IsCrosshairIgnoredOrDone(k) and not (touchedMarks and touchedMarks[k]) and k.Position then
+			if (not getFieldAt or getFieldAt(k.Position) == currentField)
+				and not (comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position)) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function gatheringPriorities:PrecisionState()
 	local precision = buffs.Precision
 	if not precision then return 0, 0 end
@@ -48556,7 +48606,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
 
-							if not (name == "Flint" or touchedMarks[k]) then
+							if not (self:IsCrosshairIgnoredOrDone(k) or touchedMarks[k]) then
 								isPurpleMark = name == "Alder"
 								preciseKind = standInPrecise and "Precise Convert" or isPurpleMark and preciseMarkActive and not scorchingStarAura and "Precise Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise"
 
@@ -50058,7 +50108,7 @@ end
 							preciseCount += 1
 							name = k.BrickColor.Name
 
-							if not (name == "Flint" or touchedMarks[k]) then
+							if not (self:IsCrosshairIgnoredOrDone(k) or touchedMarks[k]) then
 								isPurpleMark = name == "Alder"
 								preciseKind = standInPrecise and "Precise Convert" or isPurpleMark and preciseMarkActive and not scorchingStarAura and "Precise Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise"
 
@@ -54377,6 +54427,7 @@ end
 			local now = os.clock()
 
 			while true do
+				if gatheringPriorities:ShouldPreempt() then return true end
 				if not RunService.Heartbeat:Wait() then
 					return
 				else
@@ -54617,10 +54668,10 @@ end
 					end
 
 					if cfg.autofarm.precisionupkeep~=false and state.activityStatus==1 and not gatheringPriorities:PrecisionReady() then
-						touchedMarks[preciseMark]=os.clock()+0.25;return true
+						touchedMarks[preciseMark]=os.clock()+0.25; smoothMovement.goal = nil; return true
 					end
-					if not preciseMark.Parent or preciseMark.BrickColor.Name == "Flint" then
-						touchedMarks[preciseMark] = os.clock() + 3
+					if gatheringPriorities:IsCrosshairIgnoredOrDone(preciseMark) then
+						touchedMarks[preciseMark] = os.clock() + 5.5
 						smoothMovement.goal = nil
 						return true
 					end
@@ -54635,7 +54686,8 @@ end
 
 			local landDeadline = os.clock() + 1.2
 			local nextLandMove = 0
-			while preciseMark.Parent and preciseMark.BrickColor.Name ~= "Flint" and os.clock() < landDeadline do
+			local arrivedAt = nil
+			while not gatheringPriorities:IsCrosshairIgnoredOrDone(preciseMark) and os.clock() < landDeadline do
 				if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then break end
 				if options.rbc and gatheringPriorities:ShouldPreempt() then break end
 				if cfg.autofarm.precisionupkeep ~= false and state.activityStatus == 1 and not gatheringPriorities:PrecisionReady() then
@@ -54646,8 +54698,19 @@ end
 				local rootPos = getRootPart().Position
 				local targetPt = Vector3.new(preciseMark.Position.X, rootPos.Y, preciseMark.Position.Z)
 				if comboController:BlocksMove(targetPt) then break end
+				local d = distanceTo(targetPt, true)
+				if d <= 3.0 then
+					if not arrivedAt then arrivedAt = os.clock() end
+					if os.clock() - arrivedAt >= 0.30 then
+						touchedMarks[preciseMark] = os.clock() + 5.5
+						smoothMovement.goal = nil
+						return true
+					end
+				else
+					arrivedAt = nil
+				end
 				if os.clock() >= nextLandMove then
-					if distanceTo(targetPt, true) > 1.5 then
+					if d > 1.5 then
 						getHumanoid():MoveTo(targetPt)
 					end
 					nextLandMove = os.clock() + 0.12
@@ -54655,7 +54718,7 @@ end
 				if not RunService.Heartbeat:Wait() then break end
 			end
 
-			touchedMarks[preciseMark] = os.clock() + 3
+			touchedMarks[preciseMark] = os.clock() + (gatheringPriorities:IsCrosshairIgnoredOrDone(preciseMark) and 5.5 or 3)
 			smoothMovement.goal = nil
 
 			return true
@@ -54783,6 +54846,7 @@ end
 
 			local landDeadline = os.clock() + 1.2
 			local nextLandMove = 0
+			local arrivedAt = nil
 			while tracked.precise2[mark.ID] == mark and not mark.Touched and os.clock() < landDeadline do
 				if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then break end
 				if options.rbc and gatheringPriorities:ShouldPreempt() then break end
@@ -54794,8 +54858,20 @@ end
 				local rootPos = getRootPart().Position
 				local targetPt = Vector3.new(mark.Position.X, rootPos.Y, mark.Position.Z)
 				if comboController:BlocksMove(targetPt) then break end
+				local d = distanceTo(targetPt, true)
+				if d <= 3.0 then
+					if not arrivedAt then arrivedAt = os.clock() end
+					if os.clock() - arrivedAt >= 0.30 then
+						mark.Touched = true
+						touchedMarks[mark] = os.clock() + 5.5
+						smoothMovement.goal = nil
+						return true
+					end
+				else
+					arrivedAt = nil
+				end
 				if os.clock() >= nextLandMove then
-					if distanceTo(targetPt, true) > 1.5 then
+					if d > 1.5 then
 						getHumanoid():MoveTo(targetPt)
 					end
 					nextLandMove = os.clock() + 0.12
@@ -54803,7 +54879,7 @@ end
 				if not RunService.Heartbeat:Wait() then break end
 			end
 
-			touchedMarks[mark] = os.clock() + 3
+			touchedMarks[mark] = os.clock() + ((mark.Touched or tracked.precise2[mark.ID] ~= mark) and 5.5 or 3)
 			smoothMovement.goal = nil
 
 			return true
@@ -54895,10 +54971,12 @@ end
 			local now = os.clock()
 
 			while not (not triangulating or not (os.clock() - now < 3)) do
+				if gatheringPriorities:ShouldPreempt() then return true end
 				if not RunService.Heartbeat:Wait() then
 					break
 				end
 				task.wait(0.2)
+				if gatheringPriorities:ShouldPreempt() then return true end
 				triangulating = nil
 
 				for k in pairs(tracked.triangulate) do
@@ -54947,6 +55025,7 @@ end
 			smoothMovement:MoveTo(token.Position)
 			local deadline = os.clock() + 1 + distanceTo(token.Position, true) / getHumanoid().WalkSpeed
 			local now = os.clock()
+			local nextMove = now + 0.25
 
 			while true do
 				if gatheringPriorities:ShouldPreempt() then return true end
@@ -54954,6 +55033,9 @@ end
 					return
 				elseif not (not (distanceTo(token.Position, true) < 4) and not (deadline < os.clock()) and not (os.clock() - now > 4)) then
 					break
+				elseif os.clock() >= nextMove then
+					nextMove = os.clock() + 0.25
+					smoothMovement:MoveTo(token.Position)
 				end
 			end
 
@@ -54964,19 +55046,48 @@ end
 
 		local function collectPreciseSet(firstTarget, options, isTracked)
 			options = options or {}
-			local sweepDeadline = os.clock() + 5.5
+			if fieldPositionPolicy and fieldPositionPolicy.ReleaseIdle then fieldPositionPolicy:ReleaseIdle() end
+			if smoothMovement then smoothMovement.roam = nil end
+			local sweepDeadline = os.clock() + 6.0
 			local activeGroup = isTracked and (firstTarget.Group or tracked.precisegroup[firstTarget.ID]) or nil
-			local function isDone(target)
+			local sweepAvoid = nil
+			if options.avoid then
+				sweepAvoid = table.clone(options.avoid)
+				for t in pairs(tracked.precise) do sweepAvoid[t] = nil end
+				for _, t in pairs(tracked.precise2) do
+					sweepAvoid[t] = nil
+					if t.Position then sweepAvoid[t.Position] = nil end
+				end
+				if next(sweepAvoid) == nil then sweepAvoid = nil end
+			end
+			local function physicalCrosshairDoneAt(pos)
+				if not pos or not tracked.precise then return false end
+				for part in pairs(tracked.precise) do
+					if part and part.Parent and part.Position then
+						local dx, dz = part.Position.X - pos.X, part.Position.Z - pos.Z
+						if dx * dx + dz * dz <= 12.25 then
+							local bc = part.BrickColor and part.BrickColor.Name or ""
+							if bc ~= "Flint" and gatheringPriorities:IsCrosshairIgnoredOrDone(part) then
+								return true
+							end
+						end
+					end
+				end
+				return false
+			end
+			local function isDone(target, startColor)
 				if isTracked then
 					return tracked.precise2[target.ID] ~= target or target.Touched == true
 						or (type(target.ExpiresAt) == "number" and os.clock() > target.ExpiresAt)
+						or physicalCrosshairDoneAt(target.Position)
 				end
-				return not target.Parent or target.BrickColor.Name == "Flint"
+				if gatheringPriorities:IsCrosshairIgnoredOrDone(target) then return true end
+				local name = target.BrickColor and target.BrickColor.Name or ""
+				if startColor == "Red flip/flop" and name ~= "Red flip/flop" and name ~= "Alder" then return true end
+				if startColor == "Alder" and name ~= "Alder" then return true end
+				return false
 			end
-			local function pickNext(groupId)
-				if not options.rbc and groupId == nil and gatheringPriorities:PrecisionMode() == "mark" then
-					return nil
-				end
+			local function pickNext(groupId, completedCount)
 				local mode = gatheringPriorities:PrecisionMode()
 				local best, bestRank, bestDist = nil, math.huge, math.huge
 				if isTracked then
@@ -54995,13 +55106,13 @@ end
 					end
 					for id, entry in pairs(tracked.precise2) do
 						if not isDone(entry) and not touchedMarks[entry] then
+							if fieldPositionPolicy and fieldPositionPolicy.StrictAllowed and not fieldPositionPolicy:StrictAllowed(entry.Position) then continue end
 							if options.area and not fieldPositionPolicy:TrackedAllowed(id, entry, options) then continue end
 							local pos = entry.Position
 							if not pos then continue end
 							if not (options.ignorefield and getFieldAt(pos) or not options.ignorefield and getFieldAt(pos) == currentField) then continue end
-							if options.range and options.origin and (options.origin - pos).Magnitude >= options.range then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
-							if options.avoid and isPathClear(pos, options.avoid) then continue end
+							if sweepAvoid and isPathClear(pos, sweepAvoid) then continue end
 							local gid = entry.Group or tracked.precisegroup[id]
 							local rank = (groupId ~= nil and gid == groupId) and 0 or (entry.Mark and 2 or 1)
 							local dist = distanceTo(pos, true)
@@ -55011,19 +55122,19 @@ end
 						end
 					end
 				else
-					if not options.rbc and mode == "mark" then
+					if completedCount >= 3 and not options.rbc and mode == "mark" then
 						return nil
 					end
 					for entry in pairs(tracked.precise) do
 						if not isDone(entry) and not touchedMarks[entry] then
+							if fieldPositionPolicy and fieldPositionPolicy.StrictAllowed and not fieldPositionPolicy:StrictAllowed(entry.Position) then continue end
 							if options.area and not fieldPositionPolicy:TrackedAllowed(entry, nil, options) then continue end
 							local pos = entry.Position
 							if not pos then continue end
 							if not (options.ignorefield and getFieldAt(pos) or not options.ignorefield and getFieldAt(pos) == currentField) then continue end
-							if options.range and options.origin and (options.origin - pos).Magnitude >= options.range then continue end
 							if comboController and comboController.BlocksMove and comboController:BlocksMove(pos) then continue end
-							if options.avoid and isPathClear(pos, options.avoid) then continue end
-							local rank = (entry.BrickColor.Name == "Alder") and 1 or 0
+							if sweepAvoid and isPathClear(pos, sweepAvoid) then continue end
+							local rank = (entry.BrickColor and entry.BrickColor.Name == "Alder") and 1 or 0
 							local dist = distanceTo(pos, true)
 							if rank < bestRank or (rank == bestRank and dist < bestDist) then
 								best, bestRank, bestDist = entry, rank, dist
@@ -55035,38 +55146,64 @@ end
 			end
 
 			local current = firstTarget
-			local steps = 0
+			local steps, completedCount = 0, 0
 			while current and steps < 6 and os.clock() < sweepDeadline do
 				steps += 1
 				gatheringPriorities.activeTarget = current
 				local currentGroup = isTracked and (current.Group or tracked.precisegroup[current.ID]) or nil
 				if currentGroup ~= nil then activeGroup = currentGroup end
-				local targetDeadline = os.clock() + 2.5
+				local startColor = (not isTracked and current.BrickColor and current.BrickColor.Name) or nil
+				local targetDeadline = os.clock() + 2.2
 				local nextMove = 0
+				local arrivedAt = nil
+				local aborted = false
 				while os.clock() < targetDeadline and os.clock() < sweepDeadline do
 					if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then
 						smoothMovement.goal = nil
 						return true
 					end
-					if isDone(current) then break end
+					if isDone(current, startColor) then break end
 					local root = getRootPart().Position
 					local point = Vector3.new(current.Position.X, root.Y, current.Position.Z)
 					if comboController:BlocksMove(point) or (options.rbc and isPathClear(point, rbcSafety:Hazards(currentField), true, true)) then
-						touchedMarks[current] = os.clock() + 0.5
+						aborted = true
 						break
+					end
+					local d = distanceTo(point, true)
+					if d <= 3.0 then
+						if not arrivedAt then arrivedAt = os.clock() end
+						if os.clock() - arrivedAt >= 0.30 then
+							if isTracked then current.Touched = true end
+							break
+						end
+					else
+						arrivedAt = nil
 					end
 					if os.clock() >= nextMove then
 						getHumanoid():MoveTo(point)
-						nextMove = os.clock() + 0.10
+						nextMove = os.clock() + 0.08
 					end
 					if not RunService.Heartbeat:Wait() then break end
 				end
-				if not isDone(current) then
-					touchedMarks[current] = os.clock() + 0.5
+				local doneNow = (not aborted) and (isDone(current, startColor) or arrivedAt ~= nil)
+				if doneNow then
+					completedCount += 1
+					touchedMarks[current] = os.clock() + 5.5
 				else
-					touchedMarks[current] = os.clock() + 3
+					touchedMarks[current] = os.clock() + 0.5
 				end
-				current = pickNext(activeGroup)
+				current = pickNext(activeGroup, completedCount)
+				if not current and completedCount < 3 and os.clock() < sweepDeadline then
+					local staggerDeadline = math.min(sweepDeadline, os.clock() + 0.55)
+					while not current and os.clock() < staggerDeadline do
+						if state.stop or comboController.active or showerController.active or getHumanoid().Health <= 0 then
+							smoothMovement.goal = nil
+							return true
+						end
+						if not RunService.Heartbeat:Wait() then break end
+						current = pickNext(activeGroup, completedCount)
+					end
+				end
 			end
 			smoothMovement.goal = nil
 			return true
@@ -55310,6 +55447,8 @@ end
 			for i, move in ipairs(pattern) do
 				if getHumanoid().Health == 0 then
 					error("return", 0)
+				elseif cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets() then
+					return
 				elseif i ~= 1 then
 					if i > 4 then
 						walkTo(applyMoves(move), true, 0)
@@ -59501,7 +59640,9 @@ end
 					end
 
 					local ok, result = pcall(function()
-						if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+						if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 							local v126 = nil
 
 							if firefly then
@@ -60084,7 +60225,9 @@ farmPuffshroom = function(v119)
 			error("return", 0)
 		end
 
-		if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+		if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 			logger.log(puffRarity, "Puffshroom (lvl:", puffLevel .. "): Found in", field.Name)
 			reportStatus(3)
 			fieldPositionPolicy:ReleaseIdle()
@@ -60299,7 +60442,9 @@ local function destroyTotems()
 						break
 					end
 
-					if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+					if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 						goToField()
 
 						if cfg.combat.avoidmobs then
@@ -61030,7 +61175,9 @@ do
 					break
 				end
 
-				if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+				if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 					local newSprout, newSproutType = findSprout()
 
 					if not (not newSprout or not (newSprout ~= sprout and not ((newSproutType ~= "Rare" or sproutType ~= "Basic") and (newSproutType ~= "Moon" or not (sproutType == "Basic" or sproutType == "Rare")) and (newSproutType ~= "Epic" or not (sproutType == "Basic" or sproutType == "Rare" or sproutType == "Moon"))))) then
@@ -66048,7 +66195,9 @@ end
 						end
 
 						if not cogmowerTask and (not cfg.rbc.goldcogmowers or not (currentRound < 20)) or not rbc:HandleCogmowers(cogmowerTask) then
-							if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+							if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 								if not (not cfg.toys.stickerstacker or not (not not (state.bees >= 15) and not buffs["Sticker Stacker"])) then
 									local ok4 = not toyUse.time["Sticker Stacker"]
 
@@ -66410,7 +66559,9 @@ end
 							break
 						end
 
-						if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+						if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 							reportStatus(1, "Rose Field")
 							goToField()
 
@@ -67749,7 +67900,9 @@ end
 			end
 		end
 
-		if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
+		if (not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon)
+			or (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets())
+			or not shouldConvert(true) then
 			reportStatus(1)
 
 			if not (not cfg.combat.snail or not (state.bees >= 15)) then
@@ -68082,7 +68235,11 @@ end
 						farmStep(options)
 					end
 				else
-					walkPattern()
+					if cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:PrecisionUpkeep(options) then
+						farmStep(options)
+					else
+						walkPattern()
+					end
 				end
 			else
 				local v136 = { [tracked.mondo.HumanoidRootPart.Position] = 40 }
@@ -68093,7 +68250,7 @@ end
 
 				farmStep({ avoid = v136, skipoverlap = true })
 			end
-		elseif shouldConvert() then
+		elseif shouldConvert() and not (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets()) then
 			convertHoney()
 		end
 	end
@@ -68135,7 +68292,9 @@ end
 						end
 						farmStep(options)
 					else
-						v127()
+						if not (cfg.autofarm.precisionupkeep ~= false and gatheringPriorities:HasActivePrecisionTargets()) then
+							v127()
+						end
 						v134()
 					end
 				end)

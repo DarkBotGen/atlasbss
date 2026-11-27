@@ -571,6 +571,46 @@ function gatheringPriorities:PrecisionReady()
 	return self:PrecisionMode() == "mark"
 end
 
+function gatheringPriorities:IsCrosshairIgnoredOrDone(part)
+	if not part or (typeof(part) == "Instance" and not part.Parent) then return true end
+	local name = part.BrickColor and part.BrickColor.Name or ""
+	if name == "Flint" then return true end
+	if name == "Red flip/flop" or name == "Alder" then return false end
+	if string.find(string.lower(name), "green", 1, true) or name == "Shamrock" or name == "Mint" or name == "Camo" then
+		return true
+	end
+	local col = part.Color
+	if col and type(col.G) == "number" and type(col.R) == "number" and col.G > col.R + 0.15 and col.G > 0.45 then
+		return true
+	end
+	return false
+end
+
+function gatheringPriorities:HasActivePrecisionTargets()
+	if not cfg or not cfg.autofarm or cfg.autofarm.precisionupkeep == false or not currentField then return false end
+	local nowClock = os.clock()
+	for id, entry in pairs(tracked.precise2) do
+		if type(entry) ~= "table" or (type(entry.ExpiresAt) == "number" and nowClock > entry.ExpiresAt) then
+			tracked.precise2[id] = nil
+			tracked.precisegroup[id] = nil
+		elseif not entry.Touched and not (touchedMarks and touchedMarks[entry]) and entry.Position then
+			if (not getFieldAt or getFieldAt(entry.Position) == currentField)
+				and not (comboController and comboController.BlocksMove and comboController:BlocksMove(entry.Position)) then
+				return true
+			end
+		end
+	end
+	for k in pairs(tracked.precise) do
+		if not self:IsCrosshairIgnoredOrDone(k) and not (touchedMarks and touchedMarks[k]) and k.Position then
+			if (not getFieldAt or getFieldAt(k.Position) == currentField)
+				and not (comboController and comboController.BlocksMove and comboController:BlocksMove(k.Position)) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function gatheringPriorities:PrecisionState()
 	local precision = buffs.Precision
 	if not precision then return 0, 0 end
@@ -736,7 +776,7 @@ function gatheringPriorities:Precise(opts,upkeep)
 							if upkeep and opts.range and opts.origin and (opts.origin-k.Position).Magnitude>=opts.range then continue end
 							name = k.BrickColor.Name
 
-							if not (name == "Flint" or touchedMarks[k]) then
+							if not (self:IsCrosshairIgnoredOrDone(k) or touchedMarks[k]) then
 								isPurpleMark = name == "Alder"
 								preciseKind = standInPrecise and "Precise Convert" or isPurpleMark and preciseMarkActive and not scorchingStarAura and "Precise Purple" or (not preciseMarkActive or scorchingStarAura) and "Precise"
 
