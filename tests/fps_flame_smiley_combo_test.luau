@@ -108,6 +108,7 @@ end
 local BASE_PARTS = { Part = true, MeshPart = true, WedgePart = true, UnionOperation = true, TrussPart = true, CornerWedgePart = true, SpawnLocation = true }
 local POST_EFFECTS = { PostEffect = true, BloomEffect = true, BlurEffect = true, ColorCorrectionEffect = true, SunRaysEffect = true, DepthOfFieldEffect = true }
 local LAYER_COLLECTORS = { LayerCollector = true, BillboardGui = true, SurfaceGui = true, ScreenGui = true }
+local LIGHT_CLASSES = { Light = true, PointLight = true, SpotLight = true, SurfaceLight = true }
 
 local function ancestorsFire(o, prop, subj)
 	while o do o[prop]:Fire(subj); o = o.Parent end
@@ -186,6 +187,7 @@ function methods:IsA(cls)
 	if cls == "BasePart" and BASE_PARTS[self.ClassName] then return true end
 	if cls == "PostEffect" and POST_EFFECTS[self.ClassName] then return true end
 	if cls == "LayerCollector" and LAYER_COLLECTORS[self.ClassName] then return true end
+	if cls == "Light" and LIGHT_CLASSES[self.ClassName] then return true end
 	if cls == "PVInstance" and (BASE_PARTS[self.ClassName] or self.ClassName == "Model") then return true end
 	return false
 end
@@ -306,6 +308,7 @@ local localHat = Instance.new("Accessory", localChar); local localHatHandle = In
 local localAmulet = Instance.new("Model", localChar); localAmulet.Name = "Star Amulet"; local localAmuletPart = Instance.new("Part", localAmulet); localAmuletPart.Transparency = 0
 
 local remoteChar = Instance.new("Model", workspace); remoteChar.Name = "RemoteHelper"; otherPlayer.Character = remoteChar
+local remoteHum = Instance.new("Humanoid", remoteChar); remoteHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
 local remoteRoot = Instance.new("Part", remoteChar); remoteRoot.Name = "HumanoidRootPart"; remoteRoot.Position = Vector3.new(25, 14, 0)
 local remoteTorso = Instance.new("Part", remoteChar); remoteTorso.Name = "Torso"; remoteTorso.Transparency = 0
 
@@ -319,8 +322,12 @@ localPlayer.Parent = Players
 otherPlayer.Parent = Players
 function Players:GetPlayers() return self.list end
 
+local StarterGui = { states = { PlayerList = true, Chat = true, EmotesMenu = true } }
+function StarterGui:GetCoreGuiEnabled(t) return self.states[t] end
+function StarterGui:SetCoreGuiEnabled(t, v) self.states[t] = v end
+
 local game = Instance.new("DataModel"); game.Name = "Game"
-local services = { Lighting = Lighting, Workspace = workspace, Players = Players, RunService = RunService, UserInputService = UserInputService }
+local services = { Lighting = Lighting, Workspace = workspace, Players = Players, RunService = RunService, UserInputService = UserInputService, StarterGui = StarterGui }
 function game:GetService(k) return services[k] end
 workspace.Parent = game
 Lighting.Parent = game
@@ -664,6 +671,8 @@ local ultraAntiLag = {
 	savedRenderQuality = nil,
 	savedPollenPopUp = nil,
 	pollenPopUpChanged = false,
+	savedCoreGui = nil,
+	savedChatCoreGui = nil,
 }
 
 function ultraAntiLag:Remember(tbl, object, property, value)
@@ -782,7 +791,7 @@ end
 
 function ultraAntiLag:SyncParticleFX(desc)
 	if not self.enabled or not desc or not desc.Parent then return end
-	if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") then
+	if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
 		if self.savedParticleFX[desc] == nil then
 			local ok, wasOn = pcall(function() return desc.Enabled end)
 			if ok then self.savedParticleFX[desc] = wasOn end
@@ -824,6 +833,8 @@ function ultraAntiLag:HideCharacterVisuals(char, isLocal)
 			self:Remember(self.savedTransientProps, d, "Transparency", 1)
 		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Sparkles") or d:IsA("Light") then
 			self:Remember(self.savedTransientProps, d, "Enabled", false)
+		elseif d:IsA("Humanoid") then
+			self:Remember(self.savedTransientProps, d, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
 		end
 	end
 	for _, d in ipairs(char:GetDescendants()) do apply(d) end
@@ -909,8 +920,8 @@ function ultraAntiLag:Set(enabled)
 	self.enabled = enabled
 	threads:Cancel("ultraAntiLagScan")
 	for _, id in ipairs({
-		"ultraAntiLagLighting", "ultraAntiLagBees", "ultraAntiLagParticles",
-		"ultraAntiLagBalloons", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
+		"ultraAntiLagLighting", "ultraAntiLagBees", "ultraAntiLagParticles", "ultraAntiLagFlames",
+		"ultraAntiLagBalloons", "ultraAntiLagBalloonsRoot", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
 		"ultraAntiLagWorkspaceChild",
 	}) do
 		connections:Cancel(id)
@@ -973,6 +984,12 @@ function ultraAntiLag:Set(enabled)
 			self.savedQuality = nil
 			pcall(function() UserSettings():GetService("UserGameSettings").SavedQualityLevel = prev end)
 		end
+		if self.savedCoreGui and StarterGui then
+			for name in pairs(self.savedCoreGui) do
+				pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType[name], true) end)
+			end
+		end
+		self.savedCoreGui = nil
 		if self.pollenPopUpChanged then
 			local prevPopUp = self.savedPollenPopUp ~= false
 			self.pollenPopUpChanged = false
@@ -1050,6 +1067,18 @@ function ultraAntiLag:Set(enabled)
 			if child:IsA("Clouds") then self:Remember(self.savedProps, child, "Enabled", false) end
 		end
 	end
+	if StarterGui and not self.savedCoreGui then
+		local savedCore = {}
+		for _, name in ipairs({ "PlayerList", "EmotesMenu" }) do
+			local coreType = Enum.CoreGuiType[name]
+			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+			if okGet and wasOn then
+				savedCore[name] = true
+				pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+			end
+		end
+		self.savedCoreGui = savedCore
+	end
 	if not self.pollenPopUpChanged and gameApi.PlayerSettingsEvent and gameApi.ClientStatCache then
 		local okPop, curPopUp = pcall(function() return gameApi:Cache({ "Settings", "PollenPopUps" }) end)
 		if okPop and curPopUp ~= false then
@@ -1111,13 +1140,51 @@ function ultraAntiLag:Set(enabled)
 		end
 	end
 	bindParticles(workspace:FindFirstChild("Particles"))
+	local function bindFlames(folder)
+		if not folder or connections:Get("ultraAntiLagFlames") then return end
+		for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
+		if folder.DescendantAdded then
+			connections:Add("ultraAntiLagFlames", folder.DescendantAdded:Connect(function(desc)
+				if self.enabled then self:SyncParticleFX(desc) end
+			end))
+		end
+	end
+	bindFlames(workspace:FindFirstChild("PlayerFlames"))
 
-	local balloons = workspace:FindFirstChild("Balloons")
-	local fieldBalloons = balloons and balloons:FindFirstChild("FieldBalloons")
-	if fieldBalloons then
+	local function bindFieldBalloons(fieldBalloons)
+		if not fieldBalloons or connections:Get("ultraAntiLagBalloons") then return end
 		for _, child in ipairs(fieldBalloons:GetChildren()) do self:HideBalloonModel(child) end
 		connections:Add("ultraAntiLagBalloons", fieldBalloons.ChildAdded:Connect(function(child)
 			if self.enabled then self:HideBalloonModel(child) end
+		end))
+	end
+	local function bindBalloons(balloons)
+		if not balloons then return end
+		bindFieldBalloons(balloons:FindFirstChild("FieldBalloons"))
+		if not connections:Get("ultraAntiLagBalloons") and not connections:Get("ultraAntiLagBalloonsRoot") and balloons.ChildAdded then
+			connections:Add("ultraAntiLagBalloonsRoot", balloons.ChildAdded:Connect(function(child)
+				if self.enabled and child.Name == "FieldBalloons" then
+					connections:Cancel("ultraAntiLagBalloonsRoot")
+					bindFieldBalloons(child)
+				end
+			end))
+		end
+	end
+	bindBalloons(workspace:FindFirstChild("Balloons"))
+
+	if workspace.ChildAdded then
+		connections:Add("ultraAntiLagWorkspaceChild", workspace.ChildAdded:Connect(function(child)
+			if not self.enabled then return end
+			local name = child.Name
+			if name == "Bees" then bindBees(child)
+			elseif name == "Particles" then bindParticles(child)
+			elseif name == "PlayerFlames" then bindFlames(child)
+			elseif name == "Balloons" then bindBalloons(child)
+			else
+				for _, cosmeticName in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
+					if name == cosmeticName then self:Detach(child, self.detached, self.detachedSet); break end
+				end
+			end
 		end))
 	end
 
@@ -1187,7 +1254,27 @@ function ultraAntiLag:Set(enabled)
 	end)
 end
 
+function ultraAntiLag:SetNoRenderChat(hidden)
+	if not StarterGui then return end
+	local coreType = Enum.CoreGuiType.Chat
+	if hidden then
+		if self.savedChatCoreGui == nil then
+			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+			self.savedChatCoreGui = (okGet and wasOn == true) and true or false
+		end
+		if self.savedChatCoreGui then
+			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+		end
+	else
+		if self.savedChatCoreGui then
+			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, true) end)
+		end
+		self.savedChatCoreGui = nil
+	end
+end
+
 function ultraAntiLag:Shutdown()
+	self:SetNoRenderChat(false)
 	self:Set(false)
 end
 
@@ -1217,6 +1304,12 @@ do
 	local balloons = Instance.new("Folder", balloonsRoot); balloons.Name = "FieldBalloons"
 	local balloon = Instance.new("Model", balloons); balloon.Name = "RedBalloon"
 	local balloonPart = Instance.new("Part", balloon); balloonPart.Transparency = 0
+
+	local playerFlames = Instance.new("Folder", workspace); playerFlames.Name = "PlayerFlames"
+	local flame1 = Instance.new("Part", playerFlames); flame1.Name = "Flame1"
+	local flamePF = Instance.new("ParticleEmitter", flame1); flamePF.Name = "PF"; flamePF.Enabled = true; flamePF.Size = NumberSequence.new(2)
+	local flameLight = Instance.new("PointLight", flame1); flameLight.Enabled = true
+	local remoteTag = Instance.new("BillboardGui", remoteTorso); remoteTag.Name = "Tag"; remoteTag.Enabled = true
 
 	local bees = Instance.new("Folder", workspace); bees.Name = "Bees"
 	local activeBee = Instance.new("Model", bees); activeBee.Name = "Tabby"
@@ -1252,6 +1345,19 @@ do
 	assert(localAmuletPart.LocalTransparencyModifier == 1, "Local amulet visual not hidden")
 	assert(rootPart.LocalTransparencyModifier == 0 and remoteRoot.Position.X == 25, "HRP altered by antilag")
 	assert(remoteTorso.LocalTransparencyModifier == 1, "Remote character visual not hidden")
+	assert(remoteHum.DisplayDistanceType == Enum.HumanoidDisplayDistanceType.None, "Remote Humanoid DisplayDistanceType not set to None")
+	assert(remoteTag.Enabled == true, "Remote BillboardGui (Safeshower passive popup) must NOT be disabled")
+	assert(flamePF.Enabled == false and flamePF.Size.Keypoints[1].Value == 2, "Flame PF emitter not disabled cleanly or Size altered")
+	assert(flameLight.Enabled == false, "Flame PointLight not disabled by SyncParticleFX")
+	local flame2 = Instance.new("Part"); flame2.Name = "Flame2"
+	local flame2PF = Instance.new("ParticleEmitter", flame2); flame2PF.Name = "PF"; flame2PF.Enabled = true; flame2PF.Size = NumberSequence.new(2)
+	flame2.Parent = playerFlames
+	assert(flame2PF.Enabled == false, "New flame PF added while ultraAntiLag active was not disabled")
+	assert(StarterGui.states.PlayerList == false and StarterGui.states.EmotesMenu == false and StarterGui.states.Chat == true, "CoreGui mismatch under Ultra Anti-Lag (Chat should remain true)")
+	ultraAntiLag:SetNoRenderChat(true)
+	assert(StarterGui.states.Chat == false, "SetNoRenderChat(true) did not hide Chat")
+	ultraAntiLag:SetNoRenderChat(false)
+	assert(StarterGui.states.Chat == true, "SetNoRenderChat(false) did not restore Chat")
 	assert(activeBee.Parent == nil and staleBee.Parent == nil, "Bees not detached")
 
 	-- PruneBees drops departed owner's bee cleanly
@@ -1276,6 +1382,20 @@ do
 	assert(fieldDecos.Parent == workspace and fences.Parent == mapFolder and caveDeco.Parent == decoFolder, "Cosmetic folders not restored")
 	assert(activeBee.Parent == bees and staleBee.Parent == nil, "Pruned bee unexpectedly restored or active bee missing")
 	assert(flowerPart.LocalTransparencyModifier == 0 and flowerDecal.Transparency == 0 and balloonPart.LocalTransparencyModifier == 0, "Hidden parts/decals not restored")
+	assert(flamePF.Enabled == true and flameLight.Enabled == true, "Flame PF/PointLight emitter not restored on disable")
+	assert(remoteHum.DisplayDistanceType == Enum.HumanoidDisplayDistanceType.Viewer and remoteTag.Enabled == true, "Remote Humanoid DisplayDistanceType or BillboardGui state mismatch on disable")
+	assert(StarterGui.states.PlayerList == true and StarterGui.states.Chat == true and StarterGui.states.EmotesMenu == true, "CoreGui not restored on disable")
+
+	-- Lazy ultraAntiLagWorkspaceChild test when PlayerFlames spawns after Ultra Anti-Lag is enabled
+	playerFlames:Destroy()
+	ultraAntiLag:Set(true)
+	local lateFlames = Instance.new("Folder"); lateFlames.Name = "PlayerFlames"
+	local lateFlame = Instance.new("Part", lateFlames); lateFlame.Name = "FlameLate"
+	local latePF = Instance.new("ParticleEmitter", lateFlame); latePF.Name = "PF"; latePF.Enabled = true
+	lateFlames.Parent = workspace
+	assert(latePF.Enabled == false, "Lazy PlayerFlames added after Set(true) did not disable PF")
+	ultraAntiLag:Set(false)
+
 	gameApi.LocalFXModule.ClientRun("AquaWave")
 	assert(#fxLog == 2 and fxLog[2] == "AquaWave", "LocalFX not unwrapped cleanly on disable")
 
@@ -1547,13 +1667,18 @@ end
 					return true
 				end
 				local currentClock = now or os.clock()
-				if currentClock - (self.lastFuelCheck or 0) < 0.25 then
+				if currentClock - (self.lastFuelCheck or 0) < 1.0 then
 					return self.cachedFuelActive == true
 				end
 				self.lastFuelCheck = currentClock
 				local active = false
 				if gameApi and gameApi.BuffTile and secureCall then
-					local ok, tile = pcall(secureCall, gameApi.BuffTile, "Flame Fuel")
+					local ok, tile
+					if gameApi.CachedBuffTile then
+						ok, tile = pcall(gameApi.CachedBuffTile, gameApi, "Flame Fuel")
+					else
+						ok, tile = pcall(secureCall, gameApi.BuffTile, "Flame Fuel")
+					end
 					if ok and type(tile) == "table" and ((type(tile.TimerStart) == "number" and type(tile.TimerDur) == "number" and (tile.TimerStart + tile.TimerDur) > os.time()) or tile.Percent or tile.Stack) then
 						active = true
 					end
@@ -1835,8 +1960,9 @@ end
 					return
 				end
 
-				local rootPart = getRootPart()
-				local hum = getHumanoid()
+				local char = localPlayer and localPlayer.Character
+				local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
 				if not rootPart or not hum or (typeof(hum) == "Instance" and not hum.Parent) or hum.Health <= 0 then
 					self:ZeroTorque()
 					self:InvalidateTarget()
@@ -2073,10 +2199,65 @@ do
 	emaFlame:Destroy()
 	flameController:SetEnabled(true)
 	assert(state.stopdig == nil and not flameController.facingActive, "Dark/out-of-range flames should not engage facing")
+	-- Respawn safety: Character == nil during BindToRenderStep Step must not yield or error
+	localPlayer.Character = nil
+	flameController:Step(now + 0.2)
+	assert(not flameController.facingActive and state.stopdig == nil, "flameController:Step did not clean up safely when Character == nil")
+	localPlayer.Character = localChar
 	flameController:SetEnabled(false)
 	assert(hum.AutoRotate == true, "SetEnabled(false) did not restore AutoRotate")
 
 	print("PASS: Section C (Optimal Flame Refreshing, Flame Fuel 6.2s, dark/range exclusion, AutoRotate, Shift Lock, EMA, Shutdown)")
+end
+
+-- =========================================================================
+-- SECTION E: gameApi:CachedBuffTile 0.25s TTL Cache (including nil)
+-- =========================================================================
+gameApi.CachedBuffTile = function(api, name)
+	local cache = api._buffTileCache
+	if not cache then cache = {}; api._buffTileCache = cache end
+	local now = os.clock()
+	local entry = cache[name]
+	if entry and now - entry.t < 0.25 then
+		return entry.v or nil
+	end
+	local value = secureCall(api.BuffTile, name)
+	if entry then entry.t, entry.v = now, (value or false)
+	else cache[name] = { t = now, v = value or false } end
+	return value
+end
+
+
+do
+	local buffCalls = 0
+	local buffResult = { Stack = 3 }
+	gameApi.BuffTile = function(name)
+		buffCalls += 1
+		return buffResult
+	end
+	gameApi._buffTileCache = nil
+
+	local r1 = gameApi:CachedBuffTile("Blue Boost")
+	assert(buffCalls == 1 and r1 == buffResult, "Initial CachedBuffTile call failed")
+
+	now += 0.1
+	local r2 = gameApi:CachedBuffTile("Blue Boost")
+	assert(buffCalls == 1 and r2 == buffResult, "CachedBuffTile did not return cached table within 0.25s")
+
+	now += 0.3
+	local r3 = gameApi:CachedBuffTile("Blue Boost")
+	assert(buffCalls == 2 and r3 == buffResult, "CachedBuffTile did not refresh after 0.25s")
+
+	buffResult = nil
+	now += 0.3
+	local r4 = gameApi:CachedBuffTile("Red Boost")
+	assert(buffCalls == 3 and r4 == nil, "CachedBuffTile nil call mismatch")
+
+	now += 0.1
+	local r5 = gameApi:CachedBuffTile("Red Boost")
+	assert(buffCalls == 3 and r5 == nil, "CachedBuffTile did not cache nil result within 0.25s")
+
+	print("PASS: Section E (CachedBuffTile 0.25s TTL + nil caching)")
 end
 
 print("PASS: All FPS, Anti-Lag, Duped Smiley, Flame Refreshing, and Source Invariant checks passed!")

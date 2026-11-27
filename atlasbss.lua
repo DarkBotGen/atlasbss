@@ -1239,6 +1239,20 @@ gameApi.CacheSet = function(api, ...)
 	return secureCall(api.ClientStatCache.Set, nil, ...)
 end
 
+gameApi.CachedBuffTile = function(api, name)
+	local cache = api._buffTileCache
+	if not cache then cache = {}; api._buffTileCache = cache end
+	local now = os.clock()
+	local entry = cache[name]
+	if entry and now - entry.t < 0.25 then
+		return entry.v or nil
+	end
+	local value = secureCall(api.BuffTile, name)
+	if entry then entry.t, entry.v = now, (value or false)
+	else cache[name] = { t = now, v = value or false } end
+	return value
+end
+
 gameApi.Event = function(api, eventName, ...)
 	local remote = api.Events[eventName]
 	if not remote:IsA("RemoteEvent") then
@@ -1769,6 +1783,8 @@ local ultraAntiLag = {
 	savedRenderQuality = nil,
 	savedPollenPopUp = nil,
 	pollenPopUpChanged = false,
+	savedCoreGui = nil,
+	savedChatCoreGui = nil,
 }
 
 function ultraAntiLag:Remember(tbl, object, property, value)
@@ -1887,7 +1903,7 @@ end
 
 function ultraAntiLag:SyncParticleFX(desc)
 	if not self.enabled or not desc or not desc.Parent then return end
-	if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") then
+	if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
 		if self.savedParticleFX[desc] == nil then
 			local ok, wasOn = pcall(function() return desc.Enabled end)
 			if ok then self.savedParticleFX[desc] = wasOn end
@@ -1929,6 +1945,8 @@ function ultraAntiLag:HideCharacterVisuals(char, isLocal)
 			self:Remember(self.savedTransientProps, d, "Transparency", 1)
 		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Sparkles") or d:IsA("Light") then
 			self:Remember(self.savedTransientProps, d, "Enabled", false)
+		elseif d:IsA("Humanoid") then
+			self:Remember(self.savedTransientProps, d, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
 		end
 	end
 	for _, d in ipairs(char:GetDescendants()) do apply(d) end
@@ -2014,8 +2032,8 @@ function ultraAntiLag:Set(enabled)
 	self.enabled = enabled
 	threads:Cancel("ultraAntiLagScan")
 	for _, id in ipairs({
-		"ultraAntiLagLighting", "ultraAntiLagBees", "ultraAntiLagParticles",
-		"ultraAntiLagBalloons", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
+		"ultraAntiLagLighting", "ultraAntiLagBees", "ultraAntiLagParticles", "ultraAntiLagFlames",
+		"ultraAntiLagBalloons", "ultraAntiLagBalloonsRoot", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
 		"ultraAntiLagWorkspaceChild",
 	}) do
 		connections:Cancel(id)
@@ -2078,6 +2096,12 @@ function ultraAntiLag:Set(enabled)
 			self.savedQuality = nil
 			pcall(function() UserSettings():GetService("UserGameSettings").SavedQualityLevel = prev end)
 		end
+		if self.savedCoreGui and StarterGui then
+			for name in pairs(self.savedCoreGui) do
+				pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType[name], true) end)
+			end
+		end
+		self.savedCoreGui = nil
 		if self.pollenPopUpChanged then
 			local prevPopUp = self.savedPollenPopUp ~= false
 			self.pollenPopUpChanged = false
@@ -2155,6 +2179,18 @@ function ultraAntiLag:Set(enabled)
 			if child:IsA("Clouds") then self:Remember(self.savedProps, child, "Enabled", false) end
 		end
 	end
+	if StarterGui and not self.savedCoreGui then
+		local savedCore = {}
+		for _, name in ipairs({ "PlayerList", "EmotesMenu" }) do
+			local coreType = Enum.CoreGuiType[name]
+			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+			if okGet and wasOn then
+				savedCore[name] = true
+				pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+			end
+		end
+		self.savedCoreGui = savedCore
+	end
 	if not self.pollenPopUpChanged and gameApi.PlayerSettingsEvent and gameApi.ClientStatCache then
 		local okPop, curPopUp = pcall(function() return gameApi:Cache({ "Settings", "PollenPopUps" }) end)
 		if okPop and curPopUp ~= false then
@@ -2216,13 +2252,51 @@ function ultraAntiLag:Set(enabled)
 		end
 	end
 	bindParticles(workspace:FindFirstChild("Particles"))
+	local function bindFlames(folder)
+		if not folder or connections:Get("ultraAntiLagFlames") then return end
+		for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
+		if folder.DescendantAdded then
+			connections:Add("ultraAntiLagFlames", folder.DescendantAdded:Connect(function(desc)
+				if self.enabled then self:SyncParticleFX(desc) end
+			end))
+		end
+	end
+	bindFlames(workspace:FindFirstChild("PlayerFlames"))
 
-	local balloons = workspace:FindFirstChild("Balloons")
-	local fieldBalloons = balloons and balloons:FindFirstChild("FieldBalloons")
-	if fieldBalloons then
+	local function bindFieldBalloons(fieldBalloons)
+		if not fieldBalloons or connections:Get("ultraAntiLagBalloons") then return end
 		for _, child in ipairs(fieldBalloons:GetChildren()) do self:HideBalloonModel(child) end
 		connections:Add("ultraAntiLagBalloons", fieldBalloons.ChildAdded:Connect(function(child)
 			if self.enabled then self:HideBalloonModel(child) end
+		end))
+	end
+	local function bindBalloons(balloons)
+		if not balloons then return end
+		bindFieldBalloons(balloons:FindFirstChild("FieldBalloons"))
+		if not connections:Get("ultraAntiLagBalloons") and not connections:Get("ultraAntiLagBalloonsRoot") and balloons.ChildAdded then
+			connections:Add("ultraAntiLagBalloonsRoot", balloons.ChildAdded:Connect(function(child)
+				if self.enabled and child.Name == "FieldBalloons" then
+					connections:Cancel("ultraAntiLagBalloonsRoot")
+					bindFieldBalloons(child)
+				end
+			end))
+		end
+	end
+	bindBalloons(workspace:FindFirstChild("Balloons"))
+
+	if workspace.ChildAdded then
+		connections:Add("ultraAntiLagWorkspaceChild", workspace.ChildAdded:Connect(function(child)
+			if not self.enabled then return end
+			local name = child.Name
+			if name == "Bees" then bindBees(child)
+			elseif name == "Particles" then bindParticles(child)
+			elseif name == "PlayerFlames" then bindFlames(child)
+			elseif name == "Balloons" then bindBalloons(child)
+			else
+				for _, cosmeticName in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
+					if name == cosmeticName then self:Detach(child, self.detached, self.detachedSet); break end
+				end
+			end
 		end))
 	end
 
@@ -2292,7 +2366,27 @@ function ultraAntiLag:Set(enabled)
 	end)
 end
 
+function ultraAntiLag:SetNoRenderChat(hidden)
+	if not StarterGui then return end
+	local coreType = Enum.CoreGuiType.Chat
+	if hidden then
+		if self.savedChatCoreGui == nil then
+			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+			self.savedChatCoreGui = (okGet and wasOn == true) and true or false
+		end
+		if self.savedChatCoreGui then
+			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+		end
+	else
+		if self.savedChatCoreGui then
+			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, true) end)
+		end
+		self.savedChatCoreGui = nil
+	end
+end
+
 function ultraAntiLag:Shutdown()
+	self:SetNoRenderChat(false)
 	self:Set(false)
 end
 
@@ -2780,10 +2874,12 @@ end
 function fieldPositionPolicy:DriveIdle()
 	local drive=self.idleDrive
 	if not drive or state.stop or not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.activityStatus~=1 then return end
+	local char=localPlayer and localPlayer.Character
+	local h=char and char:FindFirstChildOfClass("Humanoid")
+	local root=char and char:FindFirstChild("HumanoidRootPart")
+	if not h or not root or h.Health<=0 then return end
 	local goal=drive.makeGoal()
-	local h=getHumanoid()
 	if not goal or not drive.allowed(goal) or (self.comboController and self.comboController:BlocksMove(goal)) then h:Move(Vector3.zero,false);return end
-	local root=getRootPart()
 	self:ApplyIdlePhysics(drive,h,root)
 	local delta=goal-root.Position
 	local direction=Vector3.new(delta.X,0,delta.Z)
@@ -5275,6 +5371,7 @@ do
 
 		indicator.MouseButton1Click:Connect(function()
 			visible = not visible
+			state.uiCollapsed = not visible
 			clone.Frame.Visible = visible
 			TweenService:Create(ImageLabel, TweenInfo.new(0.1, Enum.EasingStyle.Linear, Enum.EasingDirection.In), { Size = visible and UDim2.new(0, vector22.X, 0, vector22.Y) or UDim2.new(0, vector22.X, 0, 25) }):Play()
 			TweenService:Create(indicator, TweenInfo.new(0.1, Enum.EasingStyle.Linear, Enum.EasingDirection.In), { Rotation = visible and 90 or 180 }):Play()
@@ -8908,6 +9005,7 @@ do
 		end))
 		local elapsed = 0
 		connections:Add("stationPending", RunService.Heartbeat:Connect(function(dt)
+			if next(pending) == nil then elapsed = 0; return end
 			elapsed += dt
 			if elapsed < 0.25 then return end
 			elapsed = 0
@@ -9107,10 +9205,24 @@ do
 			if not enable and not cfg.face.optimalflames and not cfg.autofarm.farmfires and not cfg.autofarm.autoscorchingstar then
 				connections:Cancel("flames")
 				connections:Cancel("flames2")
+				connections:Cancel("flamesFolder")
 			end
 		else
 			local pfFolder = workspace:FindFirstChild("PlayerFlames")
-			if not pfFolder then return end
+			if not pfFolder then
+				if not connections:Get("flamesFolder") and workspace.ChildAdded then
+					connections:Add("flamesFolder", workspace.ChildAdded:Connect(function(child)
+						if child.Name == "PlayerFlames" then
+							connections:Cancel("flamesFolder")
+							if cfg.face.optimalflames or cfg.autofarm.farmfires or cfg.autofarm.autoscorchingstar then
+								watchFlames(true)
+							end
+						end
+					end))
+				end
+				return
+			end
+			connections:Cancel("flamesFolder")
 			connections:Add("flames", pfFolder.ChildAdded:Connect(function(child)
 				local now = os.clock()
 				tracked.flames[child] = now
@@ -10311,8 +10423,10 @@ do
 			if meteorMovement.pulse and (os.clock()-meteorMovement.pulse>0.25 or state.stop or not cfg.autofarm.farmmeteorshowers) then meteorMovement:Release() end
 			local drive=fieldPositionPolicy.idleDrive
 			if drive then
+				local char=localPlayer and localPlayer.Character
+				local hum=char and char:FindFirstChildOfClass("Humanoid")
 				if not cfg.autofarm.enabled or not cfg.autofarm.idlefieldloop or state.stop or state.activityStatus~=1
-					or currentField~=drive.field or comboController:TravelBlocked() or comboController.active or showerController.active or getHumanoid().Health<=0 then
+					or currentField~=drive.field or comboController:TravelBlocked() or comboController.active or showerController.active or not hum or hum.Health<=0 then
 					fieldPositionPolicy:ReleaseIdle()
 				else fieldPositionPolicy:DriveIdle() end
 			end
@@ -48462,7 +48576,9 @@ function bearCombat:Remaining()
 		end
 	end
 	for _, name in ipairs(names) do
-		local ok, tile = pcall(secureCall, gameApi.BuffTile, name)
+		local ok, tile
+		if gameApi.CachedBuffTile then ok, tile = pcall(gameApi.CachedBuffTile, gameApi, name)
+		else ok, tile = pcall(secureCall, gameApi.BuffTile, name) end
 		if ok and type(tile) == "table" and type(tile.TimerStart) == "number" and type(tile.TimerDur) == "number" then
 			local remaining = math.max(0, tile.TimerDur - (os.time() - tile.TimerStart))
 			self.remaining = self.remaining and math.min(self.remaining, remaining) or remaining
@@ -48539,7 +48655,9 @@ function rbcSafety:BuffTarget(options)
 			local count=label and tonumber(string.match(label.Text,"%d+")) or (label and 1 or 0)
 			local needed=count<entry[4]
 			if not needed then
-				local ok,tile=pcall(secureCall,gameApi.BuffTile,entry[1])
+				local ok,tile
+				if gameApi.CachedBuffTile then ok,tile=pcall(gameApi.CachedBuffTile,gameApi,entry[1])
+				else ok,tile=pcall(secureCall,gameApi.BuffTile,entry[1]) end
 				if ok and type(tile)=="table" and type(tile.TimerDur)=="number" and type(tile.TimerStart)=="number" then
 					needed=tile.TimerDur-(os.time()-tile.TimerStart)<=math.max(3,tile.TimerDur*.3)
 				end
@@ -49630,7 +49748,7 @@ end
 								buffTimeLeft = nil
 
 								if buffName then
-									buffTile = secureCall(gameApi.BuffTile, buffName)
+									buffTile = gameApi:CachedBuffTile(buffName)
 
 									if buffTile then
 										timerStart = buffTile.TimerStart
@@ -50029,7 +50147,7 @@ end
 									buffTimeLeft = nil
 
 									if buffName then
-										buffTile = secureCall(gameApi.BuffTile, buffName)
+										buffTile = gameApi:CachedBuffTile(buffName)
 
 										if buffTile then
 											timerStart = buffTile.TimerStart
@@ -50453,7 +50571,7 @@ end
 								buffTimeLeft = nil
 
 								if buffName then
-									buffTile = secureCall(gameApi.BuffTile, buffName)
+									buffTile = gameApi:CachedBuffTile(buffName)
 
 									if buffTile then
 										timerStart = buffTile.TimerStart
@@ -51103,7 +51221,7 @@ end
 								buffTimeLeft = nil
 
 								if buffName then
-									buffTile = secureCall(gameApi.BuffTile, buffName)
+									buffTile = gameApi:CachedBuffTile(buffName)
 
 									if buffTile then
 										timerStart = buffTile.TimerStart
@@ -51498,7 +51616,7 @@ end
 								buffTimeLeft = nil
 
 								if buffName then
-									buffTile = secureCall(gameApi.BuffTile, buffName)
+									buffTile = gameApi:CachedBuffTile(buffName)
 
 									if buffTile then
 										timerStart = buffTile.TimerStart
@@ -51893,7 +52011,7 @@ end
 							buffTimeLeft = nil
 
 							if buffName then
-								buffTile = secureCall(gameApi.BuffTile, buffName)
+								buffTile = gameApi:CachedBuffTile(buffName)
 
 								if buffTile then
 									timerStart = buffTile.TimerStart
@@ -52531,7 +52649,7 @@ end
 										buffTimeLeft = nil
 
 										if buffName then
-											buffTile = secureCall(gameApi.BuffTile, buffName)
+											buffTile = gameApi:CachedBuffTile(buffName)
 
 											if buffTile then
 												timerStart = buffTile.TimerStart
@@ -52926,7 +53044,7 @@ end
 										buffTimeLeft = nil
 
 										if buffName then
-											buffTile = secureCall(gameApi.BuffTile, buffName)
+											buffTile = gameApi:CachedBuffTile(buffName)
 
 											if buffTile then
 												timerStart = buffTile.TimerStart
@@ -53321,7 +53439,7 @@ end
 									buffTimeLeft = nil
 
 									if buffName then
-										buffTile = secureCall(gameApi.BuffTile, buffName)
+										buffTile = gameApi:CachedBuffTile(buffName)
 
 										if buffTile then
 											timerStart = buffTile.TimerStart
@@ -53970,7 +54088,7 @@ end
 							buffTimeLeft = nil
 
 							if buffName then
-								buffTile = secureCall(gameApi.BuffTile, buffName)
+								buffTile = gameApi:CachedBuffTile(buffName)
 
 								if buffTile then
 									timerStart = buffTile.TimerStart
@@ -54365,7 +54483,7 @@ end
 							buffTimeLeft = nil
 
 							if buffName then
-								buffTile = secureCall(gameApi.BuffTile, buffName)
+								buffTile = gameApi:CachedBuffTile(buffName)
 
 								if buffTile then
 									timerStart = buffTile.TimerStart
@@ -54760,7 +54878,7 @@ end
 						buffTimeLeft = nil
 
 						if buffName then
-							buffTile = secureCall(gameApi.BuffTile, buffName)
+							buffTile = gameApi:CachedBuffTile(buffName)
 
 							if buffTile then
 								timerStart = buffTile.TimerStart
@@ -56280,13 +56398,18 @@ end
 					return true
 				end
 				local currentClock = now or os.clock()
-				if currentClock - (self.lastFuelCheck or 0) < 0.25 then
+				if currentClock - (self.lastFuelCheck or 0) < 1.0 then
 					return self.cachedFuelActive == true
 				end
 				self.lastFuelCheck = currentClock
 				local active = false
 				if gameApi and gameApi.BuffTile and secureCall then
-					local ok, tile = pcall(secureCall, gameApi.BuffTile, "Flame Fuel")
+					local ok, tile
+					if gameApi.CachedBuffTile then
+						ok, tile = pcall(gameApi.CachedBuffTile, gameApi, "Flame Fuel")
+					else
+						ok, tile = pcall(secureCall, gameApi.BuffTile, "Flame Fuel")
+					end
 					if ok and type(tile) == "table" and ((type(tile.TimerStart) == "number" and type(tile.TimerDur) == "number" and (tile.TimerStart + tile.TimerDur) > os.time()) or tile.Percent or tile.Stack) then
 						active = true
 					end
@@ -56568,8 +56691,9 @@ end
 					return
 				end
 
-				local rootPart = getRootPart()
-				local hum = getHumanoid()
+				local char = localPlayer and localPlayer.Character
+				local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
 				if not rootPart or not hum or (typeof(hum) == "Instance" and not hum.Parent) or hum.Health <= 0 then
 					self:ZeroTorque()
 					self:InvalidateTarget()
@@ -70128,6 +70252,7 @@ ScreenGui.Destroying:Connect(function()
 	fieldPositionPolicy:RemoveGuards()
 	showerController:Shutdown()
 	ultraAntiLag:Shutdown()
+	pcall(function() RunService:Set3dRenderingEnabled(true) end)
 	visualOptimizer:Shutdown()
 	dupedTokenPolicy.selection = nil
 	smoothMovement:Reset()
@@ -70252,6 +70377,7 @@ do
 
 	threads:Add("Stats", function()
 		while task.wait(1) do
+			if cfg.antilag.norender or state.uiCollapsed or not ScreenGui.Enabled then continue end
 			local n = os.clock() - state.start
 			local P = localPlayer.CoreStats.Honey.Value - state.honeyatstart
 			local H = P / n * 3600
@@ -70487,6 +70613,8 @@ do
 								if not state.stop and not state.stopdig then
 									secureCall(gameApi.LocalCollect)
 									task.wait(0.1)
+								else
+									task.wait(0.05)
 								end
 							end
 						end)
@@ -71080,6 +71208,7 @@ do
 					task.wait(5)
 
 					while task.wait(1) do
+						if cfg.antilag.norender or state.uiCollapsed or not ScreenGui.Enabled then continue end
 						commandoLabel.Text = "Commando Chick: " .. (mobCooldown(monsterSpawners["Commando Chick"], true) or "✅")
 						crabLabel.Text = "Coconut Crab: " .. (mobCooldown(monsterSpawners.CoconutCrab, true) or "✅")
 						tunnelBearLabel.Text = "Tunnel Bear: " .. (mobCooldown(monsterSpawners.TunnelBear, true) or "✅")
@@ -71387,6 +71516,7 @@ do
 
 				threads:Add("PlanterStats", function()
 					while task.wait(3) do
+						if cfg.antilag.norender or state.uiCollapsed or not ScreenGui.Enabled then continue end
 						for i = 1, 3 do
 							local text = planterTimeLeft(tracked.planters[i], true) or "Planter " .. i .. ": 0?"
 
@@ -72923,6 +73053,7 @@ do
 						threads:Cancel("walkspeed")
 					else
 						threads:Add("walkspeed", function()
+							local cachedModifiers, modifiersAt = nil, -1
 							while task.wait(0.1) do
 								if not cfg.vars.walkdynamic then
 									local walkspeed = cfg.vars.walkspeed
@@ -72935,7 +73066,12 @@ do
 								end
 
 								if cfg.vars.walkdynamic then
-									local modifiers = gameApi:Cache({ "ModifierCaches", "Value" })
+									local nowClock = os.clock()
+									if nowClock - modifiersAt >= 0.5 then
+										cachedModifiers = gameApi:Cache({ "ModifierCaches", "Value" })
+										modifiersAt = nowClock
+									end
+									local modifiers = cachedModifiers
 
 									if not (not modifiers or not modifiers.PlayerMovespeed or not modifiers.PlayerMovespeed._) then
 										local walkSpeed = modifiers.PlayerMovespeed._ * cfg.vars.walkspeed2
@@ -73262,23 +73398,27 @@ Are you sure you want to enable it?]])
 
 				antiLagFolder.AddSwitch("Ultra Anti-Lag", function(enabled)
 					ultraAntiLag:Set(enabled)
-				end, "antilag", "ultra", { Tooltip = "Maximum FPS boost: disables shadows/fog/IBL/post-FX/PollenPopUps, detaches bees & cosmetic map decos, hides flowers/balloons/other players/particles, and skips cosmetic collect arcs & VFX without touching gameplay tokens, marks, crosshairs, combos, blooms, petals, flames, or player positions." })
+				end, "antilag", "ultra", { Tooltip = "Maximum FPS boost: disables shadows/fog/IBL/post-FX/PollenPopUps, detaches bees & cosmetic map decos, hides flowers/balloons/other players/particles, skips cosmetic collect arcs & VFX, disables flame particle rendering (flame data kept), hides other players' name tags, and hides PlayerList/Emotes CoreGui without touching gameplay tokens, marks, crosshairs, combos, blooms, petals, flames, or player positions." })
 
 				antiLagFolder.AddSwitch("Disable 3D Rendering (AFK black screen)", function(n)
 					RunService:Set3dRenderingEnabled(not n)
+					ultraAntiLag:SetNoRenderChat(n == true)
 
 					if n then
-						local n = Instance.new("Frame")
-						n.Size = UDim2.new(1, 0, 1, 0)
-						n.BackgroundColor3 = Color3.new(0, 0, 0)
-						n.BorderSizePixel = 0
-						n.ZIndex = 0
-						n.Parent = ScreenGui
+						local overlay = ScreenGui:FindFirstChild("AtlasBlackScreen")
+						if not overlay then
+							overlay = Instance.new("Frame")
+							overlay.Name = "AtlasBlackScreen"
+							overlay.Size = UDim2.new(1, 0, 1, 0)
+							overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+							overlay.BorderSizePixel = 0
+							overlay.ZIndex = 0
+							overlay.Parent = ScreenGui
+						end
 					else
-						local n = ScreenGui:FindFirstChild("Frame")
-
-						if n then
-							n:Destroy()
+						local overlay = ScreenGui:FindFirstChild("AtlasBlackScreen")
+						if overlay then
+							overlay:Destroy()
 						end
 					end
 				end, "antilag", "norender")
