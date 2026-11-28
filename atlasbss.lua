@@ -181,6 +181,7 @@ local cfg = {
 	},
 	antilag = {
 		ultra = false,
+		maxalt = false,
 		migrated = false,
 		aggressivevisuals = false,
 		visualeffects = false,
@@ -1142,31 +1143,44 @@ local connections = { list = {}, closed = false }
 
 gameApi.SetupSecureCall = function()
 	if not secureCall then
-		secureCall = newcclosure(function(n, ...)
-			local Z, p
-			local q
-			threadCount += 1
-
-			threads:Add(threadCount, function(...)
+		if getthreadidentity and setthreadidentity then
+			local function finish(prev, ok, ...)
+				setthreadidentity(prev)
+				if not ok then error((...), 2) end
+				return ...
+			end
+			secureCall = function(n, ...)
+				local prev = getthreadidentity()
 				setthreadidentity(5)
-
-				Z, p = pcall(function(...)
-					return table.pack(n(...))
-				end, ...)
-
-				q = true
-			end, nil, ...)
-
-			while not q do
-				task.wait()
+				return finish(prev, pcall(n, ...))
 			end
+		else
+			secureCall = newcclosure(function(n, ...)
+				local Z, p
+				local q
+				threadCount += 1
 
-			if not Z then
-				error(p)
-			end
+				threads:Add(threadCount, function(...)
+					setthreadidentity(5)
 
-			return table.unpack(p, 1, p.n)
-		end)
+					Z, p = pcall(function(...)
+						return table.pack(n(...))
+					end, ...)
+
+					q = true
+				end, nil, ...)
+
+				while not q do
+					task.wait()
+				end
+
+				if not Z then
+					error(p)
+				end
+
+				return table.unpack(p, 1, p.n)
+			end)
+		end
 	end
 end
 
@@ -1211,6 +1225,16 @@ gameApi.Setup = function(api)
 	pcall(function()
 		local m = ReplicatedStorage:FindFirstChild("LocalAmulets")
 		if m then local req = require(m); if type(req) == "table" then api.LocalAmulets = req end end
+	end)
+	pcall(function()
+		local m = ReplicatedStorage:FindFirstChild("DupedTokensAnimator")
+		if m then local req = require(m); if type(req) == "table" then api.DupedTokensAnimator = req end end
+	end)
+	pcall(function()
+		local cs = ReplicatedStorage:FindFirstChild("ClientScripts")
+		local ls = cs and cs:FindFirstChild("Listeners")
+		local m = ls and ls:FindFirstChild("StationsListener")
+		if m then local req = require(m); if type(req) == "table" then api.StationsListener = req end end
 	end)
 	pcall(function()
 		local ev = api.Events and api.Events:FindFirstChild("PlayerSettingsEvent")
@@ -1767,7 +1791,9 @@ end
 local ultraAntiLag = {
 	modes = {"main", "aggressive", "effects", "textures", "decorations", "bees", "frogs", "flowers", "balloons", "players"},
 	enabled = false,
+	maxAlt = false,
 	savedProps = {},
+	savedEnvProps = {},
 	savedTransientProps = setmetatable({}, { __mode = "k" }),
 	savedParticleFX = setmetatable({}, { __mode = "k" }),
 	detached = {},
@@ -1777,6 +1803,9 @@ local ultraAntiLag = {
 	playerConns = {},
 	playerChars = {},
 	wrapped = {},
+	maxAltHooks = {},
+	maxAltPlayerConns = {},
+	maxAltPlayerChars = {},
 	savedLighting = nil,
 	savedTerrain = nil,
 	savedQuality = nil,
@@ -1787,279 +1816,379 @@ local ultraAntiLag = {
 	savedChatCoreGui = nil,
 }
 
-function ultraAntiLag:Remember(tbl, object, property, value)
-	local ok, previous = pcall(function() return object[property] end)
-	if not ok or previous == value then return end
-	local saved = tbl[object]
-	if not saved then saved = {}; tbl[object] = saved end
-	if saved[property] == nil then saved[property] = previous end
-	pcall(function() object[property] = value end)
-end
+do
+	local function readProp(o, p) return o[p] end
+	local function writeProp(o, p, v) o[p] = v end
+	local function setParent(o, p) o.Parent = p end
+	local function clearFX(o) o:Clear() end
+	local function rawDestroy(o) o:Destroy() end
+	local function destroyInst(o)
+		if o and pcall(readProp, o, "Parent") and o.Parent then
+			pcall(rawDestroy, o)
+		end
+	end
 
-function ultraAntiLag:RestoreTable(tbl)
-	for object, properties in pairs(tbl) do
-		if object and (typeof(object) ~= "Instance" or object.Parent) then
-			for property, value in pairs(properties) do
-				pcall(function() object[property] = value end)
+	local MAX_ALT_DESTROY_TOP = {
+		"Amulets", "Shell Amulets", "Stickbug Amulets", "BallArrowFolder", "BoostBalls",
+		"Campsite", "ClassicMinigame", "Cubs", "Faces", "FieldDecos", "Frame", "Frogs",
+		"Goo", "Paths", "Invisible Walls", "Leaderboards", "Territories", "TheGamesEvent",
+		"TheGames_WideBanners", "Bee Bear Hive", "Noob Bear", "OnettNPC", "Pro Bear",
+		"Top Bear", "BuckoAtHQ", "RileyAtHQ", "Honey", "Lion",
+	}
+	local MAX_ALT_DESTROY_TOP_SET = {}
+	for _, n in ipairs(MAX_ALT_DESTROY_TOP) do MAX_ALT_DESTROY_TOP_SET[n] = true end
+
+	function ultraAntiLag:Remember(tbl, object, property, value)
+		local ok, previous = pcall(readProp, object, property)
+		if not ok or previous == value then return end
+		local saved = tbl[object]
+		if not saved then saved = {}; tbl[object] = saved end
+		if saved[property] == nil then saved[property] = previous end
+		pcall(writeProp, object, property, value)
+	end
+
+	function ultraAntiLag:RestoreTable(tbl)
+		for object, properties in pairs(tbl) do
+			if object and (typeof(object) ~= "Instance" or object.Parent) then
+				for property, value in pairs(properties) do
+					pcall(writeProp, object, property, value)
+				end
 			end
 		end
+		table.clear(tbl)
 	end
-	table.clear(tbl)
-end
 
-function ultraAntiLag:Detach(inst, list, set)
-	if not inst or set[inst] then return end
-	local okParent, origParent = pcall(function() return inst.Parent end)
-	if not okParent or not origParent then return end
-	set[inst] = true
-	list[#list + 1] = { inst = inst, parent = origParent }
-	pcall(function() inst.Parent = nil end)
-end
+	function ultraAntiLag:Detach(inst, list, set)
+		if not inst or set[inst] then return end
+		local okParent, origParent = pcall(readProp, inst, "Parent")
+		if not okParent or not origParent then return end
+		set[inst] = true
+		list[#list + 1] = { inst = inst, parent = origParent }
+		pcall(setParent, inst, nil)
+	end
 
-function ultraAntiLag:RestoreList(list, set)
-	for i = #list, 1, -1 do
-		local entry = list[i]
-		if entry.inst and entry.parent and (typeof(entry.parent) ~= "Instance" or entry.parent.Parent) then
-			pcall(function() entry.inst.Parent = entry.parent end)
+	function ultraAntiLag:RestoreList(list, set)
+		for i = #list, 1, -1 do
+			local entry = list[i]
+			if entry.inst and entry.parent and (typeof(entry.parent) ~= "Instance" or entry.parent.Parent) then
+				pcall(setParent, entry.inst, entry.parent)
+			end
 		end
+		table.clear(list)
+		table.clear(set)
 	end
-	table.clear(list)
-	table.clear(set)
-end
 
-function ultraAntiLag:IsProtectedVisual(object)
-	local ancestor = object
-	while ancestor and ancestor ~= workspace do
-		local name = ancestor.Name
-		if visualOptimizer.protected[name] and name ~= "Balloons" then return true end
-		if string.find(name, "Sign", 1, true) then return true end
-		ancestor = ancestor.Parent
+	function ultraAntiLag:IsProtectedVisual(object)
+		local ancestor = object
+		while ancestor and ancestor ~= workspace do
+			local name = ancestor.Name
+			if visualOptimizer.protected[name] and name ~= "Balloons" then return true end
+			if string.find(name, "Sign", 1, true) then return true end
+			ancestor = ancestor.Parent
+		end
+		return false
 	end
-	return false
-end
 
-function ultraAntiLag:ApplyStaticObject(object, isFlowers, hideParts)
-	if not self.enabled or not object or not object.Parent then return end
-	if object:IsA("BasePart") then
-		if isFlowers then
+	function ultraAntiLag:ApplyStaticObject(object, isFlowers, hideParts)
+		if not self.enabled or not object or not object.Parent then return end
+		if object:IsA("BasePart") then
+			if isFlowers then
+				self:Remember(self.savedProps, object, "CastShadow", false)
+				self:Remember(self.savedProps, object, "Reflectance", 0)
+				self:Remember(self.savedProps, object, "LocalTransparencyModifier", 1)
+				return
+			end
+			local okMat, mat = pcall(readProp, object, "Material")
+			if okMat and (mat == Enum.Material.Neon or mat == Enum.Material.ForceField or mat == Enum.Material.Glass) then return end
 			self:Remember(self.savedProps, object, "CastShadow", false)
 			self:Remember(self.savedProps, object, "Reflectance", 0)
-			self:Remember(self.savedProps, object, "LocalTransparencyModifier", 1)
-			return
-		end
-		local okMat, mat = pcall(function() return object.Material end)
-		if okMat and (mat == Enum.Material.Neon or mat == Enum.Material.ForceField or mat == Enum.Material.Glass) then return end
-		self:Remember(self.savedProps, object, "CastShadow", false)
-		self:Remember(self.savedProps, object, "Reflectance", 0)
-		self:Remember(self.savedProps, object, "Material", Enum.Material.SmoothPlastic)
-		if not self:IsProtectedVisual(object) then
-			if hideParts then self:Remember(self.savedProps, object, "LocalTransparencyModifier", 1) end
-			if object:IsA("MeshPart") then self:Remember(self.savedProps, object, "TextureID", "") end
-		end
-	elseif object:IsA("Decal") or object:IsA("Texture") then
-		if isFlowers then
-			self:Remember(self.savedProps, object, "Transparency", 1)
-		elseif not self:IsProtectedVisual(object) then
-			self:Remember(self.savedProps, object, "Texture", "")
-			self:Remember(self.savedProps, object, "Transparency", 1)
-		end
-	elseif object:IsA("SpecialMesh") then
-		if not isFlowers and not self:IsProtectedVisual(object) then
-			self:Remember(self.savedProps, object, "TextureId", "")
-		end
-	elseif object:IsA("SurfaceAppearance") then
-		if not isFlowers and not self:IsProtectedVisual(object) then
-			for _, prop in ipairs({"ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap"}) do
-				self:Remember(self.savedProps, object, prop, "")
+			self:Remember(self.savedProps, object, "Material", Enum.Material.SmoothPlastic)
+			if not self:IsProtectedVisual(object) then
+				if hideParts then self:Remember(self.savedProps, object, "LocalTransparencyModifier", 1) end
+				if object:IsA("MeshPart") then self:Remember(self.savedProps, object, "TextureID", "") end
+			end
+		elseif object:IsA("Decal") or object:IsA("Texture") then
+			if isFlowers then
+				self:Remember(self.savedProps, object, "Transparency", 1)
+			elseif not self:IsProtectedVisual(object) then
+				self:Remember(self.savedProps, object, "Texture", "")
+				self:Remember(self.savedProps, object, "Transparency", 1)
+			end
+		elseif object:IsA("SpecialMesh") then
+			if not isFlowers and not self:IsProtectedVisual(object) then
+				self:Remember(self.savedProps, object, "TextureId", "")
+			end
+		elseif object:IsA("SurfaceAppearance") then
+			if not isFlowers and not self:IsProtectedVisual(object) then
+				for _, prop in ipairs({"ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap"}) do
+					self:Remember(self.savedProps, object, prop, "")
+				end
+			end
+		elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam") then
+			local n = object.Name
+			if n == "LeafBurst" or n == "Sparkles" or n == "FireParticles" or n == "PuffshroomSpores" then return end
+			if not self:IsProtectedVisual(object) then
+				self:Remember(self.savedProps, object, "Enabled", false)
+				if object:IsA("ParticleEmitter") or object:IsA("Trail") then pcall(clearFX, object) end
+			end
+		elseif object:IsA("Light") then
+			if not self:IsProtectedVisual(object) then
+				self:Remember(self.savedProps, object, "Enabled", false)
 			end
 		end
-	elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam") then
-		local n = object.Name
-		if n == "LeafBurst" or n == "Sparkles" or n == "FireParticles" or n == "PuffshroomSpores" then return end
-		if not self:IsProtectedVisual(object) then
-			self:Remember(self.savedProps, object, "Enabled", false)
-			if object:IsA("ParticleEmitter") or object:IsA("Trail") then pcall(function() object:Clear() end) end
-		end
-	elseif object:IsA("Light") then
-		if not self:IsProtectedVisual(object) then
-			self:Remember(self.savedProps, object, "Enabled", false)
-		end
 	end
-end
 
-function ultraAntiLag:HideBalloonModel(model)
-	if not self.enabled or not model or not model.Parent then return end
-	for _, desc in ipairs(model:GetDescendants()) do
-		if desc:IsA("BasePart") then
-			self:Remember(self.savedTransientProps, desc, "LocalTransparencyModifier", 1)
-			self:Remember(self.savedTransientProps, desc, "CastShadow", false)
-		elseif desc:IsA("Decal") or desc:IsA("Texture") then
-			self:Remember(self.savedTransientProps, desc, "Transparency", 1)
-		elseif desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") then
-			self:Remember(self.savedTransientProps, desc, "Enabled", false)
-		end
-	end
-end
-
-function ultraAntiLag:SyncParticleFX(desc)
-	if not self.enabled or not desc or not desc.Parent then return end
-	if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
-		if self.savedParticleFX[desc] == nil then
-			local ok, wasOn = pcall(function() return desc.Enabled end)
-			if ok then self.savedParticleFX[desc] = wasOn end
-		end
-		pcall(function() desc.Enabled = false end)
-		if desc:IsA("ParticleEmitter") or desc:IsA("Trail") then pcall(function() desc:Clear() end) end
-	end
-end
-
-function ultraAntiLag:HideAmuletModel(obj)
-	if not self.enabled or not obj or not obj.Parent then return end
-	local apply = function(d)
-		if d:IsA("BasePart") then
-			self:Remember(self.savedTransientProps, d, "LocalTransparencyModifier", 1)
-			self:Remember(self.savedTransientProps, d, "CastShadow", false)
-		elseif d:IsA("Decal") or d:IsA("Texture") then
-			self:Remember(self.savedTransientProps, d, "Transparency", 1)
-		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Light") then
-			self:Remember(self.savedTransientProps, d, "Enabled", false)
-		end
-	end
-	apply(obj)
-	for _, d in ipairs(obj:GetDescendants()) do apply(d) end
-end
-
-function ultraAntiLag:HideCharacterVisuals(char, isLocal)
-	if not self.enabled or not char or not char.Parent then return end
-	local function apply(d)
-		if isLocal then
-			if d.Parent == char and type(d.Name) == "string" and string.find(string.lower(d.Name), "amulet", 1, true) then
-				self:HideAmuletModel(d)
-			end
-			return
-		end
-		if d:IsA("BasePart") then
-			self:Remember(self.savedTransientProps, d, "LocalTransparencyModifier", 1)
-			self:Remember(self.savedTransientProps, d, "CastShadow", false)
-		elseif d:IsA("Decal") or d:IsA("Texture") then
-			self:Remember(self.savedTransientProps, d, "Transparency", 1)
-		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Sparkles") or d:IsA("Light") then
-			self:Remember(self.savedTransientProps, d, "Enabled", false)
-		elseif d:IsA("Humanoid") then
-			self:Remember(self.savedTransientProps, d, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
-		end
-	end
-	for _, d in ipairs(char:GetDescendants()) do apply(d) end
-	local key = "ultraAntiLagCharDesc:" .. tostring(char)
-	if not connections:Get(key) and char.DescendantAdded then
-		connections:Add(key, char.DescendantAdded:Connect(function(d)
-			if self.enabled then apply(d) end
-		end))
-	end
-end
-
-function ultraAntiLag:WatchPlayer(player)
-	if not player or self.playerConns[player] then return end
-	local isLocal = (player == localPlayer)
-	self.playerConns[player] = true
-	if player.Character then
-		self.playerChars[player] = player.Character
-		self:HideCharacterVisuals(player.Character, isLocal)
-	end
-	if player.CharacterAdded then
-		connections:Add("ultraAntiLagCharAdded:" .. tostring(player), player.CharacterAdded:Connect(function(char)
-			local prevChar = self.playerChars[player]
-			if prevChar and prevChar ~= char then
-				connections:Cancel("ultraAntiLagCharDesc:" .. tostring(prevChar))
-			end
-			self.playerChars[player] = char
-			if self.enabled then self:HideCharacterVisuals(char, isLocal) end
-		end))
-	end
-	if player.CharacterRemoving then
-		connections:Add("ultraAntiLagCharRem:" .. tostring(player), player.CharacterRemoving:Connect(function(char)
-			if self.playerChars[player] == char then self.playerChars[player] = nil end
-			connections:Cancel("ultraAntiLagCharDesc:" .. tostring(char))
-		end))
-	end
-end
-
-function ultraAntiLag:WrapMethod(tbl, methodName, key, handler)
-	if self.wrapped[key] or type(tbl) ~= "table" or type(tbl[methodName]) ~= "function" then return end
-	local orig = tbl[methodName]
-	local wrapper = function(...)
-		local ok, res = pcall(handler, ...)
-		if ok and res == false then return nil end
-		return orig(...)
-	end
-	local okSet = pcall(function() tbl[methodName] = wrapper end)
-	if okSet then
-		self.wrapped[key] = { tbl = tbl, method = methodName, orig = orig, wrapper = wrapper }
-	end
-end
-
-function ultraAntiLag:UnwrapAll()
-	for key, rec in pairs(self.wrapped) do
-		if rec.tbl and rec.tbl[rec.method] == rec.wrapper then
-			pcall(function() rec.tbl[rec.method] = rec.orig end)
-		end
-		self.wrapped[key] = nil
-	end
-end
-
-function ultraAntiLag:PruneBees()
-	if not self.enabled or #self.detachedBees == 0 then return end
-	for i = #self.detachedBees, 1, -1 do
-		local entry = self.detachedBees[i]
-		local inst = entry.inst
-		local drop = (not inst)
-		if not drop and inst.FindFirstChild then
-			local ownerVal = inst:FindFirstChild("Owner")
-			if ownerVal and ownerVal:IsA("ObjectValue") and (not ownerVal.Value or not ownerVal.Value.Parent) then
-				drop = true
+	function ultraAntiLag:HideBalloonModel(model)
+		if not self.enabled or not model or not model.Parent then return end
+		for _, desc in ipairs(model:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				self:Remember(self.savedTransientProps, desc, "LocalTransparencyModifier", 1)
+				self:Remember(self.savedTransientProps, desc, "CastShadow", false)
+			elseif desc:IsA("Decal") or desc:IsA("Texture") then
+				self:Remember(self.savedTransientProps, desc, "Transparency", 1)
+			elseif desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") then
+				self:Remember(self.savedTransientProps, desc, "Enabled", false)
 			end
 		end
-		if drop then
-			self.detachedBeeSet[inst] = nil
-			table.remove(self.detachedBees, i)
-		end
 	end
-end
 
-function ultraAntiLag:Set(enabled)
-	enabled = enabled == true
-	if self.enabled == enabled then return end
-	self.enabled = enabled
-	threads:Cancel("ultraAntiLagScan")
-	for _, id in ipairs({
-		"ultraAntiLagLighting", "ultraAntiLagBees", "ultraAntiLagParticles", "ultraAntiLagFlames",
-		"ultraAntiLagBalloons", "ultraAntiLagBalloonsRoot", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
-		"ultraAntiLagWorkspaceChild",
-	}) do
-		connections:Cancel(id)
-	end
-	for player in pairs(self.playerConns) do
-		connections:Cancel("ultraAntiLagCharAdded:" .. tostring(player))
-		connections:Cancel("ultraAntiLagCharRem:" .. tostring(player))
-		local cachedChar = self.playerChars[player]
-		if cachedChar then connections:Cancel("ultraAntiLagCharDesc:" .. tostring(cachedChar)) end
-		if player.Character and player.Character ~= cachedChar then
-			connections:Cancel("ultraAntiLagCharDesc:" .. tostring(player.Character))
+	function ultraAntiLag:SyncParticleFX(desc)
+		if not self.enabled or not desc or not desc.Parent then return end
+		if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
+			if self.savedParticleFX[desc] == nil then
+				local ok, wasOn = pcall(readProp, desc, "Enabled")
+				if ok then self.savedParticleFX[desc] = wasOn end
+			end
+			pcall(writeProp, desc, "Enabled", false)
+			if desc:IsA("ParticleEmitter") or desc:IsA("Trail") then pcall(clearFX, desc) end
 		end
 	end
-	table.clear(self.playerConns)
-	table.clear(self.playerChars)
 
-	if not enabled then
-		self:UnwrapAll()
-		self:RestoreList(self.detachedBees, self.detachedBeeSet)
-		self:RestoreList(self.detached, self.detachedSet)
-		for inst, origOn in pairs(self.savedParticleFX) do
-			if inst and inst.Parent then pcall(function() inst.Enabled = origOn end) end
+	function ultraAntiLag:HideAmuletModel(obj)
+		if not self.enabled or not obj or not obj.Parent then return end
+		local apply = function(d)
+			if d:IsA("BasePart") then
+				self:Remember(self.savedTransientProps, d, "LocalTransparencyModifier", 1)
+				self:Remember(self.savedTransientProps, d, "CastShadow", false)
+			elseif d:IsA("Decal") or d:IsA("Texture") then
+				self:Remember(self.savedTransientProps, d, "Transparency", 1)
+			elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Light") then
+				self:Remember(self.savedTransientProps, d, "Enabled", false)
+			end
 		end
-		table.clear(self.savedParticleFX)
-		self:RestoreTable(self.savedTransientProps)
-		self:RestoreTable(self.savedProps)
+		apply(obj)
+		for _, d in ipairs(obj:GetDescendants()) do apply(d) end
+	end
+
+	function ultraAntiLag:HideCharacterVisuals(char, isLocal)
+		if not self.enabled or not char or not char.Parent then return end
+		local function apply(d)
+			if isLocal then
+				if d.Parent == char and type(d.Name) == "string" and string.find(string.lower(d.Name), "amulet", 1, true) then
+					self:HideAmuletModel(d)
+				end
+				return
+			end
+			if d:IsA("BasePart") then
+				self:Remember(self.savedTransientProps, d, "LocalTransparencyModifier", 1)
+				self:Remember(self.savedTransientProps, d, "CastShadow", false)
+			elseif d:IsA("Decal") or d:IsA("Texture") then
+				self:Remember(self.savedTransientProps, d, "Transparency", 1)
+			elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Sparkles") or d:IsA("Light") then
+				self:Remember(self.savedTransientProps, d, "Enabled", false)
+			elseif d:IsA("Humanoid") then
+				self:Remember(self.savedTransientProps, d, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
+			end
+		end
+		for _, d in ipairs(char:GetDescendants()) do apply(d) end
+		local key = "ultraAntiLagCharDesc:" .. tostring(char)
+		if not connections:Get(key) and char.DescendantAdded then
+			connections:Add(key, char.DescendantAdded:Connect(function(d)
+				if self.enabled then apply(d) end
+			end))
+		end
+	end
+
+	function ultraAntiLag:WatchPlayer(player)
+		if not player or self.playerConns[player] then return end
+		local isLocal = (player == localPlayer)
+		self.playerConns[player] = true
+		if player.Character then
+			self.playerChars[player] = player.Character
+			self:HideCharacterVisuals(player.Character, isLocal)
+		end
+		if player.CharacterAdded then
+			connections:Add("ultraAntiLagCharAdded:" .. tostring(player), player.CharacterAdded:Connect(function(char)
+				local prevChar = self.playerChars[player]
+				if prevChar and prevChar ~= char then
+					connections:Cancel("ultraAntiLagCharDesc:" .. tostring(prevChar))
+				end
+				self.playerChars[player] = char
+				if self.enabled then self:HideCharacterVisuals(char, isLocal) end
+			end))
+		end
+		if player.CharacterRemoving then
+			connections:Add("ultraAntiLagCharRem:" .. tostring(player), player.CharacterRemoving:Connect(function(char)
+				if self.playerChars[player] == char then self.playerChars[player] = nil end
+				connections:Cancel("ultraAntiLagCharDesc:" .. tostring(char))
+			end))
+		end
+	end
+
+	function ultraAntiLag:WrapMethod(tbl, methodName, key, handler)
+		if self.wrapped[key] or type(tbl) ~= "table" or type(tbl[methodName]) ~= "function" then return end
+		local orig = tbl[methodName]
+		local wrapper = function(...)
+			local ok, res = pcall(handler, ...)
+			if ok and res == false then return nil end
+			return orig(...)
+		end
+		local okSet = pcall(writeProp, tbl, methodName, wrapper)
+		if okSet then
+			self.wrapped[key] = { tbl = tbl, method = methodName, orig = orig, wrapper = wrapper }
+		end
+	end
+
+	function ultraAntiLag:UnwrapAll()
+		for key, rec in pairs(self.wrapped) do
+			if rec.tbl and rec.tbl[rec.method] == rec.wrapper then
+				pcall(writeProp, rec.tbl, rec.method, rec.orig)
+			end
+			self.wrapped[key] = nil
+		end
+	end
+
+	function ultraAntiLag:PruneBees()
+		if not self.enabled or #self.detachedBees == 0 then return end
+		for i = #self.detachedBees, 1, -1 do
+			local entry = self.detachedBees[i]
+			local inst = entry.inst
+			local drop = (not inst)
+			if not drop and inst.FindFirstChild then
+				local ownerVal = inst:FindFirstChild("Owner")
+				if ownerVal and ownerVal:IsA("ObjectValue") and (not ownerVal.Value or not ownerVal.Value.Parent) then
+					drop = true
+				end
+			end
+			if drop then
+				self.detachedBeeSet[inst] = nil
+				table.remove(self.detachedBees, i)
+			end
+		end
+	end
+
+	function ultraAntiLag:PruneTransient()
+		for inst in pairs(self.savedTransientProps) do
+			if typeof(inst) == "Instance" and not inst.Parent then
+				self.savedTransientProps[inst] = nil
+			end
+		end
+		for inst in pairs(self.savedParticleFX) do
+			if typeof(inst) == "Instance" and not inst.Parent then
+				self.savedParticleFX[inst] = nil
+			end
+		end
+	end
+
+	function ultraAntiLag:ApplyEnv()
+		if not self.savedQuality then
+			pcall(function()
+				local gameSettings = UserSettings():GetService("UserGameSettings")
+				self.savedQuality = gameSettings.SavedQualityLevel
+				gameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+			end)
+		end
+		if not self.savedRenderQuality then
+			pcall(function()
+				local renderSettings = settings().Rendering
+				self.savedRenderQuality = renderSettings.QualityLevel
+				renderSettings.QualityLevel = Enum.QualityLevel.Level01
+			end)
+		end
+		if Lighting and not self.savedLighting then
+			local okL, gs, fe, fs = pcall(function() return Lighting.GlobalShadows, Lighting.FogEnd, Lighting.FogStart end)
+			local saved = okL and { GlobalShadows = gs, FogEnd = fe, FogStart = fs } or {}
+			pcall(function() saved.EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale end)
+			pcall(function() saved.EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale end)
+			pcall(function() saved.ShadowSoftness = Lighting.ShadowSoftness end)
+			self.savedLighting = saved
+			pcall(function()
+				Lighting.GlobalShadows = false
+				Lighting.FogStart = 1e9
+				Lighting.FogEnd = 1e9
+				if saved.EnvironmentSpecularScale ~= nil then Lighting.EnvironmentSpecularScale = 0 end
+				if saved.EnvironmentDiffuseScale ~= nil then Lighting.EnvironmentDiffuseScale = 0 end
+				if saved.ShadowSoftness ~= nil then Lighting.ShadowSoftness = 0 end
+			end)
+			for _, eff in ipairs(Lighting:GetChildren()) do
+				if eff:IsA("PostEffect") then
+					self:Remember(self.savedEnvProps, eff, "Enabled", false)
+				elseif eff:IsA("Atmosphere") then
+					self:Remember(self.savedEnvProps, eff, "Density", 0)
+				end
+			end
+			if Lighting.Changed and not connections:Get("ultraAntiLagLighting") then
+				connections:Add("ultraAntiLagLighting", Lighting.Changed:Connect(function(prop)
+					if not self.enabled and not self.maxAlt then return end
+					if prop == "GlobalShadows" or prop == "FogEnd" or prop == "FogStart"
+						or prop == "EnvironmentSpecularScale" or prop == "EnvironmentDiffuseScale" then
+						pcall(function()
+							if Lighting.GlobalShadows ~= false then Lighting.GlobalShadows = false end
+							if Lighting.FogEnd < 1e8 then Lighting.FogEnd = 1e9 end
+							if Lighting.FogStart < 1e8 then Lighting.FogStart = 1e9 end
+							if saved.EnvironmentSpecularScale ~= nil and Lighting.EnvironmentSpecularScale ~= 0 then Lighting.EnvironmentSpecularScale = 0 end
+							if saved.EnvironmentDiffuseScale ~= nil and Lighting.EnvironmentDiffuseScale ~= 0 then Lighting.EnvironmentDiffuseScale = 0 end
+						end)
+					end
+				end))
+			end
+		end
+		if not self.savedTerrain then
+			local terrain = workspace:FindFirstChildOfClass("Terrain")
+			if terrain then
+				local okT, ws, wsp, wr = pcall(function() return terrain.WaterWaveSize, terrain.WaterWaveSpeed, terrain.WaterReflectance end)
+				local tSaved = okT and { WaterWaveSize = ws, WaterWaveSpeed = wsp, WaterReflectance = wr } or {}
+				pcall(function() tSaved.WaterTransparency = terrain.WaterTransparency end)
+				pcall(function() tSaved.Decoration = terrain.Decoration end)
+				self.savedTerrain = tSaved
+				pcall(function()
+					terrain.WaterWaveSize = 0
+					terrain.WaterWaveSpeed = 0
+					terrain.WaterReflectance = 0
+					if tSaved.WaterTransparency ~= nil then terrain.WaterTransparency = 0 end
+					if tSaved.Decoration ~= nil then terrain.Decoration = false end
+				end)
+				for _, child in ipairs(terrain:GetChildren()) do
+					if child:IsA("Clouds") then self:Remember(self.savedEnvProps, child, "Enabled", false) end
+				end
+			end
+		end
+		if StarterGui and not self.savedCoreGui then
+			local savedCore = {}
+			for _, name in ipairs({ "PlayerList", "EmotesMenu" }) do
+				local coreType = Enum.CoreGuiType[name]
+				local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+				if okGet and wasOn then
+					savedCore[name] = true
+					pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+				end
+			end
+			self.savedCoreGui = savedCore
+		end
+		if not self.pollenPopUpChanged and gameApi.PlayerSettingsEvent and gameApi.ClientStatCache then
+			local okPop, curPopUp = pcall(function() return gameApi:Cache({ "Settings", "PollenPopUps" }) end)
+			if okPop and curPopUp ~= false then
+				self.savedPollenPopUp = (curPopUp == nil and true or curPopUp)
+				self.pollenPopUpChanged = true
+				pcall(secureCall, gameApi.PlayerSettingsEvent.FireServer, gameApi.PlayerSettingsEvent, "PollenPopUps", false)
+			end
+		end
+	end
+
+	function ultraAntiLag:RestoreEnv()
+		if self.enabled or self.maxAlt then return end
+		connections:Cancel("ultraAntiLagLighting")
+		self:RestoreTable(self.savedEnvProps)
 		if self.savedLighting and Lighting then
 			local l = self.savedLighting
 			self.savedLighting = nil
@@ -2110,284 +2239,635 @@ function ultraAntiLag:Set(enabled)
 				pcall(secureCall, gameApi.PlayerSettingsEvent.FireServer, gameApi.PlayerSettingsEvent, "PollenPopUps", prevPopUp)
 			end
 		end
-		return
 	end
 
-	pcall(function()
-		local gameSettings = UserSettings():GetService("UserGameSettings")
-		if self.savedQuality == nil then self.savedQuality = gameSettings.SavedQualityLevel end
-		gameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
-	end)
-	pcall(function()
-		local renderSettings = settings().Rendering
-		if self.savedRenderQuality == nil then self.savedRenderQuality = renderSettings.QualityLevel end
-		renderSettings.QualityLevel = Enum.QualityLevel.Level01
-	end)
-	if Lighting then
-		local okL, gs, fe, fs = pcall(function() return Lighting.GlobalShadows, Lighting.FogEnd, Lighting.FogStart end)
-		local saved = okL and { GlobalShadows = gs, FogEnd = fe, FogStart = fs } or {}
-		pcall(function() saved.EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale end)
-		pcall(function() saved.EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale end)
-		pcall(function() saved.ShadowSoftness = Lighting.ShadowSoftness end)
-		self.savedLighting = saved
-		pcall(function()
-			Lighting.GlobalShadows = false
-			Lighting.FogStart = 1e9
-			Lighting.FogEnd = 1e9
-			if saved.EnvironmentSpecularScale ~= nil then Lighting.EnvironmentSpecularScale = 0 end
-			if saved.EnvironmentDiffuseScale ~= nil then Lighting.EnvironmentDiffuseScale = 0 end
-			if saved.ShadowSoftness ~= nil then Lighting.ShadowSoftness = 0 end
-		end)
-		for _, eff in ipairs(Lighting:GetChildren()) do
-			if eff:IsA("PostEffect") then
-				self:Remember(self.savedProps, eff, "Enabled", false)
-			elseif eff:IsA("Atmosphere") then
-				self:Remember(self.savedProps, eff, "Density", 0)
+	function ultraAntiLag:Set(enabled)
+		enabled = enabled == true
+		if self.enabled == enabled then return end
+		self.enabled = enabled
+		threads:Cancel("ultraAntiLagScan")
+		for _, id in ipairs({
+			"ultraAntiLagBees", "ultraAntiLagParticles", "ultraAntiLagFlames",
+			"ultraAntiLagBalloons", "ultraAntiLagBalloonsRoot", "ultraAntiLagPlayerAdded", "ultraAntiLagPlayerRemoving",
+			"ultraAntiLagWorkspaceChild",
+		}) do
+			connections:Cancel(id)
+		end
+		for player in pairs(self.playerConns) do
+			connections:Cancel("ultraAntiLagCharAdded:" .. tostring(player))
+			connections:Cancel("ultraAntiLagCharRem:" .. tostring(player))
+			local cachedChar = self.playerChars[player]
+			if cachedChar then connections:Cancel("ultraAntiLagCharDesc:" .. tostring(cachedChar)) end
+			if player.Character and player.Character ~= cachedChar then
+				connections:Cancel("ultraAntiLagCharDesc:" .. tostring(player.Character))
 			end
 		end
-		if Lighting.Changed then
-			connections:Add("ultraAntiLagLighting", Lighting.Changed:Connect(function(prop)
+		table.clear(self.playerConns)
+		table.clear(self.playerChars)
+
+		if not enabled then
+			self:UnwrapAll()
+			self:RestoreList(self.detachedBees, self.detachedBeeSet)
+			self:RestoreList(self.detached, self.detachedSet)
+			for inst, origOn in pairs(self.savedParticleFX) do
+				if inst and inst.Parent then pcall(writeProp, inst, "Enabled", origOn) end
+			end
+			table.clear(self.savedParticleFX)
+			self:RestoreTable(self.savedTransientProps)
+			self:RestoreTable(self.savedProps)
+			self:RestoreEnv()
+			return
+		end
+
+		self:ApplyEnv()
+		if self.maxAlt then return end
+
+		-- Detach purely cosmetic workspace containers and player bees (zero gameplay/raycast dependencies).
+		for _, name in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
+			self:Detach(workspace:FindFirstChild(name), self.detached, self.detachedSet)
+		end
+		local map = workspace:FindFirstChild("Map")
+		if map then self:Detach(map:FindFirstChild("Fences"), self.detached, self.detachedSet) end
+		local hiveDeco = workspace:FindFirstChild("HiveDeco")
+		if hiveDeco then
+			self:Detach(hiveDeco:FindFirstChild("HiveModels"), self.detached, self.detachedSet)
+			self:Detach(hiveDeco:FindFirstChild("StickerCanvases"), self.detached, self.detachedSet)
+		end
+		local decorations = workspace:FindFirstChild("Decorations")
+		if decorations then
+			for _, name in ipairs(ULTRA_DECO_CHILD_NAMES) do
+				self:Detach(decorations:FindFirstChild(name), self.detached, self.detachedSet)
+			end
+			local misc = decorations:FindFirstChild("Misc")
+			if misc then
+				for _, child in ipairs(misc:GetChildren()) do
+					local n = child.Name
+					if string.find(n, "Blue Flower") or n == "Bamboo" or n == "Bush" or n == "Mushroom" then
+						self:Detach(child, self.detached, self.detachedSet)
+					end
+				end
+			end
+		end
+		local function bindBees(folder)
+			if not folder or connections:Get("ultraAntiLagBees") then return end
+			for _, child in ipairs(folder:GetChildren()) do
+				self:Detach(child, self.detachedBees, self.detachedBeeSet)
+			end
+			connections:Add("ultraAntiLagBees", folder.ChildAdded:Connect(function(child)
 				if not self.enabled then return end
-				if prop == "GlobalShadows" or prop == "FogEnd" or prop == "FogStart"
-					or prop == "EnvironmentSpecularScale" or prop == "EnvironmentDiffuseScale" then
-					pcall(function()
-						if Lighting.GlobalShadows ~= false then Lighting.GlobalShadows = false end
-						if Lighting.FogEnd < 1e8 then Lighting.FogEnd = 1e9 end
-						if Lighting.FogStart < 1e8 then Lighting.FogStart = 1e9 end
-						if saved.EnvironmentSpecularScale ~= nil and Lighting.EnvironmentSpecularScale ~= 0 then Lighting.EnvironmentSpecularScale = 0 end
-						if saved.EnvironmentDiffuseScale ~= nil and Lighting.EnvironmentDiffuseScale ~= 0 then Lighting.EnvironmentDiffuseScale = 0 end
+				task.defer(function()
+					if self.enabled and child.Parent == folder then
+						self:Detach(child, self.detachedBees, self.detachedBeeSet)
+					end
+				end)
+			end))
+		end
+		bindBees(workspace:FindFirstChild("Bees"))
+
+		local function bindParticles(folder)
+			if not folder or connections:Get("ultraAntiLagParticles") then return end
+			for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
+			if folder.DescendantAdded then
+				connections:Add("ultraAntiLagParticles", folder.DescendantAdded:Connect(function(desc)
+					if self.enabled then self:SyncParticleFX(desc) end
+				end))
+			end
+		end
+		bindParticles(workspace:FindFirstChild("Particles"))
+		local function bindFlames(folder)
+			if not folder or connections:Get("ultraAntiLagFlames") then return end
+			for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
+			if folder.DescendantAdded then
+				connections:Add("ultraAntiLagFlames", folder.DescendantAdded:Connect(function(desc)
+					if self.enabled then self:SyncParticleFX(desc) end
+				end))
+			end
+		end
+		bindFlames(workspace:FindFirstChild("PlayerFlames"))
+
+		local function bindFieldBalloons(fieldBalloons)
+			if not fieldBalloons or connections:Get("ultraAntiLagBalloons") then return end
+			for _, child in ipairs(fieldBalloons:GetChildren()) do self:HideBalloonModel(child) end
+			connections:Add("ultraAntiLagBalloons", fieldBalloons.ChildAdded:Connect(function(child)
+				if self.enabled then self:HideBalloonModel(child) end
+			end))
+		end
+		local function bindBalloons(balloons)
+			if not balloons then return end
+			bindFieldBalloons(balloons:FindFirstChild("FieldBalloons"))
+			if not connections:Get("ultraAntiLagBalloons") and not connections:Get("ultraAntiLagBalloonsRoot") and balloons.ChildAdded then
+				connections:Add("ultraAntiLagBalloonsRoot", balloons.ChildAdded:Connect(function(child)
+					if self.enabled and child.Name == "FieldBalloons" then
+						connections:Cancel("ultraAntiLagBalloonsRoot")
+						bindFieldBalloons(child)
+					end
+				end))
+			end
+		end
+		bindBalloons(workspace:FindFirstChild("Balloons"))
+
+		if workspace.ChildAdded then
+			connections:Add("ultraAntiLagWorkspaceChild", workspace.ChildAdded:Connect(function(child)
+				if not self.enabled then return end
+				local name = child.Name
+				if name == "Bees" then bindBees(child)
+				elseif name == "Particles" then bindParticles(child)
+				elseif name == "PlayerFlames" then bindFlames(child)
+				elseif name == "Balloons" then bindBalloons(child)
+				else
+					for _, cosmeticName in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
+						if name == cosmeticName then self:Detach(child, self.detached, self.detachedSet); break end
+					end
+				end
+			end))
+		end
+
+		local playersService = getService("Players")
+		if playersService then
+			for _, p in ipairs(playersService:GetPlayers()) do self:WatchPlayer(p) end
+			if playersService.PlayerAdded then
+				connections:Add("ultraAntiLagPlayerAdded", playersService.PlayerAdded:Connect(function(p)
+					if self.enabled then self:WatchPlayer(p) end
+				end))
+			end
+			if playersService.PlayerRemoving then
+				connections:Add("ultraAntiLagPlayerRemoving", playersService.PlayerRemoving:Connect(function(p)
+					connections:Cancel("ultraAntiLagCharAdded:" .. tostring(p))
+					connections:Cancel("ultraAntiLagCharRem:" .. tostring(p))
+					self.playerConns[p] = nil
+					local cachedChar = self.playerChars[p]
+					self.playerChars[p] = nil
+					if cachedChar then connections:Cancel("ultraAntiLagCharDesc:" .. tostring(cachedChar)) end
+					if p.Character and p.Character ~= cachedChar then
+						connections:Cancel("ultraAntiLagCharDesc:" .. tostring(p.Character))
+					end
+				end))
+			end
+		end
+
+		-- Safe cosmetic-only method filters (never blocks tokens, marks, crosshairs, combos, blooms, petals, flames, or showers).
+		if gameApi.CollectiblesAnimator then
+			self:WrapMethod(gameApi.CollectiblesAnimator, "AnimateCollect", "collectAnim", function()
+				return not self.enabled
+			end)
+		end
+		if gameApi.LocalAmulets then
+			self:WrapMethod(gameApi.LocalAmulets, "CreatePlayerAmulets", "localAmulets", function()
+				return not self.enabled
+			end)
+		end
+		if gameApi.LocalFXModule then
+			self:WrapMethod(gameApi.LocalFXModule, "ClientRun", "cosmeticLocalFX", function(a, b)
+				if not self.enabled then return true end
+				local fxName = extractLocalFxName(a, b)
+				if fxName and COSMETIC_LOCAL_FX[fxName] then return false end
+				return true
+			end)
+		end
+
+		threads:Add("ultraAntiLagScan", function()
+			local targets = {
+				{ inst = workspace:FindFirstChild("Map"), flowers = false, hideParts = false },
+				{ inst = workspace:FindFirstChild("Decorations"), flowers = false, hideParts = true },
+				{ inst = workspace:FindFirstChild("Leaderboards"), flowers = false, hideParts = true },
+				{ inst = workspace:FindFirstChild("Flowers"), flowers = true, hideParts = true },
+			}
+			for _, target in ipairs(targets) do
+				local root = target.inst
+				if root and root.Parent and self.enabled then
+					local objects = root:GetDescendants()
+					for i = 1, #objects do
+						if not self.enabled then break end
+						local object = objects[i]
+						if object.Parent then self:ApplyStaticObject(object, target.flowers, target.hideParts) end
+						objects[i] = nil
+						if i % 150 == 0 then task.wait() end
+					end
+				end
+			end
+		end)
+	end
+
+	local function disableFXFast(desc)
+		if not desc or not desc.Parent then return end
+		if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
+			pcall(writeProp, desc, "Enabled", false)
+			if desc:IsA("ParticleEmitter") or desc:IsA("Trail") then pcall(clearFX, desc) end
+		end
+	end
+
+	local function hideCharFast(char, isLocal)
+		if not char or not char.Parent then return end
+		local function applyFast(d)
+			if isLocal then
+				if d.Parent == char and type(d.Name) == "string" and string.find(string.lower(d.Name), "amulet", 1, true) then
+					for _, sub in ipairs(d:GetDescendants()) do
+						if sub:IsA("BasePart") then
+							pcall(writeProp, sub, "LocalTransparencyModifier", 1)
+							pcall(writeProp, sub, "CastShadow", false)
+						elseif sub:IsA("Decal") or sub:IsA("Texture") then
+							pcall(writeProp, sub, "Transparency", 1)
+						elseif sub:IsA("ParticleEmitter") or sub:IsA("Trail") or sub:IsA("Beam") or sub:IsA("Light") then
+							pcall(writeProp, sub, "Enabled", false)
+						end
+					end
+				end
+				return
+			end
+			if d:IsA("BasePart") then
+				pcall(writeProp, d, "LocalTransparencyModifier", 1)
+				pcall(writeProp, d, "CastShadow", false)
+			elseif d:IsA("Decal") or d:IsA("Texture") then
+				pcall(writeProp, d, "Transparency", 1)
+			elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") or d:IsA("Sparkles") or d:IsA("Light") then
+				pcall(writeProp, d, "Enabled", false)
+			elseif d:IsA("Humanoid") then
+				pcall(writeProp, d, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
+			end
+		end
+		for _, d in ipairs(char:GetDescendants()) do applyFast(d) end
+		local key = "maxAltCharDesc:" .. tostring(char)
+		if not connections:Get(key) and char.DescendantAdded then
+			connections:Add(key, char.DescendantAdded:Connect(function(d)
+				if ultraAntiLag.maxAlt then applyFast(d) end
+			end))
+		end
+	end
+
+	function ultraAntiLag:SetMaxAlt(enabled)
+		enabled = enabled == true
+		if self.maxAlt == enabled then return end
+		self.maxAlt = enabled
+		for _, id in ipairs({
+			"maxAltBees", "maxAltParticles", "maxAltFlames",
+			"maxAltWorkspaceChild", "maxAltPlayerAdded", "maxAltPlayerRemoving",
+		}) do
+			connections:Cancel(id)
+		end
+		for player in pairs(self.maxAltPlayerConns) do
+			connections:Cancel("maxAltCharAdded:" .. tostring(player))
+			connections:Cancel("maxAltCharRem:" .. tostring(player))
+			local cachedChar = self.maxAltPlayerChars[player]
+			if cachedChar then connections:Cancel("maxAltCharDesc:" .. tostring(cachedChar)) end
+			if player.Character and player.Character ~= cachedChar then
+				connections:Cancel("maxAltCharDesc:" .. tostring(player.Character))
+			end
+		end
+		table.clear(self.maxAltPlayerConns)
+		table.clear(self.maxAltPlayerChars)
+
+		local tf = self.tokenFilter
+		local t = self.tracked
+		if not enabled then
+			state.precise = nil
+			for fn in pairs(self.maxAltHooks) do
+				if restorefunction then pcall(restorefunction, fn) end
+				if tf and tf.list then tf.list[fn] = nil end
+			end
+			table.clear(self.maxAltHooks)
+			self:RestoreEnv()
+			return
+		end
+
+		-- Clear heavy reversible tables when Max Alt Mode takes over.
+		if self.enabled then self:Set(false) end
+		self:ApplyEnv()
+
+		-- 1. Virtual hooks matching old Atlas+ (stops CollectiblesAnimator.Update & physical instance churn).
+		if hookfunction and isfunctionhooked and tf and t then
+			local function trackHook(fn)
+				self.maxAltHooks[fn] = true
+				if tf.list then tf.list[fn] = true end
+			end
+			local function tryHook(fn, makeReplacement)
+				if type(fn) ~= "function" then return false end
+				local okHooked, already = pcall(isfunctionhooked, fn)
+				if not okHooked then return false end
+				if already then return true end
+				local orig
+				local ok, errOrOrig = pcall(hookfunction, fn, makeReplacement(function(...)
+					return orig(...)
+				end))
+				if not ok then return false end
+				orig = errOrOrig
+				trackHook(fn)
+				return true
+			end
+
+			local ca = gameApi.CollectiblesAnimator
+			if not ca and ReplicatedStorage then
+				local ok, mod = pcall(function() return require(ReplicatedStorage:FindFirstChild("CollectiblesAnimator")) end)
+				if ok and type(mod) == "table" then ca = mod end
+			end
+			if type(ca) == "table" then
+				local caSpawnHooked = tryHook(ca.Spawn, function(orig)
+					return function(...)
+						if not self.maxAlt or not t or not ... then
+							return orig(...)
+						end
+						return tf.TokenSpawn(...)
+					end
+				end)
+				for _, mname in ipairs({ "AnimateCollect", "Destroy", "Update" }) do
+					tryHook(ca[mname], function(orig)
+						return function(...)
+							if not self.maxAlt then return orig(...) end
+						end
 					end)
 				end
+				if caSpawnHooked then
+					destroyInst(workspace:FindFirstChild("Collectibles"))
+					t.tokenlink = {}
+					t.tokens = {}
+				end
+			end
+
+			local amuletsMod = gameApi.LocalAmulets
+			if not amuletsMod and ReplicatedStorage then
+				local ok, mod = pcall(function() return require(ReplicatedStorage:FindFirstChild("LocalAmulets")) end)
+				if ok and type(mod) == "table" then amuletsMod = mod end
+			end
+			if type(amuletsMod) == "table" then
+				tryHook(amuletsMod.CreatePlayerAmulets, function(orig)
+					return function(...)
+						if not self.maxAlt then return orig(...) end
+					end
+				end)
+			end
+
+			local fxMod = gameApi.LocalFXModule
+			if not fxMod and ReplicatedStorage then
+				local ok, mod = pcall(function() return require(ReplicatedStorage:FindFirstChild("LocalFX")) end)
+				if ok and type(mod) == "table" then fxMod = mod end
+			end
+			if type(fxMod) == "table" then
+				if tryHook(fxMod.ClientRun, function(orig)
+					return function(...)
+						local u, y = ...
+						if not self.maxAlt or not u or not y or not t or tf:LocalFX(u, y) then
+							return orig(...)
+						end
+					end
+				end) then
+					state.precise = true
+				end
+			end
+
+			local dupMod = gameApi.DupedTokensAnimator
+			if not dupMod and ReplicatedStorage then
+				local ok, mod = pcall(function() return require(ReplicatedStorage:FindFirstChild("DupedTokensAnimator")) end)
+				if ok and type(mod) == "table" then dupMod = mod end
+			end
+			if type(dupMod) == "table" then
+				local dupSpawnHooked = tryHook(dupMod.Spawn, function(orig)
+					return function(H, ...)
+						if not self.maxAlt or not H or not t then return orig(H, ...) end
+						tf:DupedTokenSpawn(H)
+					end
+				end)
+				tryHook(dupMod.Destroy, function(orig)
+					return function(H, Z, ...)
+						if not self.maxAlt or not H or not t then return orig(H, Z, ...) end
+						tf.DupedTokenDestroy(H)
+					end
+				end)
+				tryHook(dupMod.Charge, function(orig)
+					return function(H, ...)
+						if not self.maxAlt or not H or not t then return orig(H, ...) end
+						tf.DupedTokenCharge(H)
+					end
+				end)
+				tryHook(dupMod.Uncharge, function(orig)
+					return function(O, ...)
+						if not self.maxAlt or not O or not t then return orig(O, ...) end
+						tf.DupedTokenUncharge(O)
+					end
+				end)
+				if dupSpawnHooked then
+					local cam = workspace.CurrentCamera
+					destroyInst(cam and cam:FindFirstChild("DupedTokens"))
+					t.dupedbear = {}
+					t.dupedsmiley = {}
+					t.dupedtokens = {}
+				end
+			end
+
+			local slMod = gameApi.StationsListener
+			if not slMod and ReplicatedStorage then
+				local ok, mod = pcall(function()
+					return require(ReplicatedStorage:FindFirstChild("ClientScripts"):FindFirstChild("Listeners"):FindFirstChild("StationsListener"))
+				end)
+				if ok and type(mod) == "table" then slMod = mod end
+			end
+			local acts = type(slMod) == "table" and slMod.Actions
+			if type(acts) == "table" then
+				local stSpawnHooked = tryHook(acts.Spawn, function(orig)
+					return function(u, ...)
+						if not self.maxAlt or not t then return orig(u, ...) end
+						tf.StationSpawn(u)
+					end
+				end)
+				tryHook(acts.AnimDestroy, function(orig)
+					return function(u, ...)
+						if not self.maxAlt or not t then return orig(u, ...) end
+						if type(u) == "table" and u.Id ~= nil then
+							t.precisemark[u.Id] = nil
+							t.marks[u.Id] = nil
+						end
+					end
+				end)
+				if stSpawnHooked then
+					destroyInst(workspace:FindFirstChild("Stations"))
+					t.precisemark = {}
+					t.marks = {}
+					if self.watchPreciseFX then self.watchPreciseFX(true) end
+				end
+			end
+		end
+
+		-- 2. Destructive zero-retention cleanup for Bees, Flowers, Decorations, Balloons, Particles, Flames.
+		local function bindAltBees(folder)
+			if not folder or connections:Get("maxAltBees") then return end
+			for _, child in ipairs(folder:GetChildren()) do destroyInst(child) end
+			connections:Add("maxAltBees", folder.ChildAdded:Connect(function(child)
+				if self.maxAlt then task.defer(destroyInst, child) end
 			end))
 		end
-	end
-	local terrain = workspace:FindFirstChildOfClass("Terrain")
-	if terrain then
-		local okT, ws, wsp, wr = pcall(function() return terrain.WaterWaveSize, terrain.WaterWaveSpeed, terrain.WaterReflectance end)
-		local tSaved = okT and { WaterWaveSize = ws, WaterWaveSpeed = wsp, WaterReflectance = wr } or {}
-		pcall(function() tSaved.WaterTransparency = terrain.WaterTransparency end)
-		pcall(function() tSaved.Decoration = terrain.Decoration end)
-		self.savedTerrain = tSaved
-		pcall(function()
-			terrain.WaterWaveSize = 0
-			terrain.WaterWaveSpeed = 0
-			terrain.WaterReflectance = 0
-			if tSaved.WaterTransparency ~= nil then terrain.WaterTransparency = 0 end
-			if tSaved.Decoration ~= nil then terrain.Decoration = false end
-		end)
-		for _, child in ipairs(terrain:GetChildren()) do
-			if child:IsA("Clouds") then self:Remember(self.savedProps, child, "Enabled", false) end
+		bindAltBees(workspace:FindFirstChild("Bees"))
+
+		if not cfg.autofarm.farmleaves and not cfg.autoquest.ants then
+			destroyInst(workspace:FindFirstChild("Flowers"))
+		end
+
+		for _, name in ipairs(MAX_ALT_DESTROY_TOP) do
+			destroyInst(workspace:FindFirstChild(name))
+		end
+		local map = workspace:FindFirstChild("Map")
+		if map then destroyInst(map:FindFirstChild("Fences")) end
+		local hiveDeco = workspace:FindFirstChild("HiveDeco")
+		if hiveDeco then
+			destroyInst(hiveDeco:FindFirstChild("HiveModels"))
+			destroyInst(hiveDeco:FindFirstChild("StickerCanvases"))
+		end
+		local hivePlatforms = workspace:FindFirstChild("HivePlatforms")
+		if hivePlatforms then
+			for _, plat in ipairs(hivePlatforms:GetChildren()) do
+				for _, child in ipairs(plat:GetChildren()) do
+					if child.Name == "Platform" then
+						pcall(writeProp, child, "CanCollide", false)
+					elseif child.Name ~= "Hive" and child.Name ~= "PlayerRef" then
+						destroyInst(child)
+					end
+				end
+			end
+		end
+		local decorations = workspace:FindFirstChild("Decorations")
+		if decorations then
+			local misc = decorations:FindFirstChild("Misc")
+			if misc then
+				for _, child in ipairs(misc:GetChildren()) do
+					local n = child.Name
+					if string.find(n, "Blue Flower") or n == "Bamboo" or n == "Bush" or n == "Mushroom" then
+						destroyInst(child)
+					end
+				end
+			end
+			for _, name in ipairs({
+				"35ZoneCave", "BubbleWandChimney", "TreatBooth", "Coconut Field",
+				"Pepper Patch", "Pine Tree", "SpiderCave", "Petal Shop", "JumpGames", "PEggMaze",
+			}) do
+				destroyInst(decorations:FindFirstChild(name))
+			end
+			for _, child in ipairs(decorations:GetChildren()) do
+				local n = child.Name
+				if string.find(n, "Dandelion") or string.find(n, "Clover") or string.find(n, "Rose")
+					or string.find(n, "Sign") or string.find(n, "Glider") or n == "ShopWord" then
+					destroyInst(child)
+				end
+			end
+		end
+		for _, child in ipairs(workspace:GetChildren()) do
+			local okCg, cg = pcall(readProp, child, "CollisionGroup")
+			if okCg and cg == "BoostBallBarrier" and child:IsA("BasePart") then
+				destroyInst(child)
+			end
+		end
+
+		if not cfg.autofarm.farmballoons and not cfg.autofarm.farmballoons2 and not cfg.face.balloons and not cfg.face.gballoons then
+			local balloons = workspace:FindFirstChild("Balloons")
+			if balloons then
+				destroyInst(balloons:FindFirstChild("FieldBalloons"))
+				if t then t.balloons = {} end
+			end
+		end
+
+		local function bindAltParticles(folder)
+			if not folder or connections:Get("maxAltParticles") then return end
+			for _, desc in ipairs(folder:GetDescendants()) do disableFXFast(desc) end
+			if folder.DescendantAdded then
+				connections:Add("maxAltParticles", folder.DescendantAdded:Connect(function(desc)
+					if self.maxAlt then disableFXFast(desc) end
+				end))
+			end
+		end
+		bindAltParticles(workspace:FindFirstChild("Particles"))
+
+		local function bindAltFlames(folder)
+			if not folder or connections:Get("maxAltFlames") then return end
+			for _, desc in ipairs(folder:GetDescendants()) do disableFXFast(desc) end
+			if folder.DescendantAdded then
+				connections:Add("maxAltFlames", folder.DescendantAdded:Connect(function(desc)
+					if self.maxAlt then disableFXFast(desc) end
+				end))
+			end
+		end
+		bindAltFlames(workspace:FindFirstChild("PlayerFlames"))
+
+		if workspace.ChildAdded then
+			connections:Add("maxAltWorkspaceChild", workspace.ChildAdded:Connect(function(child)
+				if not self.maxAlt then return end
+				local name = child.Name
+				if name == "Bees" then bindAltBees(child)
+				elseif name == "Particles" then bindAltParticles(child)
+				elseif name == "PlayerFlames" then bindAltFlames(child)
+				elseif MAX_ALT_DESTROY_TOP_SET[name] then task.defer(destroyInst, child) end
+			end))
+		end
+
+		-- Hide remote characters (zero restore tables, keeping HRPs & BillboardGuis for combo & Safeshower).
+		local playersService = getService("Players")
+		if playersService then
+			local function watchAltPlayer(p)
+				if not p or self.maxAltPlayerConns[p] then return end
+				local isLocal = (p == localPlayer)
+				self.maxAltPlayerConns[p] = true
+				if p.Character then
+					self.maxAltPlayerChars[p] = p.Character
+					hideCharFast(p.Character, isLocal)
+				end
+				if p.CharacterAdded then
+					connections:Add("maxAltCharAdded:" .. tostring(p), p.CharacterAdded:Connect(function(char)
+						local prevChar = self.maxAltPlayerChars[p]
+						if prevChar and prevChar ~= char then
+							connections:Cancel("maxAltCharDesc:" .. tostring(prevChar))
+						end
+						self.maxAltPlayerChars[p] = char
+						if self.maxAlt then hideCharFast(char, isLocal) end
+					end))
+				end
+				if p.CharacterRemoving then
+					connections:Add("maxAltCharRem:" .. tostring(p), p.CharacterRemoving:Connect(function(char)
+						if self.maxAltPlayerChars[p] == char then self.maxAltPlayerChars[p] = nil end
+						connections:Cancel("maxAltCharDesc:" .. tostring(char))
+					end))
+				end
+			end
+			for _, p in ipairs(playersService:GetPlayers()) do watchAltPlayer(p) end
+			if playersService.PlayerAdded then
+				connections:Add("maxAltPlayerAdded", playersService.PlayerAdded:Connect(function(p)
+					if self.maxAlt then watchAltPlayer(p) end
+				end))
+			end
+			if playersService.PlayerRemoving then
+				connections:Add("maxAltPlayerRemoving", playersService.PlayerRemoving:Connect(function(p)
+					connections:Cancel("maxAltCharAdded:" .. tostring(p))
+					connections:Cancel("maxAltCharRem:" .. tostring(p))
+					self.maxAltPlayerConns[p] = nil
+					local cachedChar = self.maxAltPlayerChars[p]
+					self.maxAltPlayerChars[p] = nil
+					if cachedChar then connections:Cancel("maxAltCharDesc:" .. tostring(cachedChar)) end
+					if p.Character and p.Character ~= cachedChar then
+						connections:Cancel("maxAltCharDesc:" .. tostring(p.Character))
+					end
+				end))
+			end
 		end
 	end
-	if StarterGui and not self.savedCoreGui then
-		local savedCore = {}
-		for _, name in ipairs({ "PlayerList", "EmotesMenu" }) do
-			local coreType = Enum.CoreGuiType[name]
-			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
-			if okGet and wasOn then
-				savedCore[name] = true
+
+	function ultraAntiLag:SetNoRenderChat(hidden)
+		if not StarterGui then return end
+		local coreType = Enum.CoreGuiType.Chat
+		if hidden then
+			if self.savedChatCoreGui == nil then
+				local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
+				self.savedChatCoreGui = (okGet and wasOn == true) and true or false
+			end
+			if self.savedChatCoreGui then
 				pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
 			end
-		end
-		self.savedCoreGui = savedCore
-	end
-	if not self.pollenPopUpChanged and gameApi.PlayerSettingsEvent and gameApi.ClientStatCache then
-		local okPop, curPopUp = pcall(function() return gameApi:Cache({ "Settings", "PollenPopUps" }) end)
-		if okPop and curPopUp ~= false then
-			self.savedPollenPopUp = (curPopUp == nil and true or curPopUp)
-			self.pollenPopUpChanged = true
-			pcall(secureCall, gameApi.PlayerSettingsEvent.FireServer, gameApi.PlayerSettingsEvent, "PollenPopUps", false)
-		end
-	end
-
-	-- Detach purely cosmetic workspace containers and player bees (zero gameplay/raycast dependencies).
-	for _, name in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
-		self:Detach(workspace:FindFirstChild(name), self.detached, self.detachedSet)
-	end
-	local map = workspace:FindFirstChild("Map")
-	if map then self:Detach(map:FindFirstChild("Fences"), self.detached, self.detachedSet) end
-	local hiveDeco = workspace:FindFirstChild("HiveDeco")
-	if hiveDeco then
-		self:Detach(hiveDeco:FindFirstChild("HiveModels"), self.detached, self.detachedSet)
-		self:Detach(hiveDeco:FindFirstChild("StickerCanvases"), self.detached, self.detachedSet)
-	end
-	local decorations = workspace:FindFirstChild("Decorations")
-	if decorations then
-		for _, name in ipairs(ULTRA_DECO_CHILD_NAMES) do
-			self:Detach(decorations:FindFirstChild(name), self.detached, self.detachedSet)
-		end
-		local misc = decorations:FindFirstChild("Misc")
-		if misc then
-			for _, child in ipairs(misc:GetChildren()) do
-				local n = child.Name
-				if string.find(n, "Blue Flower") or n == "Bamboo" or n == "Bush" or n == "Mushroom" then
-					self:Detach(child, self.detached, self.detachedSet)
-				end
+		else
+			if self.savedChatCoreGui then
+				pcall(function() StarterGui:SetCoreGuiEnabled(coreType, true) end)
 			end
-		end
-	end
-	local function bindBees(folder)
-		if not folder or connections:Get("ultraAntiLagBees") then return end
-		for _, child in ipairs(folder:GetChildren()) do
-			self:Detach(child, self.detachedBees, self.detachedBeeSet)
-		end
-		connections:Add("ultraAntiLagBees", folder.ChildAdded:Connect(function(child)
-			if not self.enabled then return end
-			task.defer(function()
-				if self.enabled and child.Parent == folder then
-					self:Detach(child, self.detachedBees, self.detachedBeeSet)
-				end
-			end)
-		end))
-	end
-	bindBees(workspace:FindFirstChild("Bees"))
-
-	local function bindParticles(folder)
-		if not folder or connections:Get("ultraAntiLagParticles") then return end
-		for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
-		if folder.DescendantAdded then
-			connections:Add("ultraAntiLagParticles", folder.DescendantAdded:Connect(function(desc)
-				if self.enabled then self:SyncParticleFX(desc) end
-			end))
-		end
-	end
-	bindParticles(workspace:FindFirstChild("Particles"))
-	local function bindFlames(folder)
-		if not folder or connections:Get("ultraAntiLagFlames") then return end
-		for _, desc in ipairs(folder:GetDescendants()) do self:SyncParticleFX(desc) end
-		if folder.DescendantAdded then
-			connections:Add("ultraAntiLagFlames", folder.DescendantAdded:Connect(function(desc)
-				if self.enabled then self:SyncParticleFX(desc) end
-			end))
-		end
-	end
-	bindFlames(workspace:FindFirstChild("PlayerFlames"))
-
-	local function bindFieldBalloons(fieldBalloons)
-		if not fieldBalloons or connections:Get("ultraAntiLagBalloons") then return end
-		for _, child in ipairs(fieldBalloons:GetChildren()) do self:HideBalloonModel(child) end
-		connections:Add("ultraAntiLagBalloons", fieldBalloons.ChildAdded:Connect(function(child)
-			if self.enabled then self:HideBalloonModel(child) end
-		end))
-	end
-	local function bindBalloons(balloons)
-		if not balloons then return end
-		bindFieldBalloons(balloons:FindFirstChild("FieldBalloons"))
-		if not connections:Get("ultraAntiLagBalloons") and not connections:Get("ultraAntiLagBalloonsRoot") and balloons.ChildAdded then
-			connections:Add("ultraAntiLagBalloonsRoot", balloons.ChildAdded:Connect(function(child)
-				if self.enabled and child.Name == "FieldBalloons" then
-					connections:Cancel("ultraAntiLagBalloonsRoot")
-					bindFieldBalloons(child)
-				end
-			end))
-		end
-	end
-	bindBalloons(workspace:FindFirstChild("Balloons"))
-
-	if workspace.ChildAdded then
-		connections:Add("ultraAntiLagWorkspaceChild", workspace.ChildAdded:Connect(function(child)
-			if not self.enabled then return end
-			local name = child.Name
-			if name == "Bees" then bindBees(child)
-			elseif name == "Particles" then bindParticles(child)
-			elseif name == "PlayerFlames" then bindFlames(child)
-			elseif name == "Balloons" then bindBalloons(child)
-			else
-				for _, cosmeticName in ipairs(ULTRA_COSMETIC_TOP_FOLDERS) do
-					if name == cosmeticName then self:Detach(child, self.detached, self.detachedSet); break end
-				end
-			end
-		end))
-	end
-
-	local playersService = getService("Players")
-	if playersService then
-		for _, p in ipairs(playersService:GetPlayers()) do self:WatchPlayer(p) end
-		if playersService.PlayerAdded then
-			connections:Add("ultraAntiLagPlayerAdded", playersService.PlayerAdded:Connect(function(p)
-				if self.enabled then self:WatchPlayer(p) end
-			end))
-		end
-		if playersService.PlayerRemoving then
-			connections:Add("ultraAntiLagPlayerRemoving", playersService.PlayerRemoving:Connect(function(p)
-				connections:Cancel("ultraAntiLagCharAdded:" .. tostring(p))
-				connections:Cancel("ultraAntiLagCharRem:" .. tostring(p))
-				self.playerConns[p] = nil
-				local cachedChar = self.playerChars[p]
-				self.playerChars[p] = nil
-				if cachedChar then connections:Cancel("ultraAntiLagCharDesc:" .. tostring(cachedChar)) end
-				if p.Character and p.Character ~= cachedChar then
-					connections:Cancel("ultraAntiLagCharDesc:" .. tostring(p.Character))
-				end
-			end))
+			self.savedChatCoreGui = nil
 		end
 	end
 
-	-- Safe cosmetic-only method filters (never blocks tokens, marks, crosshairs, combos, blooms, petals, flames, or showers).
-	if gameApi.CollectiblesAnimator then
-		self:WrapMethod(gameApi.CollectiblesAnimator, "AnimateCollect", "collectAnim", function()
-			return not self.enabled
-		end)
+	function ultraAntiLag:Shutdown()
+		self:SetNoRenderChat(false)
+		self:SetMaxAlt(false)
+		self:Set(false)
 	end
-	if gameApi.LocalAmulets then
-		self:WrapMethod(gameApi.LocalAmulets, "CreatePlayerAmulets", "localAmulets", function()
-			return not self.enabled
-		end)
-	end
-	if gameApi.LocalFXModule then
-		self:WrapMethod(gameApi.LocalFXModule, "ClientRun", "cosmeticLocalFX", function(a, b)
-			if not self.enabled then return true end
-			local fxName = extractLocalFxName(a, b)
-			if fxName and COSMETIC_LOCAL_FX[fxName] then return false end
-			return true
-		end)
-	end
-
-	threads:Add("ultraAntiLagScan", function()
-		local targets = {
-			{ inst = workspace:FindFirstChild("Map"), flowers = false, hideParts = false },
-			{ inst = workspace:FindFirstChild("Decorations"), flowers = false, hideParts = true },
-			{ inst = workspace:FindFirstChild("Leaderboards"), flowers = false, hideParts = true },
-			{ inst = workspace:FindFirstChild("Flowers"), flowers = true, hideParts = true },
-		}
-		for _, target in ipairs(targets) do
-			local root = target.inst
-			if root and root.Parent and self.enabled then
-				local objects = root:GetDescendants()
-				for i = 1, #objects do
-					if not self.enabled then break end
-					local object = objects[i]
-					if object.Parent then self:ApplyStaticObject(object, target.flowers, target.hideParts) end
-					objects[i] = nil
-					if i % 150 == 0 then task.wait() end
-				end
-			end
-		end
-	end)
-end
-
-function ultraAntiLag:SetNoRenderChat(hidden)
-	if not StarterGui then return end
-	local coreType = Enum.CoreGuiType.Chat
-	if hidden then
-		if self.savedChatCoreGui == nil then
-			local okGet, wasOn = pcall(function() return StarterGui:GetCoreGuiEnabled(coreType) end)
-			self.savedChatCoreGui = (okGet and wasOn == true) and true or false
-		end
-		if self.savedChatCoreGui then
-			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
-		end
-	else
-		if self.savedChatCoreGui then
-			pcall(function() StarterGui:SetCoreGuiEnabled(coreType, true) end)
-		end
-		self.savedChatCoreGui = nil
-	end
-end
-
-function ultraAntiLag:Shutdown()
-	self:SetNoRenderChat(false)
-	self:Set(false)
 end
 
 local crabPlatformSupport = {saved={}}
@@ -3447,6 +3927,7 @@ function showerController:PauseOthers()
 		if child:IsA("AlignPosition") or child:IsA("AlignOrientation") then child:Destroy() end
 	end
 	if state.tweennoclip then state.tweennoclip:Disconnect(); state.tweennoclip=nil end
+	if state.tweenPartsAdded then state.tweenPartsAdded:Disconnect(); state.tweenPartsAdded=nil end
 	state.fasttween = nil
 	self.previousStopface = state.stopface
 	state.stopface = true
@@ -3543,27 +4024,40 @@ function comboController:MainOwned(owner)
 		and string.lower(owner)==string.lower(main)
 end
 
-function comboController:GetMainRoot()
-	if self:IsMainAccount() then return nil end
+function comboController:IsMainInField(r, myField)
 	local main=cfg.coconutcombo and cfg.coconutcombo.main
-	if type(main)~="string" or main=="" or main=="None" then return nil end
+	if type(main)~="string" or main=="" or main=="None" then return false end
+	local playersService=getService("Players")
+	if not playersService then return false end
 	local mainLower=string.lower(main)
 	local matched
-	for _,p in ipairs(getService("Players"):GetPlayers()) do
-		if string.lower(p.Name)==mainLower then matched=p;break end
+	for _,p in ipairs(playersService:GetPlayers()) do
+		if p and type(p.Name)=="string" and string.lower(p.Name)==mainLower then matched=p;break end
 	end
 	if not matched then
-		for _,p in ipairs(getService("Players"):GetPlayers()) do
-			if type(p.DisplayName)=="string" and string.lower(p.DisplayName)==mainLower then matched=p;break end
+		for _,p in ipairs(playersService:GetPlayers()) do
+			if p and type(p.DisplayName)=="string" and string.lower(p.DisplayName)==mainLower then matched=p;break end
 		end
 	end
-	if matched then
-		local char=matched.Character
-		local root=char and char:FindFirstChild("HumanoidRootPart")
-		local h=char and char:FindFirstChildOfClass("Humanoid")
-		if root and h and h.Health>0 then return root end
+	if not matched or matched==localPlayer then return false end
+	local char=matched.Character
+	local mainRoot=char and char:FindFirstChild("HumanoidRootPart")
+	local h=char and char:FindFirstChildOfClass("Humanoid")
+	if not mainRoot or not h or h.Health<=0 then return false end
+	local rField=type(r.field)=="string" and r.field or ""
+	if rField~="" then
+		local mf=self:FieldAt(mainRoot.Position)
+		return mf~=nil and mf.Name==rField
 	end
-	return nil
+	if myField then
+		local mf=self:FieldAt(mainRoot.Position)
+		return mf~=nil and mf.Name==myField.Name
+	end
+	if math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
+		local dx,dz=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
+		return dx*dx+dz*dz<=150*150
+	end
+	return false
 end
 
 function comboController:Observe(effectName, data)
@@ -3743,72 +4237,6 @@ function comboController:ActiveCombos(now)
 	return list
 end
 
-local function readPartVelocity(part)
-	return part.AssemblyLinearVelocity
-end
-
-function comboController:UpdateMainPresence(combos)
-	table.clear(self.mainZones)
-	if self:IsCatchAll() then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Catch All ON: Main rules ignored"
-		return
-	end
-	if self:IsMainAccount() then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug=string.format("Main: this account (own + intercept every %d)",self:MainChimeInterval())
-		return
-	end
-	local main=cfg.coconutcombo and cfg.coconutcombo.main
-	if type(main)~="string" or main=="" or main=="None" then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Main: NOT SET (set Main Account!)"
-		return
-	end
-	local mainRoot=self:GetMainRoot()
-	if not mainRoot then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Main: "..main.." not in server/dead"
-		return
-	end
-	local vel=Vector3.zero
-	local okVel,v=pcall(readPartVelocity,mainRoot)
-	if okVel and typeof(v)=="Vector3" then vel=v end
-	local lead=Vector3.new(vel.X,0,vel.Z)*0.25
-	if lead.Magnitude>12 then lead=lead.Unit*12 end
-	local leadPos=mainRoot.Position+lead
-	local nearest,anyInside
-	for _,r in ipairs(combos) do
-		if r.private then
-			r.mainInside=false
-		elseif math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
-			local dx1,dz1=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
-			local dx2,dz2=leadPos.X-r.position.X,leadPos.Z-r.position.Z
-			local dist=math.min(math.sqrt(dx1*dx1+dz1*dz1),math.sqrt(dx2*dx2+dz2*dz2))
-			if not nearest or dist<nearest then nearest=dist end
-			local rad=r.radius or 13
-			if dist<=rad+2.0 then
-				r.mainInside=true
-			elseif dist>rad+4.0 then
-				r.mainInside=false
-			end
-		else
-			r.mainInside=false
-		end
-		if r.mainInside then
-			anyInside=true
-			self.mainZones[#self.mainZones+1]=r
-		end
-	end
-	if anyInside then
-		self.mainDebug="Main: "..main.." INSIDE combo"
-	elseif nearest then
-		self.mainDebug=string.format("Main: %s | nearest combo %d studs",main,math.floor(nearest+0.5))
-	else
-		self.mainDebug="Main: "..main.." (no active combo)"
-	end
-end
-
 function comboController:HelperNear(r)
 	local playersService=getService("Players")
 	if not playersService then return false end
@@ -3832,35 +4260,15 @@ function comboController:HelperNear(r)
 	return false
 end
 
-function comboController:AnyOtherInside(r)
-	local playersService=getService("Players")
-	if not playersService then return false end
-	local limit=(r.radius or 13)+1.0
-	local limitSq=limit*limit
-	for _,p in ipairs(playersService:GetPlayers()) do
-		if p~=localPlayer then
-			local char=p.Character
-			local pRoot=char and char:FindFirstChild("HumanoidRootPart")
-			local h=char and char:FindFirstChildOfClass("Humanoid")
-			if pRoot and h and h.Health>0 and math.abs(pRoot.Position.Y-r.position.Y)<=14 then
-				local dx,dz=pRoot.Position.X-r.position.X,pRoot.Position.Z-r.position.Z
-				if dx*dx+dz*dz<=limitSq then return true end
-			end
-		end
-	end
-	return false
-end
-
-function comboController:MainShouldCatch(r,now)
+function comboController:MainShouldCatch(r)
 	local every=self:MainChimeInterval()
-	if every<=0 or r.private or r.stack==nil then return true end
-	if r.stack%(every+1)==0 then return true end
+	if every<=0 or r.private or type(r.stack)~="number" or r.stack<=0 then return true end
+	if r.stack%every==0 then return true end
 	if not self:HelperNear(r) then return true end
-	if r.deadline-now<=0.35 and not self:AnyOtherInside(r) then return true end
 	return false
 end
 
-function comboController:MainShouldIntercept(r,now)
+function comboController:MainShouldIntercept(r)
 	if not self:IsMainAccount() or self:IsCatchAll() then return false end
 	if r.private or type(r.stack)~="number" or r.stack<=0 then return false end
 	local every=self:MainChimeInterval()
@@ -3870,155 +4278,47 @@ function comboController:MainShouldIntercept(r,now)
 	return r.stack%every==0
 end
 
-function comboController:UpdateSkipZones(combos,now,myField,root)
-	table.clear(self.skipZones)
-	if not self:IsMainAccount() or self:IsCatchAll() then
-		for _,r in ipairs(combos) do r.skipped=false end
-		return
-	end
-	local localLower=string.lower(localPlayer.Name)
+function comboController:AltShouldYieldToMain(r, myField)
+	if self:IsMainAccount() or self:IsCatchAll() then return false end
+	if r.private or type(r.stack)~="number" or r.stack<=0 then return false end
 	local every=self:MainChimeInterval()
-	if not myField and root then myField=self:FieldAt(root.Position) end
+	if every<=0 or r.stack%every~=0 then return false end
+	return self:IsMainInField(r, myField)
+end
+
+function comboController:IsRestrictedZone()
+	return false
+end
+
+function comboController:PathCrossesRestrictedZone()
+	return false
+end
+
+function comboController:BlocksMove()
+	return false
+end
+
+function comboController:MatchesField(r, root, myField, allowPrivate)
+	myField=myField or self:FieldAt(root.Position)
 	local myFieldName=myField and myField.Name or ""
-	for _,r in ipairs(combos) do
-		if r.ownerLower==localLower and not r.private and r.deadline+0.12>now then
-			r.skipped=not self:MainShouldCatch(r,now)
-			if r.skipped then
-				self.skipZones[#self.skipZones+1]=r
-			end
-		elseif every>=1 and r.ownerLower~=localLower and not r.private and r.deadline+0.12>now then
-			local inMyField=false
-			if myFieldName~="" and r.field==myFieldName then
-				inMyField=true
-			elseif root and (myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=14 then
-				local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-				if dx*dx+dz*dz<=150*150 then inMyField=true end
-			end
-			if inMyField and not self:MainShouldIntercept(r,now) then
-				r.skipped=true
-				self.skipZones[#self.skipZones+1]=r
-			else
-				r.skipped=false
-			end
-		else
-			r.skipped=false
-		end
-	end
-end
-
-function comboController:RestrictedZones()
-	return self:IsMainAccount() and self.skipZones or self.mainZones
-end
-
-function comboController:IsRestrictedZone(position)
-	if not self:Managed() or self:IsCatchAll() or typeof(position)~="Vector3" then return false end
-	local now=os.clock()
-	for _,z in ipairs(self:RestrictedZones()) do
-		if z.deadline+0.12>now and math.abs(position.Y-z.position.Y)<=14 then
-			local dx,dz=position.X-z.position.X,position.Z-z.position.Z
-			local limit=(z.radius or 13)+3.0
-			if dx*dx+dz*dz<limit*limit then return true end
-		end
-	end
+	local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
+	local dist=math.sqrt(dx*dx+dz*dz)
+	if myFieldName~="" and r.field==myFieldName then return true end
+	if allowPrivate and r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160 then return true end
+	if (myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150 then return true end
 	return false
-end
-
-function comboController:PathCrossesRestrictedZone(fromPos, toPos)
-	if not self:Managed() or self:IsCatchAll() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
-	local now=os.clock()
-	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
-	local lenSq=vx*vx+vz*vz
-	for _,z in ipairs(self:RestrictedZones()) do
-		if z.deadline+0.12>now and math.abs(toPos.Y-z.position.Y)<=14 then
-			local wx,wz=z.position.X-fromPos.X,z.position.Z-fromPos.Z
-			local t=lenSq>1e-6 and math.clamp((wx*vx+wz*vz)/lenSq,0,1) or 0
-			local cx,cz=fromPos.X+vx*t-z.position.X,fromPos.Z+vz*t-z.position.Z
-			local limit=(z.radius or 13)+2.0
-			if cx*cx+cz*cz<limit*limit then return true end
-		end
-	end
-	return false
-end
-
-function comboController:BlocksMove(goal)
-	if self.active or not self:Managed() or typeof(goal)~="Vector3" then return false end
-	if self:IsRestrictedZone(goal) then return true end
-	local char=localPlayer and localPlayer.Character
-	local root=char and char:FindFirstChild("HumanoidRootPart")
-	return root and self:PathCrossesRestrictedZone(root.Position,goal) or false
-end
-
-function comboController:PointInField(position, field)
-	if field and field.Position and field.Size then
-		local margin=2
-		return math.abs(position.X-field.Position.X)<=math.max(1,field.Size.X/2-margin)
-			and math.abs(position.Z-field.Position.Z)<=math.max(1,field.Size.Z/2-margin)
-	end
-	local f=self:FieldAt(position)
-	return f~=nil and (not field or f.Name==field.Name)
-end
-
-function comboController:ComputeExitPosition(root, record, zones)
-	local center=Vector3.new(record.position.X,root.Position.Y,record.position.Z)
-	local delta=Vector3.new(root.Position.X-record.position.X,0,root.Position.Z-record.position.Z)
-	local baseAngle
-	if delta.Magnitude>0.1 then
-		baseAngle=math.atan2(delta.Z,delta.X)
-	else
-		local mainRoot=self:GetMainRoot()
-		local away=mainRoot and Vector3.new(root.Position.X-mainRoot.Position.X,0,root.Position.Z-mainRoot.Position.Z)
-		baseAngle=(away and away.Magnitude>0.1) and math.atan2(away.Z,away.X) or 0
-	end
-	local myField=self:FieldAt(root.Position) or self:FieldAt(record.position)
-	local rad=record.radius or 13
-	local function clearOfAll(pt)
-		for _,z in ipairs(zones) do
-			if math.abs(pt.Y-z.position.Y)<=14 then
-				local dx,dz=pt.X-z.position.X,pt.Z-z.position.Z
-				local limit=(z.radius or 13)+3.0
-				if dx*dx+dz*dz<limit*limit then return false end
-			end
-		end
-		return true
-	end
-	local bestAny,bestAnyDist
-	for _,exitRadius in ipairs({rad+6,rad+10}) do
-		local bestInField,bestInFieldDist
-		for i=0,11 do
-			local angle=baseAngle+i*(math.pi/6)
-			local pt=center+Vector3.new(math.cos(angle)*exitRadius,0,math.sin(angle)*exitRadius)
-			if clearOfAll(pt) then
-				local moveDist=(pt-root.Position).Magnitude
-				if self:PointInField(pt,myField) and (not bestInField or moveDist<bestInFieldDist) then
-					bestInField,bestInFieldDist=pt,moveDist
-				end
-				if not bestAny or moveDist<bestAnyDist then
-					bestAny,bestAnyDist=pt,moveDist
-				end
-			end
-		end
-		if bestInField then return bestInField end
-	end
-	if bestAny then return bestAny end
-	return center+Vector3.new(math.cos(baseAngle)*(rad+6),0,math.sin(baseAngle)*(rad+6))
 end
 
 function comboController:OwnComboLanding(root, combos, now, myField)
 	local localLower=string.lower(localPlayer.Name)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
+	local isMain=self:IsMainAccount()
 	local best
 	for _,r in ipairs(combos) do
-		if r.ownerLower==localLower and not r.mainInside and r.deadline+0.12>now and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearPrivate=r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearPrivate or nearSameElevation then
-				if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
-					best=r
-				end
+		if r.ownerLower==localLower and r.deadline+0.12>now and self:MatchesField(r,root,myField,true) then
+			local allowed
+			if isMain then allowed=self:MainShouldCatch(r) else allowed=not self:AltShouldYieldToMain(r,myField) end
+			if allowed and (not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private)) then
+				best=r
 			end
 		end
 	end
@@ -4027,18 +4327,11 @@ end
 
 function comboController:MainComboLanding(root, combos, now, myField)
 	if self:IsMainAccount() then return nil end
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
-		if not r.private and self:MainOwned(r.owner) and not r.mainInside and r.deadline+0.12>now and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearSameElevation then
-				if not best or r.deadline<best.deadline then best=r end
-			end
+		if not r.private and self:MainOwned(r.owner) and r.deadline+0.12>now and self:MatchesField(r,root,myField,false)
+			and not self:AltShouldYieldToMain(r,myField) then
+			if not best or r.deadline<best.deadline then best=r end
 		end
 	end
 	return best
@@ -4047,84 +4340,26 @@ end
 function comboController:MainInterceptComboLanding(root, combos, now, myField)
 	if not self:IsMainAccount() or self:IsCatchAll() then return nil end
 	local localLower=string.lower(localPlayer.Name)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
 		if not r.private and r.ownerLower~=localLower and r.deadline+0.12>now
-			and self:MainShouldIntercept(r,now) and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearSameElevation then
-				if not best or r.deadline<best.deadline then best=r end
-			end
+			and self:MainShouldIntercept(r) and self:MatchesField(r,root,myField,false) then
+			if not best or r.deadline<best.deadline then best=r end
 		end
 	end
 	return best
 end
 
 function comboController:AnyFieldComboLanding(root, combos, now, myField)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
-		if r.deadline+0.12>now then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local airborneInMyField=(myFieldName~="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
-			local unmappedBoth=(myFieldName=="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
-			local nearPrivate=r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160
-			if sameField or airborneInMyField or unmappedBoth or nearPrivate then
-				if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
-					best=r
-				end
+		if r.deadline+0.12>now and self:MatchesField(r,root,myField,true) then
+			if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
+				best=r
 			end
 		end
 	end
 	return best
-end
-
-function comboController:YieldLanding(root, now, ownCandidate)
-	if self:IsCatchAll() then return nil end
-	local zones=self:RestrictedZones()
-	local breached
-	for _,z in ipairs(zones) do
-		if z.deadline+0.12>now and math.abs(root.Position.Y-z.position.Y)<=14 then
-			local dx,dz=root.Position.X-z.position.X,root.Position.Z-z.position.Z
-			if math.sqrt(dx*dx+dz*dz)<(z.radius or 13)+3.0 then
-				if not breached or z.deadline<breached.deadline then breached=z end
-			end
-		end
-	end
-	if breached then
-		local held=self.session and self.session.yieldJob
-		if held and held.source==breached and not self:IsRestrictedZone(held.position) then
-			return held
-		end
-		local exitPos=self:ComputeExitPosition(root,breached,zones)
-		return {
-			key="yield:"..breached.key,
-			owner=breached.owner,
-			position=exitPos,
-			deadline=breached.deadline,
-			field=breached.field or "",
-			yielding=true,
-			source=breached,
-		}
-	end
-	if not ownCandidate then
-		local held=self.session and self.session.yieldJob
-		if held and held.source and held.source.deadline+0.12>now and (held.source.mainInside or held.source.skipped) then
-			local dx,dz=root.Position.X-held.source.position.X,root.Position.Z-held.source.position.Z
-			local clearDist=(held.source.radius or 13)+5.0
-			if dx*dx+dz*dz<clearDist*clearDist then
-				return held
-			end
-		end
-	end
 end
 
 function comboController:TravelBlocked()
@@ -4283,34 +4518,32 @@ function comboController:Tick()
 	self:SyncDisks(now)
 	local combos=self:ActiveCombos(now)
 	local myField=self:FieldAt(root.Position)
-	self:UpdateMainPresence(combos)
-	self:UpdateSkipZones(combos,now,myField,root)
 	local catchAll=self:IsCatchAll()
-	local catchJob=catchAll and self:AnyFieldComboLanding(root,combos,now,myField)
+	local every=self:MainChimeInterval()
+	if catchAll then
+		self.mainDebug="Catch All ON: Main rules ignored"
+	elseif self:IsMainAccount() then
+		self.mainDebug=string.format("Main: this account (own + alts every %d)",every)
+	else
+		local main=cfg.coconutcombo and cfg.coconutcombo.main
+		if type(main)=="string" and main~="" and main~="None" then
+			self.mainDebug=string.format("Main: %s (yields every %d)",main,every)
+		else
+			self.mainDebug="Main: NOT SET (set Main Account!)"
+		end
+	end
+	local job=catchAll and self:AnyFieldComboLanding(root,combos,now,myField)
 		or (self:OwnComboLanding(root,combos,now,myField) or (self:IsMainAccount() and self:MainInterceptComboLanding(root,combos,now,myField) or self:MainComboLanding(root,combos,now,myField)))
-	local yieldJob=catchAll and nil or self:YieldLanding(root,now,catchJob)
-	local job=yieldJob or catchJob
-	if job and catchAll and not job.yielding then job.catchAll=true end
-	self.privatePriority=(job~=nil and job==catchJob and catchJob.private==true)
+	if job and catchAll then job.catchAll=true end
+	self.privatePriority=(job~=nil and job.private==true)
 	self.ownPriority=(job~=nil)
 	self.comboPriority=(job~=nil)
 	if job and showerController.active and showerController.cancel then showerController.cancel("Coconut Combo has priority") end
-	local available,h,activeRoot=self:Available((job and job.yielding==true) or (catchAll and job~=nil))
+	local available,h,activeRoot=self:Available(catchAll and job~=nil)
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=activeRoot or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then
-		local reason
-		if #self.skipZones>0 then
-			local firstSkip
-			for _,z in ipairs(self.skipZones) do
-				if not firstSkip or z.deadline<firstSkip.deadline then firstSkip=z end
-			end
-			local sText=firstSkip and firstSkip.stack~=nil and tostring(firstSkip.stack) or "?"
-			reason=string.format("Letting alts catch own combo (%sx) | chime-in every %d",sText,self:MainChimeInterval())
-		else
-			reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for combo"
-		end
-		self:Finish(reason)
+		self:Finish("Waiting for combo")
 		return
 	end
 	local s=self:Begin(job,h,activeRoot)
@@ -4327,28 +4560,18 @@ function comboController:Tick()
 		activeRoot.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		activeRoot.AssemblyAngularVelocity=Vector3.zero
 	end
-	s.yieldJob=job.yielding and job or nil
+	s.yieldJob=nil
 	s.target=s.target or {Name=true}
 	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
-	if self.atlasCatch and not job.yielding and not threads:Get("comboAtlasCatch") then
+	if self.atlasCatch and not threads:Get("comboAtlasCatch") then
 		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
 	end
-	if job.yielding then
-		if self:IsMainAccount() and job.source and job.source.ownerLower~=string.lower(localPlayer.Name) then
-			self.status=string.format("Leaving alt combo | %.0f PMS",s.speed)
-		elseif self:IsMainAccount() or (job.source and job.source.skipped) then
-			self.status=string.format("Leaving own combo for alts | %.0f PMS",s.speed)
-		else
-			self.status=string.format("Exiting combo for %s | %.0f PMS",tostring(cfg.coconutcombo.main),s.speed)
-		end
-	else
-		local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
-		local isOwn=job.ownerLower==string.lower(localPlayer.Name)
-		local verb=(self:IsMainAccount() and not isOwn and not catchAll) and "Intercepting" or "Catching"
-		local label=isOwn and "own" or tostring(job.owner or (catchAll and "field" or (self:IsMainAccount() and "alt" or cfg.coconutcombo.main)))
-		self.status=string.format("%s %s combo (%s) | %.0f PMS",verb,label,stackText,s.speed)
-	end
+	local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
+	local isOwn=job.ownerLower==string.lower(localPlayer.Name)
+	local verb=(self:IsMainAccount() and not isOwn and not catchAll) and "Intercepting" or "Catching"
+	local label=isOwn and "own" or tostring(job.owner or (catchAll and "field" or (self:IsMainAccount() and "alt" or cfg.coconutcombo.main)))
+	self.status=string.format("%s %s combo (%s) | %.0f PMS",verb,label,stackText,s.speed)
 end
 
 function comboController:Configure()
@@ -4448,13 +4671,12 @@ function comboController:BuildMenu(tab)
 		end))
 	end
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
-	folder.AddSlider("Main: Alt Catches Between Chime-Ins",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
+	folder.AddSlider("Main: Catch Every Nth Drop",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
 	self.mainLabel=folder.AddLabel(self.mainDebug or "Main: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
-	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
-	folder.AddLabel("Main: catches own (0x + every N+1) and intercepts alts' combos every N drops (e.g. 3x, 6x, 9x).")
-	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
+	folder.AddLabel("Alts chase only their own combo + Main's combo, letting Main catch every Nth drop.")
+	folder.AddLabel("Main catches own + alts' combos on every Nth drop (e.g. 3x, 6x, 9x); no circle scanning.")
 	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
 end
@@ -8355,6 +8577,7 @@ do
 		partycogturret = {},
 		partymegamech = {},
 	}
+	ultraAntiLag.tracked = tracked
 
 	connections:Add("runtimeCacheMaintenance", RunService.Heartbeat:Connect((function()
 		local elapsed, pruneElapsed = 0, 0
@@ -8424,6 +8647,7 @@ do
 				end
 			end
 			if ultraAntiLag and ultraAntiLag.PruneBees then ultraAntiLag:PruneBees() end
+			if ultraAntiLag and ultraAntiLag.PruneTransient then ultraAntiLag:PruneTransient() end
 		end
 	end)()))
 
@@ -9053,6 +9277,7 @@ do
 			end
 		end))
 	end
+	ultraAntiLag.watchPreciseFX = watchPreciseFX
 
 	watchAlerts = function(enable)
 		if not (not enable or connections:Get("alert")) then
@@ -10220,6 +10445,7 @@ do
 			end
 		end
 		for _,part in ipairs(character:GetDescendants()) do rememberPart(part) end
+		if state.tweenPartsAdded then state.tweenPartsAdded:Disconnect(); state.tweenPartsAdded=nil end
 		state.tweenPartsAdded=character.DescendantAdded:Connect(rememberPart)
 		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 		local ownerThread=coroutine.running()
@@ -44997,19 +45223,38 @@ do
 			["rbxassetid://1837410537"] = "dupedbear",
 			["http://www.roblox.com/asset/?id=5877939956"] = "dupedsmiley",
 		},
+		dupedids = {
+			["1472425802"] = "dupedbear",
+			["1472580249"] = "dupedbear",
+			["1472532912"] = "dupedbear",
+			["2032949183"] = "dupedbear",
+			["1472491940"] = "dupedbear",
+			["1489734171"] = "dupedbear",
+			["1837410537"] = "dupedbear",
+			["5877939956"] = "dupedsmiley",
+		},
 		list = {},
 		LocalFX = function(owner, effectName, effectData)
 			if not comboController.observesRemote then comboController:Observe(effectName, effectData) end
+			if type(effectData) ~= "table" then return true end
 			-- Keep the original landing markers for the disk-based trackers.
 			if effectName == "WarningDisk" or effectName == "FallingCoconut" or effectName == "MythicMeteor" then return true end
 			if effectName == "StarShowerGuide" or effectName == "FallingStar" or effectName == "BeesmasLightsFallingStar" then return true end
-			if effectName == "LocalTargetPracticeBeam" and effectData.Action == "TurnPurple" and effectData.ID ~= nil then
-				local entry = tracked.precise2[effectData.ID]
-				if entry then entry.Mark = true end
+			if effectName == "LocalTargetPracticeBeam" and effectData.ID ~= nil then
+				local act = effectData.Action
+				if act == "TurnPurple" then
+					local entry = tracked.precise2[effectData.ID]
+					if entry then entry.Mark = true end
+				elseif act == "Destroy" or act == "Remove" or act == "Shoot" then
+					tracked.precise2[effectData.ID] = nil
+					tracked.precisegroup[effectData.ID] = nil
+					if not (cfg.antilag.precise or cfg.antilag.maxalt) then return true end
+					return false
+				end
 			end
 			if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Make" or effectData.Player ~= localPlayer then
 				if effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "Touch" then
-					if not ((effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "TurnPurple") and (effectName ~= "PrecisionPopUp" or effectData.Player ~= localPlayer) or cfg.antilag.precise) then
+					if not ((effectName ~= "LocalTargetPracticeBeam" or effectData.Action ~= "TurnPurple") and (effectName ~= "PrecisionPopUp" or effectData.Player ~= localPlayer) or (cfg.antilag.precise or cfg.antilag.maxalt)) then
 						return true
 					end
 
@@ -45019,7 +45264,7 @@ do
 					end
 
 					if not (effectName == "LocalTargetPracticeBeam" or effectName == "Precise Shot" or effectName == "PrecisionPopUp") then
-						if not cfg.antilag.particles then
+						if not (cfg.antilag.particles or cfg.antilag.maxalt) then
 							return true
 						end
 
@@ -45036,11 +45281,13 @@ do
 							elseif not (effectName ~= "LocalFlames" or effectData.A ~= "N" or effectData.PID ~= localPlayer.UserId) then
 								local lifetime = math.max(0, tonumber(effectData.T) or 0)
 								local flame = tracked.flames[effectData.P]
+								local nowClock = os.clock()
 								if type(flame) ~= "table" then
 									flame = {Name=true, Position=effectData.P}
 									tracked.flames[effectData.P] = flame
 								end
-								flame.ExpiresAt = os.clock() + lifetime
+								flame.SpawnTime = nowClock
+								flame.ExpiresAt = nowClock + lifetime
 								flame.T = math.min(lifetime, 6)
 								flame.Size = 1.4 + 0.35 * (flame.T - 1) / 5
 								flame.Dark = effectData.D
@@ -45092,7 +45339,7 @@ do
 						preciseEntry.Touched = true
 					end
 
-					if not cfg.antilag.precise then
+					if not (cfg.antilag.precise or cfg.antilag.maxalt) then
 						return true
 					end
 				end
@@ -45102,7 +45349,7 @@ do
 
 				tracked.precise2[effectData.ID].ExpiresAt = os.clock() + 5.0
 
-				if not cfg.antilag.precise then
+				if not (cfg.antilag.precise or cfg.antilag.maxalt) then
 					return true
 				end
 			end
@@ -45127,7 +45374,10 @@ do
 			end
 		end,
 		StationSpawn = function(stationData)
-			tracked.marks[stationData.Id] = { Position = stationData.Model.Base.Position, Size = Vector2.new(stationData.Radius, 0) }
+			if type(stationData) ~= "table" or not stationData.Model or stationData.Id == nil then return end
+			local base = stationData.Model:FindFirstChild("Base")
+			if not base then return end
+			tracked.marks[stationData.Id] = { Position = base.Position, Size = Vector2.new(stationData.Radius or 10, 0) }
 			local now = os.clock()
 
 			while not stationData.Model:FindFirstChild("Sign") and os.clock() - now < 1 do
@@ -45141,7 +45391,8 @@ do
 			end
 		end,
 		TokenSpawn = function(tokenData)
-			if showerController.active or not cfg.detected.fastraretween or not (not state.stop and not state.fasttween and not state.stopfasttween and not (not state.rares[string.match(tokenData.Icon, "%d+")] and (not state.rares.Sticker or not tokenData.Rainbow))) then
+			if type(tokenData) ~= "table" or typeof(tokenData.Pos) ~= "Vector3" then return end
+			if showerController.active or not cfg.detected.fastraretween or not (not state.stop and not state.fasttween and not state.stopfasttween and not (not state.rares[string.match(tostring(tokenData.Icon or ""), "%d+")] and (not state.rares.Sticker or not tokenData.Rainbow))) then
 				if tokenData.Icon ~= "rbxassetid://1629547638" then
 					local tokenEntry = { Name = true, Position = tokenData.Pos, Rainbow = tokenData.Rainbow, Icon = tokenData.Icon }
 					tracked.tokens[tokenEntry] = true
@@ -45169,11 +45420,16 @@ do
 			end
 		end,
 		DupedTokenSpawn = function(owner, tokenData)
+			if type(tokenData) ~= "table" or tokenData.ID == nil or typeof(tokenData.Pos) ~= "Vector3" then return end
 			local tokenEntry = { Name = true, ID = tokenData.ID, Position = tokenData.Pos, Icon = tokenData.Icon, Start = os.clock() }
-			local listName = string.match(tostring(tokenData.Icon), "%d+") == "5877939956" and "dupedsmiley" or owner.dupedmap[tokenData.Icon] or "dupedtokens"
+			local iconId = string.match(tostring(tokenData.Icon or ""), "%d+")
+			local listName = (iconId and owner.dupedids and owner.dupedids[iconId]) or owner.dupedmap[tokenData.Icon] or "dupedtokens"
 			tracked[listName][tokenData.ID] = tokenEntry
 
-			tokenEntry.ExpiresAt = os.clock() + math.max(0, tokenData.EndTime - workspace.ServerTime.Value)
+			local serverTime = workspace:FindFirstChild("ServerTime")
+			local dur = (type(tokenData.EndTime) == "number" and serverTime and type(serverTime.Value) == "number")
+				and math.max(0, tokenData.EndTime - serverTime.Value) or 30
+			tokenEntry.ExpiresAt = os.clock() + dur
 		end,
 		DupedTokenDestroy = function(tokenId)
 			tracked.dupedbear[tokenId] = nil
@@ -45195,6 +45451,7 @@ do
 			end
 		end,
 	}
+	ultraAntiLag.tokenFilter = tokenFilter
 
 	memoryMatch = {
 		blacklist = {},
@@ -69953,6 +70210,7 @@ local function bindParticlesFolder(folder)
  if particleRemovedConn then particleRemovedConn:Disconnect();connections[particleRemovedConn]=nil;particleRemovedConn=nil end
  boundParticlesFolder=folder
  particleAddedConn=connect(folder.ChildAdded,function(o)
+  if not bridge.allowed() then return end
   local candidate=o.Name=="WarningDisk" or o.Name=="Star Shower Guide"
   if not candidate then return end
   appearanceSerial=appearanceSerial+1
@@ -69985,7 +70243,7 @@ end
 local function bindCharPopups(char)
  if not char or charPopupConns[char] then return end
  local c1=connect(char.DescendantAdded,function(o)
-  if o:IsA("ImageLabel") or o:IsA("ImageButton") then
+  if bridge.allowed() and (o:IsA("ImageLabel") or o:IsA("ImageButton")) then
    task.defer(function() if not closed then observeImage(o) end end)
   end
  end)
@@ -70010,19 +70268,30 @@ connect(Players.PlayerRemoving,function(p)
  if p.Character then unbindCharPopups(p.Character) end
 end)
 connect(player.PlayerGui.DescendantAdded,function(o)
- if not (o:IsA("ImageLabel") or o:IsA("ImageButton")) then return end
+ if not bridge.allowed() or not (o:IsA("ImageLabel") or o:IsA("ImageButton")) then return end
  task.defer(function() if not closed then observeImage(o) end end)
 end)
-local scanElapsed=0
+local scanElapsed, wasAllowed = 0, false
 local function updateChase(dt)
  if closed then return end
  if not bridge.allowed() then
+  if wasAllowed or next(images)~=nil then
+   wasAllowed = false
+   for o in pairs(images) do releaseImage(o) end
+  end
   if session or #guides>0 or #lights>0 or #triggers>0 then
    finish("Safeshower inactive");releasePassive()
    table.clear(guides);table.clear(lights);table.clear(triggers)
   end
   lastUpdateAt=os.clock()
   return
+ end
+ if not wasAllowed then
+  wasAllowed = true
+  for _,p in ipairs(Players:GetPlayers()) do if p.Character then for _,o in ipairs(p.Character:GetDescendants()) do observeImage(o,true) end end end
+  for _,o in ipairs(player.PlayerGui:GetDescendants()) do observeImage(o,true) end
+  local particles=workspace:FindFirstChild("Particles")
+  if particles then for _,o in ipairs(particles:GetChildren()) do inspect(o,true) end end
  end
  local now=os.clock()
  if now-lastUpdateAt>0.12 then
@@ -70223,11 +70492,14 @@ gui.Parent=player:WaitForChild("PlayerGui")
 bridge.cancel=function(reason) finish(reason or "Cancelled");releasePassive() end
 bridge.close=function() gui:Destroy() end
 renderSequence(nil)
--- Ignore effects already active when launched. Watch future popup activations.
-for _,p in ipairs(Players:GetPlayers()) do if p.Character then for _,o in ipairs(p.Character:GetDescendants()) do observeImage(o,true) end end end
-for _,o in ipairs(player.PlayerGui:GetDescendants()) do observeImage(o,true) end
-local particles=workspace:FindFirstChild("Particles")
-if particles then for _,o in ipairs(particles:GetChildren()) do inspect(o,true) end end
+-- Ignore effects already active when launched if Safeshower is allowed. Watch future popup activations.
+if bridge.allowed() then
+ wasAllowed = true
+ for _,p in ipairs(Players:GetPlayers()) do if p.Character then for _,o in ipairs(p.Character:GetDescendants()) do observeImage(o,true) end end end
+ for _,o in ipairs(player.PlayerGui:GetDescendants()) do observeImage(o,true) end
+ local particles=workspace:FindFirstChild("Particles")
+ if particles then for _,o in ipairs(particles:GetChildren()) do inspect(o,true) end end
+end
 
 end
  local ok,err=xpcall(startSafeshower,debug.traceback)
@@ -70263,6 +70535,10 @@ ScreenGui.Destroying:Connect(function()
 	if state and state.tweennoclip then
 		pcall(function() state.tweennoclip:Disconnect() end)
 		state.tweennoclip = nil
+	end
+	if state and state.tweenPartsAdded then
+		pcall(function() state.tweenPartsAdded:Disconnect() end)
+		state.tweenPartsAdded = nil
 	end
 
 	for k in pairs(tokenFilter.list) do
@@ -73400,6 +73676,10 @@ Are you sure you want to enable it?]])
 					ultraAntiLag:Set(enabled)
 				end, "antilag", "ultra", { Tooltip = "Maximum FPS boost: disables shadows/fog/IBL/post-FX/PollenPopUps, detaches bees & cosmetic map decos, hides flowers/balloons/other players/particles, skips cosmetic collect arcs & VFX, disables flame particle rendering (flame data kept), hides other players' name tags, and hides PlayerList/Emotes CoreGui without touching gameplay tokens, marks, crosshairs, combos, blooms, petals, flames, or player positions." })
 
+				antiLagFolder.AddSwitch("Max Alt Anti-Lag (Virtual Tokens & FX)", function(enabled)
+					ultraAntiLag:SetMaxAlt(enabled)
+				end, "antilag", "maxalt", { Hook = true, Tooltip = "Old Atlas+ max CPU/RAM mode for alts: virtualizes tokens, particles, duped tokens & marks (stops CollectiblesAnimator.Update & LocalFX spam) and destroys bees/flowers/decorations while keeping combos, precision, duped smileys, flames, and player positions working." })
+
 				antiLagFolder.AddSwitch("Disable 3D Rendering (AFK black screen)", function(n)
 					RunService:Set3dRenderingEnabled(not n)
 					ultraAntiLag:SetNoRenderChat(n == true)
@@ -73622,11 +73902,12 @@ Are you sure you want to enable it?]])
 			showerController:Start()
 			threads:Add("rbcHourlyInventory",function()
 				while cfg and state do
-					if not state.disconnect then
+					local rbcOn = (cfg.rbc and cfg.rbc.enabled) or (cfg.webhook and cfg.webhook.rbc)
+					if rbcOn and not state.disconnect then
 						local ok,snapshot=pcall(function()return inventory:Fetch()end)
 						if ok then rbcHourly:Sample(snapshot,os.clock()) end
 					end
-					task.wait(5)
+					task.wait(rbcOn and 5 or 10)
 				end
 			end)
 			mondoHop:Start()

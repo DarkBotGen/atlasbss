@@ -454,27 +454,40 @@ function comboController:MainOwned(owner)
 		and string.lower(owner)==string.lower(main)
 end
 
-function comboController:GetMainRoot()
-	if self:IsMainAccount() then return nil end
+function comboController:IsMainInField(r, myField)
 	local main=cfg.coconutcombo and cfg.coconutcombo.main
-	if type(main)~="string" or main=="" or main=="None" then return nil end
+	if type(main)~="string" or main=="" or main=="None" then return false end
+	local playersService=getService("Players")
+	if not playersService then return false end
 	local mainLower=string.lower(main)
 	local matched
-	for _,p in ipairs(getService("Players"):GetPlayers()) do
-		if string.lower(p.Name)==mainLower then matched=p;break end
+	for _,p in ipairs(playersService:GetPlayers()) do
+		if p and type(p.Name)=="string" and string.lower(p.Name)==mainLower then matched=p;break end
 	end
 	if not matched then
-		for _,p in ipairs(getService("Players"):GetPlayers()) do
-			if type(p.DisplayName)=="string" and string.lower(p.DisplayName)==mainLower then matched=p;break end
+		for _,p in ipairs(playersService:GetPlayers()) do
+			if p and type(p.DisplayName)=="string" and string.lower(p.DisplayName)==mainLower then matched=p;break end
 		end
 	end
-	if matched then
-		local char=matched.Character
-		local root=char and char:FindFirstChild("HumanoidRootPart")
-		local h=char and char:FindFirstChildOfClass("Humanoid")
-		if root and h and h.Health>0 then return root end
+	if not matched or matched==localPlayer then return false end
+	local char=matched.Character
+	local mainRoot=char and char:FindFirstChild("HumanoidRootPart")
+	local h=char and char:FindFirstChildOfClass("Humanoid")
+	if not mainRoot or not h or h.Health<=0 then return false end
+	local rField=type(r.field)=="string" and r.field or ""
+	if rField~="" then
+		local mf=self:FieldAt(mainRoot.Position)
+		return mf~=nil and mf.Name==rField
 	end
-	return nil
+	if myField then
+		local mf=self:FieldAt(mainRoot.Position)
+		return mf~=nil and mf.Name==myField.Name
+	end
+	if math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
+		local dx,dz=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
+		return dx*dx+dz*dz<=150*150
+	end
+	return false
 end
 
 function comboController:Observe(effectName, data)
@@ -654,72 +667,6 @@ function comboController:ActiveCombos(now)
 	return list
 end
 
-local function readPartVelocity(part)
-	return part.AssemblyLinearVelocity
-end
-
-function comboController:UpdateMainPresence(combos)
-	table.clear(self.mainZones)
-	if self:IsCatchAll() then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Catch All ON: Main rules ignored"
-		return
-	end
-	if self:IsMainAccount() then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug=string.format("Main: this account (own + intercept every %d)",self:MainChimeInterval())
-		return
-	end
-	local main=cfg.coconutcombo and cfg.coconutcombo.main
-	if type(main)~="string" or main=="" or main=="None" then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Main: NOT SET (set Main Account!)"
-		return
-	end
-	local mainRoot=self:GetMainRoot()
-	if not mainRoot then
-		for _,r in ipairs(combos) do r.mainInside=false end
-		self.mainDebug="Main: "..main.." not in server/dead"
-		return
-	end
-	local vel=Vector3.zero
-	local okVel,v=pcall(readPartVelocity,mainRoot)
-	if okVel and typeof(v)=="Vector3" then vel=v end
-	local lead=Vector3.new(vel.X,0,vel.Z)*0.25
-	if lead.Magnitude>12 then lead=lead.Unit*12 end
-	local leadPos=mainRoot.Position+lead
-	local nearest,anyInside
-	for _,r in ipairs(combos) do
-		if r.private then
-			r.mainInside=false
-		elseif math.abs(mainRoot.Position.Y-r.position.Y)<=14 then
-			local dx1,dz1=mainRoot.Position.X-r.position.X,mainRoot.Position.Z-r.position.Z
-			local dx2,dz2=leadPos.X-r.position.X,leadPos.Z-r.position.Z
-			local dist=math.min(math.sqrt(dx1*dx1+dz1*dz1),math.sqrt(dx2*dx2+dz2*dz2))
-			if not nearest or dist<nearest then nearest=dist end
-			local rad=r.radius or 13
-			if dist<=rad+2.0 then
-				r.mainInside=true
-			elseif dist>rad+4.0 then
-				r.mainInside=false
-			end
-		else
-			r.mainInside=false
-		end
-		if r.mainInside then
-			anyInside=true
-			self.mainZones[#self.mainZones+1]=r
-		end
-	end
-	if anyInside then
-		self.mainDebug="Main: "..main.." INSIDE combo"
-	elseif nearest then
-		self.mainDebug=string.format("Main: %s | nearest combo %d studs",main,math.floor(nearest+0.5))
-	else
-		self.mainDebug="Main: "..main.." (no active combo)"
-	end
-end
-
 function comboController:HelperNear(r)
 	local playersService=getService("Players")
 	if not playersService then return false end
@@ -743,35 +690,15 @@ function comboController:HelperNear(r)
 	return false
 end
 
-function comboController:AnyOtherInside(r)
-	local playersService=getService("Players")
-	if not playersService then return false end
-	local limit=(r.radius or 13)+1.0
-	local limitSq=limit*limit
-	for _,p in ipairs(playersService:GetPlayers()) do
-		if p~=localPlayer then
-			local char=p.Character
-			local pRoot=char and char:FindFirstChild("HumanoidRootPart")
-			local h=char and char:FindFirstChildOfClass("Humanoid")
-			if pRoot and h and h.Health>0 and math.abs(pRoot.Position.Y-r.position.Y)<=14 then
-				local dx,dz=pRoot.Position.X-r.position.X,pRoot.Position.Z-r.position.Z
-				if dx*dx+dz*dz<=limitSq then return true end
-			end
-		end
-	end
-	return false
-end
-
-function comboController:MainShouldCatch(r,now)
+function comboController:MainShouldCatch(r)
 	local every=self:MainChimeInterval()
-	if every<=0 or r.private or r.stack==nil then return true end
-	if r.stack%(every+1)==0 then return true end
+	if every<=0 or r.private or type(r.stack)~="number" or r.stack<=0 then return true end
+	if r.stack%every==0 then return true end
 	if not self:HelperNear(r) then return true end
-	if r.deadline-now<=0.35 and not self:AnyOtherInside(r) then return true end
 	return false
 end
 
-function comboController:MainShouldIntercept(r,now)
+function comboController:MainShouldIntercept(r)
 	if not self:IsMainAccount() or self:IsCatchAll() then return false end
 	if r.private or type(r.stack)~="number" or r.stack<=0 then return false end
 	local every=self:MainChimeInterval()
@@ -781,155 +708,47 @@ function comboController:MainShouldIntercept(r,now)
 	return r.stack%every==0
 end
 
-function comboController:UpdateSkipZones(combos,now,myField,root)
-	table.clear(self.skipZones)
-	if not self:IsMainAccount() or self:IsCatchAll() then
-		for _,r in ipairs(combos) do r.skipped=false end
-		return
-	end
-	local localLower=string.lower(localPlayer.Name)
+function comboController:AltShouldYieldToMain(r, myField)
+	if self:IsMainAccount() or self:IsCatchAll() then return false end
+	if r.private or type(r.stack)~="number" or r.stack<=0 then return false end
 	local every=self:MainChimeInterval()
-	if not myField and root then myField=self:FieldAt(root.Position) end
+	if every<=0 or r.stack%every~=0 then return false end
+	return self:IsMainInField(r, myField)
+end
+
+function comboController:IsRestrictedZone()
+	return false
+end
+
+function comboController:PathCrossesRestrictedZone()
+	return false
+end
+
+function comboController:BlocksMove()
+	return false
+end
+
+function comboController:MatchesField(r, root, myField, allowPrivate)
+	myField=myField or self:FieldAt(root.Position)
 	local myFieldName=myField and myField.Name or ""
-	for _,r in ipairs(combos) do
-		if r.ownerLower==localLower and not r.private and r.deadline+0.12>now then
-			r.skipped=not self:MainShouldCatch(r,now)
-			if r.skipped then
-				self.skipZones[#self.skipZones+1]=r
-			end
-		elseif every>=1 and r.ownerLower~=localLower and not r.private and r.deadline+0.12>now then
-			local inMyField=false
-			if myFieldName~="" and r.field==myFieldName then
-				inMyField=true
-			elseif root and (myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=14 then
-				local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-				if dx*dx+dz*dz<=150*150 then inMyField=true end
-			end
-			if inMyField and not self:MainShouldIntercept(r,now) then
-				r.skipped=true
-				self.skipZones[#self.skipZones+1]=r
-			else
-				r.skipped=false
-			end
-		else
-			r.skipped=false
-		end
-	end
-end
-
-function comboController:RestrictedZones()
-	return self:IsMainAccount() and self.skipZones or self.mainZones
-end
-
-function comboController:IsRestrictedZone(position)
-	if not self:Managed() or self:IsCatchAll() or typeof(position)~="Vector3" then return false end
-	local now=os.clock()
-	for _,z in ipairs(self:RestrictedZones()) do
-		if z.deadline+0.12>now and math.abs(position.Y-z.position.Y)<=14 then
-			local dx,dz=position.X-z.position.X,position.Z-z.position.Z
-			local limit=(z.radius or 13)+3.0
-			if dx*dx+dz*dz<limit*limit then return true end
-		end
-	end
+	local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
+	local dist=math.sqrt(dx*dx+dz*dz)
+	if myFieldName~="" and r.field==myFieldName then return true end
+	if allowPrivate and r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160 then return true end
+	if (myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150 then return true end
 	return false
-end
-
-function comboController:PathCrossesRestrictedZone(fromPos, toPos)
-	if not self:Managed() or self:IsCatchAll() or typeof(fromPos)~="Vector3" or typeof(toPos)~="Vector3" then return false end
-	local now=os.clock()
-	local vx,vz=toPos.X-fromPos.X,toPos.Z-fromPos.Z
-	local lenSq=vx*vx+vz*vz
-	for _,z in ipairs(self:RestrictedZones()) do
-		if z.deadline+0.12>now and math.abs(toPos.Y-z.position.Y)<=14 then
-			local wx,wz=z.position.X-fromPos.X,z.position.Z-fromPos.Z
-			local t=lenSq>1e-6 and math.clamp((wx*vx+wz*vz)/lenSq,0,1) or 0
-			local cx,cz=fromPos.X+vx*t-z.position.X,fromPos.Z+vz*t-z.position.Z
-			local limit=(z.radius or 13)+2.0
-			if cx*cx+cz*cz<limit*limit then return true end
-		end
-	end
-	return false
-end
-
-function comboController:BlocksMove(goal)
-	if self.active or not self:Managed() or typeof(goal)~="Vector3" then return false end
-	if self:IsRestrictedZone(goal) then return true end
-	local char=localPlayer and localPlayer.Character
-	local root=char and char:FindFirstChild("HumanoidRootPart")
-	return root and self:PathCrossesRestrictedZone(root.Position,goal) or false
-end
-
-function comboController:PointInField(position, field)
-	if field and field.Position and field.Size then
-		local margin=2
-		return math.abs(position.X-field.Position.X)<=math.max(1,field.Size.X/2-margin)
-			and math.abs(position.Z-field.Position.Z)<=math.max(1,field.Size.Z/2-margin)
-	end
-	local f=self:FieldAt(position)
-	return f~=nil and (not field or f.Name==field.Name)
-end
-
-function comboController:ComputeExitPosition(root, record, zones)
-	local center=Vector3.new(record.position.X,root.Position.Y,record.position.Z)
-	local delta=Vector3.new(root.Position.X-record.position.X,0,root.Position.Z-record.position.Z)
-	local baseAngle
-	if delta.Magnitude>0.1 then
-		baseAngle=math.atan2(delta.Z,delta.X)
-	else
-		local mainRoot=self:GetMainRoot()
-		local away=mainRoot and Vector3.new(root.Position.X-mainRoot.Position.X,0,root.Position.Z-mainRoot.Position.Z)
-		baseAngle=(away and away.Magnitude>0.1) and math.atan2(away.Z,away.X) or 0
-	end
-	local myField=self:FieldAt(root.Position) or self:FieldAt(record.position)
-	local rad=record.radius or 13
-	local function clearOfAll(pt)
-		for _,z in ipairs(zones) do
-			if math.abs(pt.Y-z.position.Y)<=14 then
-				local dx,dz=pt.X-z.position.X,pt.Z-z.position.Z
-				local limit=(z.radius or 13)+3.0
-				if dx*dx+dz*dz<limit*limit then return false end
-			end
-		end
-		return true
-	end
-	local bestAny,bestAnyDist
-	for _,exitRadius in ipairs({rad+6,rad+10}) do
-		local bestInField,bestInFieldDist
-		for i=0,11 do
-			local angle=baseAngle+i*(math.pi/6)
-			local pt=center+Vector3.new(math.cos(angle)*exitRadius,0,math.sin(angle)*exitRadius)
-			if clearOfAll(pt) then
-				local moveDist=(pt-root.Position).Magnitude
-				if self:PointInField(pt,myField) and (not bestInField or moveDist<bestInFieldDist) then
-					bestInField,bestInFieldDist=pt,moveDist
-				end
-				if not bestAny or moveDist<bestAnyDist then
-					bestAny,bestAnyDist=pt,moveDist
-				end
-			end
-		end
-		if bestInField then return bestInField end
-	end
-	if bestAny then return bestAny end
-	return center+Vector3.new(math.cos(baseAngle)*(rad+6),0,math.sin(baseAngle)*(rad+6))
 end
 
 function comboController:OwnComboLanding(root, combos, now, myField)
 	local localLower=string.lower(localPlayer.Name)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
+	local isMain=self:IsMainAccount()
 	local best
 	for _,r in ipairs(combos) do
-		if r.ownerLower==localLower and not r.mainInside and r.deadline+0.12>now and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearPrivate=r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearPrivate or nearSameElevation then
-				if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
-					best=r
-				end
+		if r.ownerLower==localLower and r.deadline+0.12>now and self:MatchesField(r,root,myField,true) then
+			local allowed
+			if isMain then allowed=self:MainShouldCatch(r) else allowed=not self:AltShouldYieldToMain(r,myField) end
+			if allowed and (not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private)) then
+				best=r
 			end
 		end
 	end
@@ -938,18 +757,11 @@ end
 
 function comboController:MainComboLanding(root, combos, now, myField)
 	if self:IsMainAccount() then return nil end
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
-		if not r.private and self:MainOwned(r.owner) and not r.mainInside and r.deadline+0.12>now and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearSameElevation then
-				if not best or r.deadline<best.deadline then best=r end
-			end
+		if not r.private and self:MainOwned(r.owner) and r.deadline+0.12>now and self:MatchesField(r,root,myField,false)
+			and not self:AltShouldYieldToMain(r,myField) then
+			if not best or r.deadline<best.deadline then best=r end
 		end
 	end
 	return best
@@ -958,84 +770,26 @@ end
 function comboController:MainInterceptComboLanding(root, combos, now, myField)
 	if not self:IsMainAccount() or self:IsCatchAll() then return nil end
 	local localLower=string.lower(localPlayer.Name)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
 		if not r.private and r.ownerLower~=localLower and r.deadline+0.12>now
-			and self:MainShouldIntercept(r,now) and not self:IsRestrictedZone(r.position) then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local nearSameElevation=(myFieldName=="" or r.field=="") and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150
-			if sameField or nearSameElevation then
-				if not best or r.deadline<best.deadline then best=r end
-			end
+			and self:MainShouldIntercept(r) and self:MatchesField(r,root,myField,false) then
+			if not best or r.deadline<best.deadline then best=r end
 		end
 	end
 	return best
 end
 
 function comboController:AnyFieldComboLanding(root, combos, now, myField)
-	myField=myField or self:FieldAt(root.Position)
-	local myFieldName=myField and myField.Name or ""
 	local best
 	for _,r in ipairs(combos) do
-		if r.deadline+0.12>now then
-			local dx,dz=r.position.X-root.Position.X,r.position.Z-root.Position.Z
-			local dist=math.sqrt(dx*dx+dz*dz)
-			local sameField=(myFieldName~="" and r.field==myFieldName)
-			local airborneInMyField=(myFieldName~="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
-			local unmappedBoth=(myFieldName=="" and r.field=="" and math.abs(r.position.Y-root.Position.Y)<=12 and dist<=150)
-			local nearPrivate=r.private and math.abs(r.position.Y-root.Position.Y)<=20 and dist<=160
-			if sameField or airborneInMyField or unmappedBoth or nearPrivate then
-				if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
-					best=r
-				end
+		if r.deadline+0.12>now and self:MatchesField(r,root,myField,true) then
+			if not best or r.deadline<best.deadline or (r.deadline==best.deadline and r.private and not best.private) then
+				best=r
 			end
 		end
 	end
 	return best
-end
-
-function comboController:YieldLanding(root, now, ownCandidate)
-	if self:IsCatchAll() then return nil end
-	local zones=self:RestrictedZones()
-	local breached
-	for _,z in ipairs(zones) do
-		if z.deadline+0.12>now and math.abs(root.Position.Y-z.position.Y)<=14 then
-			local dx,dz=root.Position.X-z.position.X,root.Position.Z-z.position.Z
-			if math.sqrt(dx*dx+dz*dz)<(z.radius or 13)+3.0 then
-				if not breached or z.deadline<breached.deadline then breached=z end
-			end
-		end
-	end
-	if breached then
-		local held=self.session and self.session.yieldJob
-		if held and held.source==breached and not self:IsRestrictedZone(held.position) then
-			return held
-		end
-		local exitPos=self:ComputeExitPosition(root,breached,zones)
-		return {
-			key="yield:"..breached.key,
-			owner=breached.owner,
-			position=exitPos,
-			deadline=breached.deadline,
-			field=breached.field or "",
-			yielding=true,
-			source=breached,
-		}
-	end
-	if not ownCandidate then
-		local held=self.session and self.session.yieldJob
-		if held and held.source and held.source.deadline+0.12>now and (held.source.mainInside or held.source.skipped) then
-			local dx,dz=root.Position.X-held.source.position.X,root.Position.Z-held.source.position.Z
-			local clearDist=(held.source.radius or 13)+5.0
-			if dx*dx+dz*dz<clearDist*clearDist then
-				return held
-			end
-		end
-	end
 end
 
 function comboController:TravelBlocked()
@@ -1194,34 +948,32 @@ function comboController:Tick()
 	self:SyncDisks(now)
 	local combos=self:ActiveCombos(now)
 	local myField=self:FieldAt(root.Position)
-	self:UpdateMainPresence(combos)
-	self:UpdateSkipZones(combos,now,myField,root)
 	local catchAll=self:IsCatchAll()
-	local catchJob=catchAll and self:AnyFieldComboLanding(root,combos,now,myField)
+	local every=self:MainChimeInterval()
+	if catchAll then
+		self.mainDebug="Catch All ON: Main rules ignored"
+	elseif self:IsMainAccount() then
+		self.mainDebug=string.format("Main: this account (own + alts every %d)",every)
+	else
+		local main=cfg.coconutcombo and cfg.coconutcombo.main
+		if type(main)=="string" and main~="" and main~="None" then
+			self.mainDebug=string.format("Main: %s (yields every %d)",main,every)
+		else
+			self.mainDebug="Main: NOT SET (set Main Account!)"
+		end
+	end
+	local job=catchAll and self:AnyFieldComboLanding(root,combos,now,myField)
 		or (self:OwnComboLanding(root,combos,now,myField) or (self:IsMainAccount() and self:MainInterceptComboLanding(root,combos,now,myField) or self:MainComboLanding(root,combos,now,myField)))
-	local yieldJob=catchAll and nil or self:YieldLanding(root,now,catchJob)
-	local job=yieldJob or catchJob
-	if job and catchAll and not job.yielding then job.catchAll=true end
-	self.privatePriority=(job~=nil and job==catchJob and catchJob.private==true)
+	if job and catchAll then job.catchAll=true end
+	self.privatePriority=(job~=nil and job.private==true)
 	self.ownPriority=(job~=nil)
 	self.comboPriority=(job~=nil)
 	if job and showerController.active and showerController.cancel then showerController.cancel("Coconut Combo has priority") end
-	local available,h,activeRoot=self:Available((job and job.yielding==true) or (catchAll and job~=nil))
+	local available,h,activeRoot=self:Available(catchAll and job~=nil)
 	if not available then self:Finish("Busy with another activity");return end
 	if self.session and (self.session.root~=activeRoot or self.session.h~=h) then self:Finish("Character changed") end
 	if not job then
-		local reason
-		if #self.skipZones>0 then
-			local firstSkip
-			for _,z in ipairs(self.skipZones) do
-				if not firstSkip or z.deadline<firstSkip.deadline then firstSkip=z end
-			end
-			local sText=firstSkip and firstSkip.stack~=nil and tostring(firstSkip.stack) or "?"
-			reason=string.format("Letting alts catch own combo (%sx) | chime-in every %d",sText,self:MainChimeInterval())
-		else
-			reason=(#self.mainZones>0) and "Clear of Main's combo" or "Waiting for combo"
-		end
-		self:Finish(reason)
+		self:Finish("Waiting for combo")
 		return
 	end
 	local s=self:Begin(job,h,activeRoot)
@@ -1238,28 +990,18 @@ function comboController:Tick()
 		activeRoot.AssemblyLinearVelocity=Vector3.new(0,v.Y,0)
 		activeRoot.AssemblyAngularVelocity=Vector3.zero
 	end
-	s.yieldJob=job.yielding and job or nil
+	s.yieldJob=nil
 	s.target=s.target or {Name=true}
 	s.target.Position,s.target.ExpiresAt=job.position,job.deadline
 	self:Drive(s)
-	if self.atlasCatch and not job.yielding and not threads:Get("comboAtlasCatch") then
+	if self.atlasCatch and not threads:Get("comboAtlasCatch") then
 		threads:Add("comboAtlasCatch",function()self.atlasCatch(s.target,s)end)
 	end
-	if job.yielding then
-		if self:IsMainAccount() and job.source and job.source.ownerLower~=string.lower(localPlayer.Name) then
-			self.status=string.format("Leaving alt combo | %.0f PMS",s.speed)
-		elseif self:IsMainAccount() or (job.source and job.source.skipped) then
-			self.status=string.format("Leaving own combo for alts | %.0f PMS",s.speed)
-		else
-			self.status=string.format("Exiting combo for %s | %.0f PMS",tostring(cfg.coconutcombo.main),s.speed)
-		end
-	else
-		local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
-		local isOwn=job.ownerLower==string.lower(localPlayer.Name)
-		local verb=(self:IsMainAccount() and not isOwn and not catchAll) and "Intercepting" or "Catching"
-		local label=isOwn and "own" or tostring(job.owner or (catchAll and "field" or (self:IsMainAccount() and "alt" or cfg.coconutcombo.main)))
-		self.status=string.format("%s %s combo (%s) | %.0f PMS",verb,label,stackText,s.speed)
-	end
+	local stackText=job.stack~=nil and (tostring(job.stack).."x") or "?"
+	local isOwn=job.ownerLower==string.lower(localPlayer.Name)
+	local verb=(self:IsMainAccount() and not isOwn and not catchAll) and "Intercepting" or "Catching"
+	local label=isOwn and "own" or tostring(job.owner or (catchAll and "field" or (self:IsMainAccount() and "alt" or cfg.coconutcombo.main)))
+	self.status=string.format("%s %s combo (%s) | %.0f PMS",verb,label,stackText,s.speed)
 end
 
 function comboController:Configure()
@@ -1359,13 +1101,12 @@ function comboController:BuildMenu(tab)
 		end))
 	end
 	folder.AddSlider("Fast Combo Maximum Speed",function()self:Configure()end,30,240,"coconutcombo","maxspeed",{Left=true})
-	folder.AddSlider("Main: Alt Catches Between Chime-Ins",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
+	folder.AddSlider("Main: Catch Every Nth Drop",function()self:Configure()end,0,10,"coconutcombo","mainevery",{Left=true})
 	self.statusLabel=folder.AddLabel("Combo: Disabled")
 	self.mainLabel=folder.AddLabel(self.mainDebug or "Main: Disabled")
 	self.effectLabel=folder.AddLabel("Tracking: waiting for combo")
-	folder.AddLabel("Catches your own combo (0x+) and Main's combo (1x+) when Main isn't inside.")
-	folder.AddLabel("Main: catches own (0x + every N+1) and intercepts alts' combos every N drops (e.g. 3x, 6x, 9x).")
-	folder.AddLabel("Exits any player's combo circle when Main steps inside and resumes farming.")
+	folder.AddLabel("Alts chase only their own combo + Main's combo, letting Main catch every Nth drop.")
+	folder.AddLabel("Main catches own + alts' combos on every Nth drop (e.g. 3x, 6x, 9x); no circle scanning.")
 	folder.AddLabel("Coconut Field alts: turn ON Catch All Combos in Field to catch everything in that field.")
 	folder.Toggle(true,true)
 end
@@ -1471,7 +1212,7 @@ local menuTab={AddFolder=function(name)
 end}
 comboController:BuildMenu(menuTab)
 assert(folders["Coconut Combo"] and not folders["Coconut Team"])
-assert(switches["Enable Coconut Combo"] and switches["Catch All Combos in Field"] and dropdowns["Main Account"] and textboxes["Main Account Username"] and sliders["Fast Combo Maximum Speed"] and sliders["Main: Alt Catches Between Chime-Ins"])
+assert(switches["Enable Coconut Combo"] and switches["Catch All Combos in Field"] and dropdowns["Main Account"] and textboxes["Main Account Username"] and sliders["Fast Combo Maximum Speed"] and sliders["Main: Catch Every Nth Drop"])
 assert(comboController.mainLabel~=nil,"main debug label missing")
 textboxes["Main Account Username"]("  MainAccount  ")
 assert(cfg.coconutcombo.main=="MainAccount" and dropdowns["Main Account"].value=="MainAccount")
@@ -1495,7 +1236,13 @@ cfg.coconutcombo={enabled=true,main="MainAccount",maxspeed=180}
 comboController:Configure()
 root.Position=vector(0,3,0)
 
--- 1. Catch own combo from drop 1 (0x private) onward (1x, 2x, 3x) with exact fast movement.
+-- Verify Main-in-combo scanning / yield circle blocks were completely removed.
+assert(comboController.UpdateMainPresence == nil,"UpdateMainPresence must be removed")
+assert(comboController:IsRestrictedZone(vector(15,3,0))==false,"IsRestrictedZone must return false")
+assert(comboController:PathCrossesRestrictedZone(vector(0,3,0),vector(30,3,0))==false,"PathCrossesRestrictedZone must return false")
+assert(comboController:BlocksMove(vector(15,3,0))==false,"BlocksMove must return false")
+
+-- 1. Pepper Patch alt catches own combo (0x, 1x, 2x, 4x, 5x...) and lets Main catch every 3rd drop (3x, 6x...) without circle scanning.
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(25,3,0),Dur=2,ID="own-chain",Points=100,Radius=13})
 comboController:Tick()
 assert(comboController.active and comboController.privatePriority,"alt missed private 0x own drop")
@@ -1507,149 +1254,131 @@ assert(h.WalkSpeed>=180,"exact fast combo speed not applied")
 for _=1,12 do step(0.03) end
 assert(root.Position.X>20,"fast movement did not approach own 0x drop")
 
--- Even if Main stands near Alt's private 0x drop, Alt still catches its own 0x (Main cannot see 0x in BSS).
+-- Even if Main stands near Alt's private 0x drop, Alt still catches its own 0x.
 mainRoot.Position=vector(26,3,0)
 comboController:Tick()
 assert(comboController.active and comboController.privatePriority,"private 0x should not yield to Main")
 mainRoot.Position=vector(-45,3,0)
 
--- Kick 0x -> 1x -> 2x -> 3x owned by AltOne (sequential catches + braking at center).
+-- Kick 0x -> 1x -> 2x owned by AltOne (sequential catches + braking at center; Main nearby inside 2x does NOT trigger circle exit!).
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(25,3,0)})
 observe(30,0,"own-chain",player,1,2)
 comboController:Tick()
-assert(comboController.active and not comboController.privatePriority,"alt did not catch own 1x drop")
+assert(comboController.active and not comboController.privatePriority and not comboController.session.yieldJob,"alt did not catch own 1x drop")
 root.Position=vector(30,3,0)
 comboController:Tick()
 for _,fn in pairs(RunService.bound)do fn()end
 assert(h.WalkSpeed==0,"did not brake to 0 when centered under own coconut")
 
 now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(30,3,0)})
 fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=2,Pos2=vector(15,3,0),Duration=1.8,ID="own-chain",Points=100})
 comboController:Tick()
 assert(comboController.active and math.abs(comboController.session.target.Position.X-15)<0.1,"alt missed own 2x drop via chain ownership")
 
--- 2. Main steps into AltOne's own active combo (2x) -> AltOne leaves it immediately using fast movement and resumes farming once clear!
-root.Position=vector(16,3,0)
-mainRoot.Position=vector(14,3,0) -- 1 stud from (15,3,0), well inside radius 13
+-- Main steps next to AltOne's 2x circle -> AltOne continues catching 2x with NO circle exit!
+mainRoot.Position=vector(14,3,0)
 comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"alt did not immediately switch to yield exit when Main stepped into alt's own combo")
-assert(comboController:IsRestrictedZone(vector(15,3,0)),"Main-occupied combo center not marked restricted")
-for _,fn in pairs(RunService.bound)do fn()end
-assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"yield exit did not use exact fast movement + 10x density")
-local exitTarget=comboController.session.yieldJob.position
-assert((vector(exitTarget.X,0,exitTarget.Z)-vector(15,0,0)).Magnitude>=18,"exit target too close to combo circle")
-for _=1,12 do step(0.03) end
-assert((vector(root.Position.X,0,root.Position.Z)-vector(15,0,0)).Magnitude>=17,"alt did not exit outside Main-occupied combo circle")
-assert(not comboController.active,"alt stayed frozen instead of releasing movement once clear")
-assert(threads:Get("Autofarm")~=nil,"autofarm did not resume immediately after exiting Main's combo")
-assert(h.WalkSpeed==40 and controls.controlsEnabled and root.CustomPhysicalProperties==nil,"movement/density not restored on resume")
+assert(comboController.active and not comboController.session.yieldJob,"alt unexpectedly exited own 2x drop")
+assert(not comboController:IsRestrictedZone(vector(15,3,0)) and not comboController:PathCrossesRestrictedZone(vector(0,3,0),vector(30,3,0)))
+mainRoot.Position=vector(-45,3,0)
 
--- While Main stays in/near the 2x circle (hysteresis <= 16), alt keeps farming safely without re-entering or crossing the circle.
-mainRoot.Position=vector(15+15,3,0)
-comboController:Tick()
-assert(not comboController.active,"alt re-entered its 2x combo while Main stayed inside hysteresis")
-assert(comboController:PathCrossesRestrictedZone(root.Position,vector(-10,3,0)),"path crossing through Main's combo was not blocked")
-assert(not comboController:PathCrossesRestrictedZone(root.Position,root.Position+vector(10,0,5)),"safe same-side farm path was blocked")
-local crossAborted=false
-local crossTarget={Name=true,Position=vector(-10,3,0),Parent=workspace}
-local crossCo=coroutine.create(function()crossAborted=collectObject(crossTarget,nil,5,false,true,false)end)
-assert(coroutine.resume(crossCo) and crossAborted,"non-combo collectObject cut straight across Main-occupied combo circle")
-
--- Next drop (3x) lands elsewhere with Main NOT inside -> alt automatically continues catching its own combo!
+-- Own 3rd drop (3x) with Main in Pepper Patch -> AltOne lets Main take it!
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(15,3,0)})
 fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=3,Pos2=vector(-10,3,0),Duration=1.8,ID="own-chain",Points=100})
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-(-10))<0.1,"alt did not continue catching own 3x drop when Main stayed outside")
+assert(not comboController.active,"alt chased own 3x drop while Main was in Pepper Patch")
+
+-- If Main left Pepper Patch (hive or dead), AltOne rescues its 3x drop so combo stays alive!
+mainRoot.Position=vector(-100,3,0)
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob,"alt did not rescue own 3x drop when Main was out of field")
+mainRoot.Position=vector(-45,3,0)
+comboController:Tick()
+assert(not comboController.active,"alt did not yield 3x again when Main returned to field")
+mainHumanoid.Health=0
+comboController:Tick()
+assert(comboController.active,"alt did not rescue 3x when Main was dead")
+mainHumanoid.Health=100
+
+-- Next drops 4x, 5x -> AltOne catches; 6x -> AltOne yields to Main in field!
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-10,3,0)})
+observe(-12,0,"own-chain",player,4,2)
+comboController:Tick()
+assert(comboController.active and math.abs(comboController.session.target.Position.X-(-12))<0.1,"alt missed own 4x drop")
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-12,3,0)})
+observe(12,0,"own-chain",player,5,2)
+comboController:Tick()
+assert(comboController.active and math.abs(comboController.session.target.Position.X-12)<0.1,"alt missed own 5x drop")
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(12,3,0)})
+observe(18,0,"own-chain",player,6,2)
+comboController:Tick()
+assert(not comboController.active,"alt chased own 6x drop while Main was in Pepper Patch")
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(18,3,0)})
 now+=0.3
 comboController:Tick()
 assert(not comboController.active,"kicked record remained active")
-assert(h.WalkSpeed==40 and controls.controlsEnabled and root.CustomPhysicalProperties==nil and root.Massless==false,"Finish did not restore WalkSpeed/controls/density")
-threads:Add("Autofarm",worker)
 
--- 2b. Yield uses h:Move directly without spawning comboAtlasCatch, velocity-lead triggers yield, BlocksMove guards non-combo moves, and mainDebug reports unset Main.
-comboController:Finish("yield-behavior")
+-- 2. Main Debug state check when Main Account is unset.
+comboController:Finish("maindebug check")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
 cfg.coconutcombo={enabled=true,main="None",maxspeed=180}
 comboController:Tick()
 assert(comboController.mainDebug=="Main: NOT SET (set Main Account!)","unset mainDebug mismatch: "..tostring(comboController.mainDebug))
 cfg.coconutcombo={enabled=true,main="MainAccount",maxspeed=180}
-root.Position=vector(15,3,0)
-mainRoot.Position=vector(37,3,0) -- 22 studs away from center (15,3,0), outside static rad+2=15
-mainRoot.AssemblyLinearVelocity=vector(-48,0,0) -- 0.25s lead capped at 12 -> leadPos=(25,3,0) at 10 studs <= 15
-observe(15,0,"lead-chain",player,2,2)
-comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"velocity lead did not trigger Main-occupied yield")
-assert(not threads:Get("comboAtlasCatch"),"yield exit must not spawn comboAtlasCatch")
-assert(h.direction.Magnitude>0.9,"yield Drive did not call h:Move directly with atlasCatch set")
-mainRoot.AssemblyLinearVelocity=Vector3.zero
-assert(not comboController:BlocksMove(vector(15,3,0)),"BlocksMove must be false while comboController.active")
-local savedYieldZone=comboController.mainZones[1]
-comboController.active=false
-comboController.mainZones={savedYieldZone}
-root.Position=vector(-20,3,0) -- clear outside circle centered at 15 (limit 16 -> [-1..31])
-assert(comboController:BlocksMove(vector(15,3,0)),"BlocksMove did not block point inside Main zone")
-assert(comboController:BlocksMove(vector(40,3,0)),"BlocksMove did not block path crossing Main zone")
-assert(comboController:BlocksMove(vector(-30,3,0))==false,"BlocksMove blocked safe outside move")
-comboController:Finish("yield-behavior-end")
-comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
-mainRoot.Position=vector(-45,3,0)
-root.Position=vector(0,3,0)
 
--- 3. Ignores other alts' combos; catches Main's combo (1x+) when Main isn't inside, and exits ANY player's combo when Main enters.
-mainRoot.Position=vector(40,3,0)
+-- 3. Ignores other alts' combos completely; chases Main's combo (1x, 2x, 4x, 5x...) and lets Main take 3rd drops (3x, 6x...).
+threads:Add("Autofarm",worker)
+mainRoot.Position=vector(-45,3,0)
 root.Position=vector(0,3,0)
 observe(10,0,"alt2-chain",alt2Player,1,2)
 comboController:Tick()
-assert(not comboController.active and not comboController:IsRestrictedZone(vector(10,3,0)),"alt chased another alt's combo")
-
--- Alt is standing inside AltTwo's combo circle when Main steps into AltTwo's combo.
-root.Position=vector(12,3,0)
-mainRoot.Position=vector(8,3,0)
+assert(not comboController.active,"alt chased AltTwo's 1x combo instead of continuing farming")
+observe(12,0,"alt2-chain3",alt2Player,3,2)
 comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"alt did not exit AltTwo's combo when Main entered")
--- Normal non-combo collectObject aborts immediately on restricted target inside Main's occupied circle.
-local aborted=false
-local nonComboTarget={Name=true,Position=vector(10,3,0),Parent=workspace}
-local t=coroutine.create(function()aborted=collectObject(nonComboTarget,nil,5,false,true,false)end)
-assert(coroutine.resume(t))
-assert(aborted,"normal collectObject walked into Main-occupied combo zone")
-
--- Expire AltTwo's combo and test Main's combo when Main is NOT doing its own combo.
+assert(not comboController.active,"alt chased AltTwo's 3x combo")
+assert(threads:Get("Autofarm")~=nil,"autofarm paused for another alt's combo")
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(10,3,0)})
-mainRoot.Position=vector(40,3,0)
-root.Position=vector(0,3,0)
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(12,3,0)})
+now+=0.3;comboController:Tick()
+
+-- Chases Main's 1x and 2x drops (using fast movement + 10x density), skips Main's 3x when Main in field, continues 4x, 5x.
 observe(-20,0,"main-chain",mainPlayer,1,2)
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-(-20))<0.1,"alt did not catch Main's 1x combo when Main was not inside")
+assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-(-20))<0.1,"alt missed Main's 1x drop")
 for _,fn in pairs(RunService.bound)do fn()end
-assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"catching Main's combo did not use exact fast movement + 10x density")
+assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"catching Main's combo did not use fast movement + 10x density")
 
--- Main steps into Main's 1x combo -> alt exits and resumes farming once clear.
-threads:Add("Autofarm",worker)
-root.Position=vector(-19,3,0)
-mainRoot.Position=vector(-18,3,0)
-comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob and comboController.session.yieldJob.owner=="MainAccount","alt did not exit Main's combo when Main stood inside")
-for _=1,12 do step(0.03) end
-assert(not comboController.active and threads:Get("Autofarm")~=nil,"alt did not resume farming after exiting Main's combo")
-
--- Next drops (2x and 3x) of Main's combo with Main NOT inside -> alt continues catching them!
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-20,3,0)})
-mainRoot.Position=vector(-40,3,0)
 fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=2,Pos2=vector(20,3,0),Duration=1.8,ID="main-chain",Points=100})
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-20)<0.1,"alt did not continue catching Main's 2x drop")
+assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-20)<0.1,"alt missed Main's 2x drop")
+
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0)})
 fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=3,Pos2=vector(5,3,0),Duration=1.8,ID="main-chain",Points=100})
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob and math.abs(comboController.session.target.Position.X-5)<0.1,"alt did not continue catching Main's 3x drop")
+assert(not comboController.active,"alt chased Main's 3x drop while Main was in field")
+
+-- Main stepped out of field -> alt rescues Main's 3x!
+mainRoot.Position=vector(-100,3,0)
+comboController:Tick()
+assert(comboController.active and math.abs(comboController.session.target.Position.X-5)<0.1,"alt did not rescue Main's 3x when Main left field")
+mainRoot.Position=vector(-45,3,0)
+
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(5,3,0)})
+fx.OnClientEvent:Fire("KickedComboCoconut",{Combo=4,Pos2=vector(-14,3,0),Duration=1.8,ID="main-chain",Points=100})
+comboController:Tick()
+assert(comboController.active and math.abs(comboController.session.target.Position.X-(-14))<0.1,"alt missed Main's 4x drop")
 
 -- Own combo still takes priority over Main's combo if both fall in the field at once.
 observe(25,0,"alt1-prio",player,1,2)
@@ -1657,9 +1386,9 @@ comboController:Tick()
 assert(comboController.active and math.abs(comboController.session.target.Position.X-25)<0.1,"own combo did not take priority over Main's combo")
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(25,3,0)})
-fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(5,3,0)})
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-14,3,0)})
 
--- 4. Unowned WarningDisk fallback (with GuiAttach): catches 0x, ignores >= 1x, exits when Main enters.
+-- 4. Unowned WarningDisk fallback (with GuiAttach): catches 0x, ignores >= 1x, no yieldJob.
 comboController:Finish("disk fallback test")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 mainRoot.Position=vector(-45,3,0)
@@ -1673,9 +1402,8 @@ comboController:Tick()
 assert(not comboController.active,"alt chased unowned 3x WarningDisk")
 root.Position=vector(6,3,0);mainRoot.Position=vector(4,3,0)
 comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"alt did not exit unowned WarningDisk when Main stepped inside")
+assert(not comboController.active,"alt yielded on unowned WarningDisk even after scan removal")
 disk.Parent=nil;now+=0.3;comboController:Tick()
-assert(not comboController.active,"removed WarningDisk stayed active")
 
 -- 0x unowned disk triggers private self-catch.
 local zeroDisk=Instance.new("Part",workspace);zeroDisk.Name="WarningDisk";zeroDisk.Position=vector(5,3,0);zeroDisk.Size=vector(26,0.5,26)
@@ -1685,119 +1413,89 @@ local zLabel=Instance.new("TextLabel",zGui);zLabel.Name="TextLabel";zLabel.Text=
 comboController:TrackDisk(zeroDisk)
 mainRoot.Position=vector(-45,3,0);root.Position=vector(0,3,0)
 comboController:Tick()
-assert(comboController.active and comboController.privatePriority,"0x WarningDisk fallback was not caught")
+assert(comboController.active and comboController.privatePriority and not comboController.session.yieldJob,"0x WarningDisk fallback was not caught")
 zeroDisk.Parent=nil;comboController:Finish("reset");comboController.disks={}
 
--- 5. Field-edge safe exit & overlapping Main-occupied combos.
-comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
-root.Position=vector(44,3,0) -- Pepper Patch is [-50, 50] on X and Z
-mainRoot.Position=vector(42,3,0)
-observe(42,0,"edge-combo",alt2Player,2,2)
-comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob)
-local edgeExit=comboController.session.yieldJob.position
-assert(comboController:PointInField(edgeExit,home),"exit went off Pepper Patch boundary: X="..tostring(edgeExit.X))
-
-comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
-observe(0,0,"overlap-1",alt2Player,1,2)
-observe(20,0,"overlap-2",mainPlayer,1,2)
-root.Position=vector(10,3,0)
-mainRoot.Position=vector(10,3,0) -- inside BOTH circles!
-comboController:Tick()
-local overlapExit=comboController.session.yieldJob.position
-assert(not comboController:IsRestrictedZone(overlapExit),"exit landed inside second Main-occupied combo")
-
--- 6. Main Account self-immunity (when mainevery=0): Main catches its own combo from 0x onward and NEVER exits for itself.
+-- 6. Main Account self-immunity when mainevery=0, and 3rd-drop cadence when mainevery=3.
 comboController:Finish("main account test")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
 player.Name="MainAccount"
-mainRoot.Position=vector(-100,3,0) -- move stale mainRoot stub out of field since player IS MainAccount here
+mainRoot.Position=vector(-100,3,0)
 cfg.coconutcombo={enabled=true,main="MainAccount",mainevery=0,maxspeed=180}
 root.Position=vector(0,3,0)
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(20,3,0),Dur=2,ID="main-self",ComboOwner=player,Points=100,Radius=13})
 comboController:Tick()
-assert(comboController.active and comboController.privatePriority and not comboController.session.yieldJob,"Main missed own 0x")
+assert(comboController.active and comboController.privatePriority,"Main missed own 0x")
 root.Position=vector(25,3,0)
 observe(25,0,"main-self",player,1,2)
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob and not comboController:IsRestrictedZone(vector(25,3,0)),"Main yielded to itself with mainevery=0")
+assert(comboController.active,"Main missed own 1x with mainevery=0")
 
--- 6a. Main own-combo cadence (default mainevery=3): catches 0x and 4x, skips 1..3 for nearby helpers (and yields out if inside), catches solo, and rescues at deadline.
+-- 6a. Main own-combo 3rd-drop cadence (mainevery=3): catches 0x, 3x, 6x; skips 1x, 2x, 4x, 5x when helpers in field; solo catches 1x!
 comboController:Finish("main cadence test")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
 cfg.coconutcombo={enabled=true,main="MainAccount",mainevery=3,maxspeed=180}
-alt2Root.Position=vector(40,3,0) -- inside Pepper Patch helper zone
+alt2Root.Position=vector(40,3,0) -- helper inside Pepper Patch
 root.Position=vector(0,3,0)
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(10,3,0),Dur=2,ID="cadence",ComboOwner=player,Points=100,Radius=13})
 comboController:Tick()
 assert(comboController.active and comboController.privatePriority,"Main missed own 0x under cadence")
--- Stacks 1, 2, 3 skipped while alt2 is in Pepper Patch; if Main is standing inside skipped 1x, Main yields out!
-now+=0.1
-fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(10,3,0)})
-root.Position=vector(15,3,0) -- inside 1x circle
-observe(15,0,"cadence",player,1,2)
-comboController:Tick()
-assert(comboController.active and comboController.session.yieldJob,"Main did not yield out of skipped 1x combo")
-assert(comboController:IsRestrictedZone(vector(15,3,0)),"Main's skipped 1x zone was not marked restricted")
-for _=1,12 do step(0.03) end
-assert(not comboController.active and string.find(comboController.status,"Letting alts catch",1,true),"Main did not report letting alts catch after yielding")
-root.Position=vector(0,3,0)
-for _,sk in ipairs({2,3}) do
- now+=0.1
- fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(15,3,0)})
- observe(20,0,"cadence",player,sk,2)
- comboController:Tick()
- assert(not comboController.active,"Main caught skipped stack "..tostring(sk))
+for _,sk in ipairs({1,2}) do
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(sk==1 and 10 or 15,3,0)})
+	observe(15,0,"cadence",player,sk,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main caught skipped own stack "..tostring(sk))
 end
--- Stack 4 (4 % 4 == 0) -> Main chimes in!
 now+=0.1
-fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0)})
-observe(20,0,"cadence",player,4,2)
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(15,3,0)})
+observe(20,0,"cadence",player,3,2)
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob,"Main did not chime in on stack 4")
--- Solo fallback: no helper in field -> Main catches stack 1!
+assert(comboController.active and not comboController.session.yieldJob,"Main did not catch own 3x drop")
+for _,sk in ipairs({4,5}) do
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(sk==4 and 20 or 18,3,0)})
+	observe(18,0,"cadence",player,sk,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main caught skipped own stack "..tostring(sk))
+end
+now+=0.1
+fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(18,3,0)})
+observe(22,0,"cadence",player,6,2)
+comboController:Tick()
+assert(comboController.active and not comboController.session.yieldJob,"Main did not catch own 6x drop")
+
+-- Solo fallback: no helper in Pepper Patch -> Main catches stack 1!
 comboController:Finish("solo cadence")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
-alt2Root.Position=vector(135,3,0) -- moved to Coconut Field (no helper in Pepper Patch)
+alt2Root.Position=vector(135,3,0) -- moved to Coconut Field
 root.Position=vector(0,3,0)
 observe(15,0,"solo-chain",player,1,2)
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob,"Main skipped 1x when solo in field")
--- Rescue at deadline-0.3s when helper is in field but nobody inside circle:
-comboController:Finish("rescue cadence")
-comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0
-alt2Root.Position=vector(40,3,0) -- back in Pepper Patch, outside circle (15,0)
-root.Position=vector(0,3,0)
-observe(15,0,"rescue-chain",player,1,0.3)
-comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob,"Main did not rescue stack 1 at deadline<=0.35 with nobody inside")
+assert(comboController.active,"Main skipped 1x when solo in field")
 
--- 6b. Catch All Combos in Field (Coconut Field alts): catches everything in current field regardless of owner/Main/activity.
+-- 6b. Catch All Combos in Field (3 Coconut Field alts): catches everything in Coconut Field regardless of owner/Main/activity.
 comboController:Finish("catchall setup")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 player.Name="CoconutAlt1"
 cfg.coconutcombo={enabled=false,catchall=true,main="MainAccount",maxspeed=180}
 cfg.autofarm.enabled=true
-state.activityStatus=3 -- works regardless of activityStatus (only stops for TravelBlocked / state.stop / mondoHop)
-root.Position=vector(100,3,0) -- inside Coconut Field [70, 170]
+state.activityStatus=3
+root.Position=vector(100,3,0) -- Coconut Field [70, 170]
 mainRoot.Position=vector(135,3,0)
 
--- Catches AltTwo's combo in Coconut Field with exact fast movement + 10x density.
 observe(130,0,"coco-alt2",alt2Player,2,2)
 comboController:Tick()
 assert(comboController.active and not comboController.session.yieldJob,"catchall missed AltTwo's combo in Coconut Field")
 for _,fn in pairs(RunService.bound)do fn()end
-assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"catchall did not use exact fast movement + 10x density")
+assert(h.WalkSpeed>=180 and root.CustomPhysicalProperties.Density==7,"catchall did not use fast movement + 10x density")
 
--- Catches MainAccount's combo in Coconut Field EVEN with MainAccount standing inside it (ignores Main exit/restricted rules).
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(130,3,0)})
 observe(135,0,"coco-main",mainPlayer,3,2)
 comboController:Tick()
-assert(comboController.active and not comboController.session.yieldJob,"catchall yielded or skipped Main's combo in Coconut Field")
-assert(not comboController:IsRestrictedZone(vector(135,3,0)) and not comboController:PathCrossesRestrictedZone(vector(100,3,0),vector(150,3,0)),"catchall applied restricted zones")
+assert(comboController.active and not comboController.session.yieldJob,"catchall skipped Main's 3x combo in Coconut Field")
 
--- Catches own 0x combo and unowned 3x WarningDisk in Coconut Field.
 now+=0.1
 fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(135,3,0)})
 fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(115,3,0),Dur=2,ID="coco-own0",Points=100,Radius=13})
@@ -1815,19 +1513,145 @@ comboController:Tick()
 assert(comboController.active and not comboController.session.yieldJob,"catchall missed unowned 3x WarningDisk in Coconut Field")
 cocoDisk.Parent=nil;now+=0.3;comboController:Tick()
 
--- Ignores Pepper Patch combo while standing in Coconut Field, and ignores Coconut Field combo while at hive (no field).
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 observe(10,0,"pepper-drop",alt2Player,1,2)
 comboController:Tick()
 assert(not comboController.active,"Coconut Field alt left Coconut Field for Pepper Patch combo")
 observe(125,0,"coco-only",alt2Player,1,2)
-root.Position=vector(-100,3,0) -- outside any field (e.g. at hive)
+root.Position=vector(-100,3,0) -- at hive
 comboController:Tick()
 assert(not comboController.active,"alt at hive pulled into Coconut Field combo")
 state.activityStatus=1
 
--- 7. Live FX fixture replay (combo_live_trace.json).
+-- 6c. Pepper Patch 2-Alt + Main 3rd-Drop Intercept + Pos1 Kick Owner Preservation
+do
+	comboController:Finish("pepper 2-alt intercept")
+	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+	state.activityStatus=1
+	cfg.autofarm.enabled=true
 
+	local alt1Char=Instance.new("Model",world)
+	local alt1Hum=Instance.new("Humanoid",alt1Char)
+	local alt1Root=Instance.new("Part",alt1Char);alt1Root.Name="HumanoidRootPart";alt1Root.Position=vector(-35,3,0)
+	local alt1Player={Name="AltOne",Character=alt1Char,UserId=902,ClassName="Player",IsA=function(_,c)return c=="Player"end}
+	Players.list={player,alt1Player,alt2Player}
+
+	-- Part A: Main intercepts BOTH Pepper Patch alts every 3rd drop (3x, 6x...), skips (1x, 2x, 4x, 5x...).
+	player.Name="MainAccount"
+	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
+	root.Position=vector(0,3,0)
+	alt1Root.Position=vector(-35,3,0)
+	alt2Root.Position=vector(40,3,0)
+
+	observe(20,0,"alt1-pepper",alt1Player,1,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main chased AltOne 1x drop")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0)})
+	observe(24,0,"alt1-pepper",alt1Player,2,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main chased AltOne 2x drop")
+
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(24,3,0)})
+	observe(15,0,"alt1-pepper",alt1Player,3,2)
+	comboController:Tick()
+	assert(comboController.active,"Main did not intercept AltOne 3x drop")
+	assert(string.find(comboController.status,"Intercepting",1,true),"Main status did not report Intercepting on AltOne 3x: "..tostring(comboController.status))
+
+	for _,sk in ipairs({4,5}) do
+		now+=0.1
+		fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(sk==4 and 15 or 18,3,0)})
+		observe(18,0,"alt1-pepper",alt1Player,sk,2)
+		comboController:Tick()
+		assert(not comboController.active,"Main chased AltOne "..tostring(sk).."x drop")
+	end
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(18,3,0)})
+	observe(-15,0,"alt1-pepper",alt1Player,6,2)
+	comboController:Tick()
+	assert(comboController.active,"Main did not intercept AltOne 6x drop")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-15,3,0)})
+	now+=0.3;comboController:Tick()
+
+	-- AltTwo 1x, 2x -> skipped; AltTwo 3x -> Main intercepts!
+	observe(-22,0,"alt2-pepper",alt2Player,1,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main chased AltTwo 1x")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-22,3,0)})
+	observe(-26,0,"alt2-pepper",alt2Player,2,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main chased AltTwo 2x")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-26,3,0)})
+	observe(12,0,"alt2-pepper",alt2Player,3,2)
+	comboController:Tick()
+	assert(comboController.active,"Main did not intercept AltTwo 3x drop")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(12,3,0)})
+	now+=0.3;comboController:Tick()
+
+	-- Cross-field isolation: AltTwo 3x in Coconut Field while Main is in Pepper Patch -> Main ignores
+	alt2Root.Position=vector(120,3,0)
+	observe(125,0,"alt2-coco-cross",alt2Player,3,2)
+	comboController:Tick()
+	assert(not comboController.active,"Main in Pepper Patch reacted to Coconut Field alt combo")
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(125,3,0)})
+	now+=0.3;comboController:Tick()
+	alt2Root.Position=vector(40,3,0)
+
+	-- mainevery = 0 -> Main never intercepts AltOne 3x
+	cfg.coconutcombo.mainevery=0
+	observe(22,0,"alt1-no-intercept-3",alt1Player,3,2)
+	comboController:Tick()
+	assert(not comboController.active,"mainevery=0 intercepted AltOne 3x")
+	now+=0.3;comboController:Tick()
+
+	-- Part B: AltOne Pos1 kick owner preservation + 3rd-drop yield to Main
+	comboController:Finish("alt pos1 kick preservation")
+	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+	alt1Char:Destroy()
+	Players.list={player,mainPlayer,alt2Player}
+	player.Name="AltOne"
+	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
+	root.Position=vector(0,3,0)
+	mainRoot.Position=vector(-45,3,0)
+
+	fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(20,3,0),Dur=2,Points=100,Radius=13})
+	comboController:Tick()
+	assert(comboController.active and comboController.privatePriority,"AltOne missed un-IDed private 0x")
+
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0),Pos2=vector(28,3,0),Combo=1,Duration=2})
+	comboController:Tick()
+	assert(comboController.active and math.abs(comboController.session.target.Position.X-28)<0.1,"AltOne lost ownership on un-IDed 1x Pos1 kick")
+
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(28,3,0),Pos2=vector(-12,3,0),Combo=2,Duration=2})
+	comboController:Tick()
+	assert(comboController.active and math.abs(comboController.session.target.Position.X-(-12))<0.1,"AltOne lost ownership on un-IDed 2x Pos1 kick")
+
+	now+=0.1
+	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-12,3,0),Pos2=vector(10,3,0),Combo=3,Duration=2})
+	comboController:Tick()
+	assert(not comboController.active,"AltOne did not let Main take un-IDed 3x drop while Main in field")
+	mainRoot.Position=vector(-100,3,0)
+	comboController:Tick()
+	assert(comboController.active,"AltOne did not rescue un-IDed 3x when Main left field")
+
+	comboController:Finish("restore baseline")
+	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+	player.Name="Tester"
+	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
+	root.Position=vector(0,3,0)
+	mainRoot.Position=vector(-45,3,0)
+	alt2Root.Position=vector(40,3,0)
+end
+
+-- 7. Live FX fixture replay (combo_live_trace.json).
 comboController:Finish("live replay")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 local liveOwner={ClassName="Player",Name="MainAccount",IsA=function(_,c)return c=="Player"end}
@@ -1852,219 +1676,77 @@ comboController:Finish("live replay cadence")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 cfg.coconutcombo.mainevery=3
 alt2Root.Position=vector(-490,123.2,546)
+player.Name="MainAccount"
+liveOwner.Name="MainAccount"
+cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=0,maxspeed=180}
+root.Position=vector(-490,123.2,546)
+mainRoot.Position=vector(0,3,0)
+alt2Root.Position=vector(40,3,0)
+local lastTime=realEvents[1].time
+local caughtAllLive={}
+for _,event in ipairs(realEvents)do
+	now+=event.time-lastTime;lastTime=event.time
+	fx.OnClientEvent:Fire(event.effect,event.data)
+	comboController:Tick()
+	if event.effect=="FallingCoconut" and comboController.active then
+		caughtAllLive[event.data.Combo]=true
+	end
+end
+for c=31,39 do assert(caughtAllLive[c],"Main mainevery=0 missed live stack "..tostring(c)) end
+
+-- Main with mainevery=3 and helper in field catches 33, 36, 39 and skips 31, 32, 34, 35, 37, 38.
+comboController:Finish("live main cadence")
+comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
+cfg.coconutcombo.mainevery=3
+alt2Root.Position=vector(-495,123.2,546)
 lastTime=realEvents[1].time
 local cadenceCaught={}
 for _,event in ipairs(realEvents)do
- now+=event.time-lastTime;lastTime=event.time
- fx.OnClientEvent:Fire(event.effect,event.data)
- comboController:Tick()
- if event.effect=="FallingCoconut" and comboController.active and not comboController.session.yieldJob then
-  cadenceCaught[event.data.Combo]=true
- end
+	now+=event.time-lastTime;lastTime=event.time
+	fx.OnClientEvent:Fire(event.effect,event.data)
+	comboController:Tick()
+	if event.effect=="FallingCoconut" and comboController.active then
+		cadenceCaught[event.data.Combo]=true
+	end
 end
-assert(cadenceCaught[32] and cadenceCaught[36] and not cadenceCaught[31] and not cadenceCaught[33] and not cadenceCaught[34],"live Main cadence (32,36) mismatch")
+assert(cadenceCaught[33] and cadenceCaught[36] and cadenceCaught[39] and not cadenceCaught[31] and not cadenceCaught[32] and not cadenceCaught[34] and not cadenceCaught[35],"live Main 3rd-drop cadence (33,36,39) mismatch")
 
--- Replay fixture as AltOne owning the combo while Main steps inside on Combo 33.
+-- AltOne owning live combo with Main in field catches 31,32,34,35,37,38 and yields 33,36,39.
 comboController:Finish("alt live replay")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 player.Name="AltOne";liveOwner.Name="AltOne"
+mainRoot.Position=vector(-495,123.2,546)
 lastTime=realEvents[1].time
 for _,event in ipairs(realEvents)do
- now+=event.time-lastTime;lastTime=event.time
- fx.OnClientEvent:Fire(event.effect,event.data)
- if event.effect=="FallingCoconut" and event.data.Combo==33 then
-  root.Position=event.data.Pos+vector(2,0,0)
-  mainRoot.Position=event.data.Pos+vector(1,0,0)
- else
-  mainRoot.Position=vector(0,3,0)
- end
- comboController:Tick()
- if event.effect=="FallingCoconut" then
-  if event.data.Combo==33 then
-   assert(comboController.active and comboController.session.yieldJob,"Alt did not exit own live combo when Main stepped in on Combo 33")
-  else
-   assert(comboController.active and not comboController.session.yieldJob,"Alt did not catch own live combo on Combo "..tostring(event.data.Combo))
-  end
- end
+	now+=event.time-lastTime;lastTime=event.time
+	fx.OnClientEvent:Fire(event.effect,event.data)
+	comboController:Tick()
+	if event.effect=="FallingCoconut" then
+		if event.data.Combo%3==0 then
+			assert(not comboController.active,"Alt chased own live 3rd drop "..tostring(event.data.Combo))
+		else
+			assert(comboController.active,"Alt missed own live drop "..tostring(event.data.Combo))
+		end
+	end
 end
 
--- Replay fixture as AltOne watching Main's combo where Main only steps into Combo 33 -> Alt catches 31, 32, exits 33, continues 34..39.
+-- AltOne watching Main's live combo with Main in field catches 31,32,34,35,37,38 and yields 33,36,39.
 comboController:Finish("alt watching main live replay")
 comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
 player.Name="AltOne";liveOwner.Name="MainAccount"
-root.Position=vector(-490,123.2,546)
+mainRoot.Position=vector(-495,123.2,546)
 lastTime=realEvents[1].time
 for _,event in ipairs(realEvents)do
- now+=event.time-lastTime;lastTime=event.time
- fx.OnClientEvent:Fire(event.effect,event.data)
- if event.effect=="FallingCoconut" and event.data.Combo==33 then
-  root.Position=event.data.Pos+vector(2,0,0)
-  mainRoot.Position=event.data.Pos+vector(1,0,0)
- else
-  mainRoot.Position=vector(0,3,0)
- end
- comboController:Tick()
- if event.effect=="FallingCoconut" then
-  if event.data.Combo==33 then
-   assert(comboController.active and comboController.session.yieldJob,"Alt did not exit Main's live combo when Main stepped in on Combo 33")
-  else
-   assert(comboController.active and not comboController.session.yieldJob,"Alt did not catch Main's live combo on Combo "..tostring(event.data.Combo))
-  end
- end
-end
-
-
--- 6c. Pepper Patch 2-Alt + Main 3-Drop Intercept + Pos1 Kick Owner Preservation
-do
-	comboController:Finish("pepper 2-alt intercept")
-	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
-	state.activityStatus=1
-	cfg.autofarm.enabled=true
-
-	local alt1Char=Instance.new("Model",world)
-	local alt1Hum=Instance.new("Humanoid",alt1Char)
-	local alt1Root=Instance.new("Part",alt1Char);alt1Root.Name="HumanoidRootPart";alt1Root.Position=vector(-35,3,0)
-	local alt1Player={Name="AltOne",Character=alt1Char,UserId=902,ClassName="Player",IsA=function(_,c)return c=="Player"end}
-	Players.list={player,alt1Player,alt2Player}
-
-	-- Part A: Main intercepts BOTH Pepper Patch alts every 3 drops (3x, 6x...), skips (1x, 2x, 4x, 5x...) into skipZones.
-	player.Name="MainAccount"
-	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
-	root.Position=vector(0,3,0) -- inside Pepper Patch [-50, 50]
-	alt1Root.Position=vector(-35,3,0)
-	alt2Root.Position=vector(40,3,0)
-
-	-- AltOne 1x and 2x -> Main skips & protects skipZones
-	observe(20,0,"alt1-pepper",alt1Player,1,2)
+	now+=event.time-lastTime;lastTime=event.time
+	fx.OnClientEvent:Fire(event.effect,event.data)
 	comboController:Tick()
-	assert(not comboController.active,"Main chased AltOne 1x drop")
-	assert(comboController:IsRestrictedZone(vector(20,3,0)),"Main did not mark AltOne 1x in skipZones")
-
-	-- If Main is standing inside AltOne's 1x, Main yields out and clears cleanly
-	root.Position=vector(21,3,0)
-	comboController:Tick()
-	assert(comboController.active and comboController.session.yieldJob,"Main did not yield out of AltOne 1x drop")
-	for _=1,12 do step(0.03) end
-	assert(not comboController.active,"Main stayed active after exiting AltOne 1x")
-	root.Position=vector(0,3,0)
-
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0)})
-	observe(24,0,"alt1-pepper",alt1Player,2,2)
-	comboController:Tick()
-	assert(not comboController.active and comboController:IsRestrictedZone(vector(24,3,0)),"Main did not skip AltOne 2x drop")
-
-	-- AltOne 3x -> Main intercepts!
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(24,3,0)})
-	observe(15,0,"alt1-pepper",alt1Player,3,2)
-	comboController:Tick()
-	assert(comboController.active and not comboController.session.yieldJob,"Main did not intercept AltOne 3x drop")
-	assert(string.find(comboController.status,"Intercepting",1,true),"Main status did not report Intercepting on AltOne 3x: "..tostring(comboController.status))
-	assert(not comboController:IsRestrictedZone(vector(15,3,0)),"Intercepted AltOne 3x marked restricted for Main")
-
-	-- AltOne 4x, 5x -> skipped; AltOne 6x -> Main intercepts!
-	for _,sk in ipairs({4,5}) do
-		now+=0.1
-		fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(sk==4 and 15 or 18,3,0)})
-		observe(18,0,"alt1-pepper",alt1Player,sk,2)
-		comboController:Tick()
-		assert(not comboController.active and comboController:IsRestrictedZone(vector(18,3,0)),"Main did not skip AltOne "..tostring(sk).."x drop")
+	if event.effect=="FallingCoconut" then
+		if event.data.Combo%3==0 then
+			assert(not comboController.active,"Alt chased Main's live 3rd drop "..tostring(event.data.Combo))
+		else
+			assert(comboController.active,"Alt missed Main's live drop "..tostring(event.data.Combo))
+		end
 	end
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(18,3,0)})
-	observe(-15,0,"alt1-pepper",alt1Player,6,2)
-	comboController:Tick()
-	assert(comboController.active and not comboController.session.yieldJob,"Main did not intercept AltOne 6x drop")
-	assert(not comboController:IsRestrictedZone(vector(-15,3,0)),"Intercepted AltOne 6x marked restricted for Main")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-15,3,0)})
-	now+=0.3;comboController:Tick()
-
-	-- AltTwo 1x, 2x -> skipped; AltTwo 3x -> Main intercepts!
-	observe(-22,0,"alt2-pepper",alt2Player,1,2)
-	comboController:Tick()
-	assert(not comboController.active and comboController:IsRestrictedZone(vector(-22,3,0)),"Main did not skip AltTwo 1x")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-22,3,0)})
-	observe(-26,0,"alt2-pepper",alt2Player,2,2)
-	comboController:Tick()
-	assert(not comboController.active and comboController:IsRestrictedZone(vector(-26,3,0)),"Main did not skip AltTwo 2x")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-26,3,0)})
-	observe(12,0,"alt2-pepper",alt2Player,3,2)
-	comboController:Tick()
-	assert(comboController.active and not comboController.session.yieldJob,"Main did not intercept AltTwo 3x drop")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(12,3,0)})
-	now+=0.3;comboController:Tick()
-
-	-- Cross-field isolation: AltTwo 3x in Coconut Field while Main is in Pepper Patch -> Main ignores
-	alt2Root.Position=vector(120,3,0)
-	observe(125,0,"alt2-coco-cross",alt2Player,3,2)
-	comboController:Tick()
-	assert(not comboController.active and not comboController:IsRestrictedZone(vector(125,3,0)),"Main in Pepper Patch reacted to Coconut Field alt combo")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(125,3,0)})
-	now+=0.3;comboController:Tick()
-	alt2Root.Position=vector(40,3,0)
-
-	-- mainevery = 0 -> Main never intercepts AltOne 3x and never adds AltOne 1x to skipZones
-	cfg.coconutcombo.mainevery=0
-	observe(22,0,"alt1-no-intercept-1",alt1Player,1,2)
-	comboController:Tick()
-	assert(not comboController.active and not comboController:IsRestrictedZone(vector(22,3,0)),"mainevery=0 added AltOne 1x to skipZones")
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(22,3,0)})
-	observe(22,0,"alt1-no-intercept-3",alt1Player,3,2)
-	comboController:Tick()
-	assert(not comboController.active,"mainevery=0 intercepted AltOne 3x")
-	now+=0.3;comboController:Tick()
-
-	-- Part B: AltOne catches own combo via Pos1 owner preservation when ID and ComboOwner are omitted across kicks!
-	comboController:Finish("alt pos1 kick preservation")
-	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
-	alt1Char:Destroy()
-	Players.list={player,mainPlayer,alt2Player}
-	player.Name="AltOne"
-	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
-	root.Position=vector(0,3,0)
-	mainRoot.Position=vector(-45,3,0)
-
-	-- 0x private drop with NO ID and NO ComboOwner -> owned by AltOne
-	fx.OnClientEvent:Fire("FallingCoconut",{Friendly=true,Combo=0,Pos=vector(20,3,0),Dur=2,Points=100,Radius=13})
-	comboController:Tick()
-	assert(comboController.active and comboController.privatePriority,"AltOne missed un-IDed private 0x")
-
-	-- Kicked 0x -> 1x with ONLY Pos1, Pos2, Combo=1, Duration=2 (no ID, no ComboOwner, no ComboID)
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(20,3,0),Pos2=vector(28,3,0),Combo=1,Duration=2})
-	comboController:Tick()
-	assert(comboController.active and not comboController.session.yieldJob,"AltOne lost ownership on un-IDed 1x Pos1 kick")
-	assert(math.abs(comboController.session.target.Position.X-28)<0.1,"AltOne target mismatch on Pos1 kick 1x")
-
-	-- Kicked 1x -> 2x again without ID / ComboOwner
-	now+=0.1
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(28,3,0),Pos2=vector(-12,3,0),Combo=2,Duration=2})
-	comboController:Tick()
-	assert(comboController.active and not comboController.session.yieldJob,"AltOne lost ownership on un-IDed 2x Pos1 kick")
-	assert(math.abs(comboController.session.target.Position.X-(-12))<0.1,"AltOne target mismatch on Pos1 kick 2x")
-
-	-- Kicked 2x -> 3x when Main intercepts -> AltOne yields cleanly!
-	now+=0.1
-	mainRoot.Position=vector(11,3,0)
-	fx.OnClientEvent:Fire("KickedComboCoconut",{Pos1=vector(-12,3,0),Pos2=vector(10,3,0),Combo=3,Duration=2})
-	comboController:Tick()
-	assert(comboController.active and comboController.session.yieldJob,"AltOne did not yield when Main entered intercepted 3x")
-
-	-- Restore baseline state before Section 8
-	comboController:Finish("restore baseline")
-	comboController.records={};comboController.byKey={};comboController.chains={};comboController.chainCount=0;comboController.disks={}
-	player.Name="Tester"
-	cfg.coconutcombo={enabled=true,catchall=false,main="MainAccount",mainevery=3,maxspeed=180}
-	root.Position=vector(0,3,0)
-	mainRoot.Position=vector(-45,3,0)
-	alt2Root.Position=vector(40,3,0)
 end
 
 -- 8. Task travel lock, Shower preemption, Mondo priority, autofarm-off, renderless Heartbeat, 1000-coconut bound, Shutdown.
@@ -2144,4 +1826,4 @@ assert(not comboController.active and next(comboController.records)==nil and nex
 assert(root.CustomPhysicalProperties==nil and root.Massless==false and h.WalkSpeed==40 and controls.controlsEnabled)
 assert(not RunService.bound.AtlasComboMovement and not connections.list.comboComboTick and not connections.list.comboComboFX and not connections.list.comboPlayerAdded)
 assert(not threads:Get("Autofarm"),"shutdown resumed autofarm incorrectly")
-print("PASS: own combo 0x+ catching, exact fast movement & 10x density, Main auto-exit for any player combo, field-safe exit, overlap avoidance, Main immunity, live trace, travel lock, bounded memory, and clean shutdown")
+print("PASS: own combo 0x+ catching, 3rd-drop Main cadence (no circle scan), Coconut Field catch-all, 2-alt Pepper intercept, Pos1 kick preservation, live trace, travel lock, bounded memory, and clean shutdown")
