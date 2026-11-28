@@ -691,6 +691,17 @@ do
 			pcall(rawDestroy, o)
 		end
 	end
+	local function isBloomParticle(desc)
+		local cur = desc
+		while cur and cur ~= workspace do
+			local n = cur.Name
+			if n == "PetalPart" or n == "PoppablePlants" or (type(n) == "string" and string.find(n, "Bloom", 1, true) ~= nil) then
+				return true
+			end
+			cur = cur.Parent
+		end
+		return false
+	end
 
 	local MAX_ALT_DESTROY_TOP = {
 		"Amulets", "Shell Amulets", "Stickbug Amulets", "BallArrowFolder", "BoostBalls",
@@ -817,7 +828,7 @@ do
 	end
 
 	function ultraAntiLag:SyncParticleFX(desc)
-		if not self.enabled or not desc or not desc.Parent then return end
+		if not self.enabled or not desc or not desc.Parent or isBloomParticle(desc) then return end
 		if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
 			if self.savedParticleFX[desc] == nil then
 				local ok, wasOn = pcall(readProp, desc, "Enabled")
@@ -1313,7 +1324,7 @@ do
 	end
 
 	local function disableFXFast(desc)
-		if not desc or not desc.Parent then return end
+		if not desc or not desc.Parent or isBloomParticle(desc) then return end
 		if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Light") or desc:IsA("Fire") or desc:IsA("Smoke") then
 			pcall(writeProp, desc, "Enabled", false)
 			if desc:IsA("ParticleEmitter") or desc:IsA("Trail") then pcall(clearFX, desc) end
@@ -3356,6 +3367,36 @@ do
 	assert(next(tokenFilter.list) == nil, "SetMaxAlt(false) did not clear tokenFilter.list")
 	gameApi.CollectiblesAnimator.Spawn()
 	assert(origCallCounts.caSpawn == 1, "CollectiblesAnimator.Spawn original was not restored")
+
+	-- Bloom / PetalPart particle preservation under both Ultra Anti-Lag & Max Alt Anti-Lag
+	do
+		local pFolder = workspace:FindFirstChild("Particles") or Instance.new("Folder", workspace)
+		pFolder.Name = "Particles"
+		local petalPart = Instance.new("Part", pFolder); petalPart.Name = "PetalPart"
+		local petalFX = Instance.new("ParticleEmitter", petalPart); petalFX.Name = "Sparkles"; petalFX.Enabled = true
+		local nonBloomPart = Instance.new("Part", pFolder); nonBloomPart.Name = "CosmeticBurst"
+		local nonBloomFX = Instance.new("ParticleEmitter", nonBloomPart); nonBloomFX.Name = "Burst"; nonBloomFX.Enabled = true
+		local popFolder = Instance.new("Folder", workspace); popFolder.Name = "PoppablePlants"
+		local bModel = Instance.new("Model", popFolder); bModel.Name = "RoseBloom"
+		local bloomFX = Instance.new("ParticleEmitter", bModel); bloomFX.Name = "BloomSpores"; bloomFX.Enabled = true
+
+		ultraAntiLag:Set(true)
+		ultraAntiLag:SyncParticleFX(petalFX)
+		ultraAntiLag:SyncParticleFX(bloomFX)
+		ultraAntiLag:SyncParticleFX(nonBloomFX)
+		assert(petalFX.Enabled == true and bloomFX.Enabled == true, "Ultra Anti-Lag disabled Bloom/PetalPart particle")
+		assert(nonBloomFX.Enabled == false, "Ultra Anti-Lag did not disable regular particle")
+		ultraAntiLag:Set(false)
+		assert(nonBloomFX.Enabled == true, "Set(false) did not restore regular particle")
+
+		ultraAntiLag:SetMaxAlt(true)
+		assert(petalFX.Enabled == true and bloomFX.Enabled == true, "Max Alt Anti-Lag disabled Bloom/PetalPart particle")
+		assert(nonBloomFX.Enabled == false, "Max Alt Anti-Lag did not disable regular particle")
+		ultraAntiLag:SetMaxAlt(false)
+		popFolder:Destroy()
+		petalPart:Destroy()
+		nonBloomPart:Destroy()
+	end
 
 	-- 4. tryHook hardening: if CollectiblesAnimator.Spawn hook fails, Collectibles must NOT be destroyed
 	local safeCollectibles = Instance.new("Folder", workspace); safeCollectibles.Name = "Collectibles"
